@@ -1,16 +1,7 @@
-import sys
-sys.path.extend([
-    r'src',
-    r'src/COLLECTION',
-    r'Working_Code',
-    r'src/DATA_ANALYSIS',
-    r'src/COMMON',
-    r'src/Command_Line_UI'
-])
-from COMMON.General_Utils import caluculate_time_taken, print_with_separator
-from COMMON.LLM_Config import BLABLADOR_BASE_URL, PREFERRED_BLABLADOR_MODELS, check_api_key,local_model_dir,model_repo_id
-from COMMON.System_prompts import General_Sys_Prompt
-from COMMON.File_Manager import ALR_main_folder
+from alr.common.System_prompts import General_Sys_Prompt
+from alr.common.general_utils import caluculate_time_taken, print_with_separator
+from alr.common.LLM_Config import BLABLADOR_BASE_URL, PREFERRED_BLABLADOR_MODELS, check_api_key,local_model_dir,model_repo_id
+from alr.common.file_manager import ALR_main_folder
 
 from collections import deque
 from transformers import AutoTokenizer, AutoModelForCausalLM, pipeline
@@ -458,9 +449,9 @@ def hf_pipeline_with_Lamma():
         return None
 
 
-# hf_pipeline_default=hf_pipeline_with_Lamma()  
 
 def Local_Model_call(prompt: str, sys_prompt: str) :
+    hf_pipeline_default=hf_pipeline_with_Lamma()  
     hf_pipeline=hf_pipeline_default
 
     if hf_pipeline:

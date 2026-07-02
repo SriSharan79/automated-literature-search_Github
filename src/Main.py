@@ -1,16 +1,8 @@
-import sys
-sys.path.extend([
-    r'/localdata/user/kata_du/Automated Literature Survey/src',
-    r'/localdata/user/kata_du/Automated Literature Survey/src/COLLECTION',
-    r'/localdata/user/kata_du/Automated Literature Survey/Working_Code',
-    r'/localdata/user/kata_du/Automated Literature Survey/src/DATA_ANALYSIS',
-    r'/localdata/user/kata_du/Automated Literature Survey/src/COMMON'
-])
 
 
-from DATA_ANALYSIS.Pdf_File_processor import process_pdf_mode_file
-from COMMON.File_Manager import DataAnalyzeManager
-from DATA_ANALYSIS.Folder_Data_Analyzer import process_abstract
+from alr.data_analysis.Pdf_File_processor import process_pdf_mode_file
+from alr.common.file_manager import DataAnalyzeManager
+from alr.data_analysis.Folder_Data_Analyzer import process_abstract
 import PyPDF2
 from pathlib import Path
 

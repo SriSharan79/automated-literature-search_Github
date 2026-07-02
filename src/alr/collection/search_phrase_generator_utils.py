@@ -2,12 +2,12 @@ import sys
 import traceback
 from typing import List
 
-from COMMON.LLM_Utils import blabla_ask_llm, llm_call
-from COLLECTION.Collection_system_prompts import Serach_phrase_System_Prompt
-from COMMON.Excel_Utils import add_column_sum, extract_column, sum_columns_ending_with_to_target
-from COMMON.General_Utils import merge_lists, print_with_separator
-from COLLECTION.Keyword_sorting_Utils import get_subsets_of_size, get_subsets_with_min_size
-from COLLECTION.Search_Phrase_Generator_Logger import Log_keyPhrases, aggregate_and_update_excel, log_generated_list_file
+from alr.collection.keyword_sorting_Utils import get_subsets_of_size, get_subsets_with_min_size
+from alr.common.llm_utils import blabla_ask_llm, llm_call
+from alr.collection.collection_system_prompts import Serach_phrase_System_Prompt
+from alr.common.excel_utils import add_column_sum, extract_column, sum_columns_ending_with_to_target
+from alr.common.general_utils import merge_lists, print_with_separator
+from alr.collection.search_phrase_generator_logger import Log_keyPhrases, aggregate_and_update_excel, log_generated_list_file
 
 import pandas as pd
 import os

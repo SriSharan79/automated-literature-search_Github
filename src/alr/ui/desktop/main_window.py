@@ -1,29 +1,22 @@
 import os
+import sys
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 from pathlib import Path
-import sys
-sys.path.extend([
-    r'/localdata/user/kata_du/Automated Literature Survey/src',
-    r'/localdata/user/kata_du/Automated Literature Survey/src/COLLECTION',
-    r'/localdata/user/kata_du/Automated Literature Survey/Working_Code',
-    r'/localdata/user/kata_du/Automated Literature Survey/src/DATA_ANALYSIS',
-    r'/localdata/user/kata_du/Automated Literature Survey/src/COMMON'
-])
 # --- Import your existing backend logic ---
-from COMMON.Excel_Utils import extract_column, get_values_from_sorted_numbers, get_values_from_sorted_numbers_and_save
-from COMMON.File_Manager import CollectionManager, DataAnalyzeManager, Vec_DB_Manager
-from COMMON.General_Utils import clean_folder_path, generate_unique_id
-from COLLECTION.Search_Phrase_Generator_Logger import log_Keyword_Json
-from COLLECTION.Search_Phrase_Generator_Utils import Keywords_Processing_with_scope, run_scholarly
-from COLLECTION.Collection_system_prompts import KEYWORD_GENERATOR_PROMPT, SCOPE_DERIVATOR_PROMPT
+from alr.common.excel_utils import extract_column, get_values_from_sorted_numbers, get_values_from_sorted_numbers_and_save
+from alr.common.file_manager import CollectionManager, DataAnalyzeManager, Vec_DB_Manager
+from alr.common.general_utils import clean_folder_path, generate_unique_id
+from alr.collection.search_phrase_generator_logger import log_Keyword_Json
+from alr.collection.search_phrase_generator_utils import Keywords_Processing_with_scope, run_scholarly
+from alr.collection.collection_system_prompts import KEYWORD_GENERATOR_PROMPT, SCOPE_DERIVATOR_PROMPT
 
-from COMMON.General_Utils import Proccess_string_to_list
-from DATA_ANALYSIS.Pdf_File_processor import process_pdf_mode_file
-from DATA_ANALYSIS.Folder_Data_Analyzer import process_folder
-from RAG_BUILDERs.DB_Manager import generate_databases
-from RAG_BUILDERs.querry_excecuter import generate_query_report
-from Command_Line_UI.Data_analysis_UI import analyse_pdf_input_path
+from alr.common.general_utils import Proccess_string_to_list
+from alr.data_analysis.Pdf_File_processor import process_pdf_mode_file
+from alr.data_analysis.Folder_Data_Analyzer import process_folder
+from alr.rag_builders.db_manager import generate_databases
+from alr.rag_builders.query_executor import generate_query_report
+from alr.ui.cli.Data_analysis_UI import analyse_pdf_input_path
 
 
 class CustomTerminalText(tk.Text):
@@ -178,8 +171,8 @@ class AutomatedLiteratureUI(tk.Tk):
 
     def _generate_scope_action(self):
         # Move the heavy imports here!
-        from COLLECTION.Collection_system_prompts import SCOPE_DERIVATOR_PROMPT
-        from COMMON.LLM_Utils import llm_call
+        from alr.collection.collection_system_prompts import SCOPE_DERIVATOR_PROMPT
+        from alr.common.llm_utils import llm_call
         
         ra = self.ra_entry.get().strip()
         rq = self.rq_entry.get().strip()
@@ -213,7 +206,7 @@ class AutomatedLiteratureUI(tk.Tk):
         print(f"Scope Derived: {derived_scope}")
 
     def _process_keywords_action(self):
-        from COMMON.LLM_Utils import llm_call
+        from alr.common.llm_utils import llm_call
         if not self.CM:
             messagebox.showerror("Error", "Please initialize the scope config system parameters using 'Generate Scope' first.")
             return

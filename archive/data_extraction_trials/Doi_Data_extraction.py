@@ -1,13 +1,4 @@
 import sys
-
-sys.path.extend([
-    r'src',
-    r'src/COLLECTION',
-    r'Working_Code',
-    r'src/DATA_ANALYSIS',
-    r'src/COMMON',
-    r'src/Command_Line_UI'
-])
 import fitz  # PyMuPDF
 import re
 import pandas as pd
@@ -19,9 +10,7 @@ import time
 import unicodedata
 from collections import Counter
 import xml.etree.ElementTree as ET
-from COMMON.LLM_Utils import  llm_call
-from COMMON.Excel_Utils import extract_column
-from DATA_ANALYSIS.title_extracter import get_title_in_the_file
+from alr.data_analysis.title_extracter import get_title_in_the_file
 
 class MetadataLogic:
     def __init__(self):

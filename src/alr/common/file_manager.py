@@ -1,15 +1,6 @@
 import sys
 
-from COMMON.General_Utils import print_with_separator
-sys.path.extend([
-    r'src',
-    r'src/COLLECTION',
-    r'Working_Code',
-    r'src/DATA_ANALYSIS',
-    r'src/COMMON',
-    r'src/Command_Line_UI'
-])
-
+from alr.common.general_utils import print_with_separator
 import os
 import pandas as pd
 from pathlib import Path
@@ -265,7 +256,7 @@ class Vec_DB_Manager:
         # Core JSON Files
         self.Research_problem_DB_json = self.Abstract_DB / "Research_problem_DB.json"
         self.Objective_DB_json = self.Abstract_DB / "Objective_DB.json"
-        self.Methodology_json = self.Abstract_DB / "Methodology_DB.json"
+        self.Methodology_DB_json = self.Abstract_DB / "Methodology_DB.json"
         self.Conclusion_DB_json = self.Abstract_DB / "Conclusion_DB.json"
         self.Results_DB_json = self.Abstract_DB / "Results_DB.json"   
         self.Key_concepts_DB_json = self.Abstract_DB / "Key_concepts_DB.json"   
@@ -274,7 +265,7 @@ class Vec_DB_Manager:
         # Core DB files
         self.Research_problem_DB_bin = self.Abstract_DB / "Research_problem_DB.bin"
         self.Objective_DB_bin = self.Abstract_DB / "Objective_DB.bin"
-        self.Methodology_bin = self.Abstract_DB / "Methodology_DB.bin"
+        self.Methodology_DB_bin = self.Abstract_DB / "Methodology_DB.bin"
         self.Conclusion_DB_bin = self.Abstract_DB / "Conclusion_DB.bin"
         self.Results_DB_bin = self.Abstract_DB / "Results_DB.bin"   
         self.Key_concepts_DB_bin = self.Abstract_DB / "Key_concepts_DB.bin"   

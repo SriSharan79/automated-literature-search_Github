@@ -6,8 +6,8 @@ from langchain_core.prompts import PromptTemplate
 
 # Specify the model repository ID
 model_repo_id = "mistralai/Ministral-3-14B-Instruct-2512"
-
-HuggingFace_Token="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",
+import os
+HuggingFace_Token = os.environ["HuggingFace_Token"]
 
 # Define a local directory to store the model
 local_model_path = f"/localdata/user/kata_du/LLM Models/00_LLM_model/{model_repo_id}"

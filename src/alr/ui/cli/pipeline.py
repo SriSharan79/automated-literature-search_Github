@@ -1,16 +1,16 @@
 
 import os
-from Command_Line_UI.Collection_ui import Process_search_phrases, _define_id, get_RA_RQ, get_keyword_list, get_llm_defined_scope
-from COMMON.Excel_Utils import extract_column
-from COMMON.File_Manager import CollectionManager,DataAnalyzeManager,Vec_DB_Manager
-from COMMON.General_Utils import clean_folder_path, generate_unique_id, print_with_separator
-from COLLECTION.Search_Phrase_Generator_Logger import log_Keyword_Json
-from COLLECTION.Search_Phrase_Generator_Utils import Keywords_Processing_with_scope
-from Command_Line_UI.Data_analysis_UI import get_file_or_folder
-from DATA_ANALYSIS.Pdf_File_processor import process_pdf_file, process_pdf_mode_file
-from DATA_ANALYSIS.Folder_Data_Analyzer import process_folder
-from RAG_BUILDERs.DB_Manager import generate_databases
-from RAG_BUILDERs.querry_excecuter import generate_query_report
+from alr.ui.cli.collection_ui import Process_search_phrases, _define_id, get_RA_RQ, get_keyword_list, get_llm_defined_scope
+from alr.common.excel_utils import extract_column
+from alr.common.file_manager import CollectionManager,DataAnalyzeManager,Vec_DB_Manager
+from alr.common.general_utils import clean_folder_path, generate_unique_id, print_with_separator
+from alr.collection.search_phrase_generator_logger import log_Keyword_Json
+from alr.collection.search_phrase_generator_utils import Keywords_Processing_with_scope
+from alr.ui.cli.Data_analysis_UI import get_file_or_folder
+from alr.data_analysis.Pdf_File_processor import process_pdf_file, process_pdf_mode_file
+from alr.data_analysis.Folder_Data_Analyzer import process_folder
+from alr.rag_builders.db_manager import generate_databases
+from alr.rag_builders.query_executor import generate_query_report
 
 username = os.environ.get("USERNAME")
 

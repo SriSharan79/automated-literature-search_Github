@@ -1,20 +1,11 @@
 from pathlib import Path
-import sys
-sys.path.extend([
-    r'src',
-    r'src/COLLECTION',
-    r'Working_Code',
-    r'src/DATA_ANALYSIS',
-    r'src/COMMON',
-    r'src/Command_Line_UI'
-])
 
-from COMMON.LLM_Utils import llm_call
+from alr.common.llm_utils import llm_call
 # from COMMON.System_prompts import KEYWORD_GENERATOR_PROMPT, SCOPE_DERIVATOR_PROMPT
-from COMMON.General_Utils import Proccess_string_to_list, generate_unique_id, print_two_column_table, print_with_separator
-from COMMON.Excel_Utils import extract_column, get_values_from_sorted_numbers, get_values_from_sorted_numbers_and_save
-from COLLECTION.Search_Phrase_Generator_Utils import run_scholarly
-from COLLECTION.Collection_system_prompts import KEYWORD_GENERATOR_PROMPT, SCOPE_DERIVATOR_PROMPT
+from alr.common.general_utils import Proccess_string_to_list, generate_unique_id, print_two_column_table, print_with_separator
+from alr.common.excel_utils import extract_column, get_values_from_sorted_numbers, get_values_from_sorted_numbers_and_save
+from alr.collection.search_phrase_generator_utils import run_scholarly
+from alr.collection.collection_system_prompts import KEYWORD_GENERATOR_PROMPT, SCOPE_DERIVATOR_PROMPT
 
 import os
 

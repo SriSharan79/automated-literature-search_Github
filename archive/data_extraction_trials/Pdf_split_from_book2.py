@@ -1,12 +1,3 @@
-import sys
-sys.path.extend([
-    r'src',
-    r'src/COLLECTION',
-    r'Working_Code',
-    r'src/DATA_ANALYSIS',
-    r'src/COMMON',
-    r'src/Command_Line_UI'
-])
 
 from COMMON.File_Manager import DataAnalyzeManager, Vec_DB_Manager
 from LLM_Config import BLABLADOR_BASE_URL, check_api_key

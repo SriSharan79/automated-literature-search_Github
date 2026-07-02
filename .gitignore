@@ -3,7 +3,7 @@ __pycache__/
 
 # Virtual Environment
 venv/
-
+.venv/
 # Project-specific outputs
 output/
 batch_output/

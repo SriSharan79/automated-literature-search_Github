@@ -1,44 +1,15 @@
-import os
-import sys
-
-from RAG_BUILDERs.Master_excel_DB_Builder import _build_sections_Master_map, _sync_sections_master_for_uuid
 
 
-sys.path.extend([
-    r'src',
-    r'src/COLLECTION',
-    r'Working_Code',
-    r'src/DATA_ANALYSIS',
-    r'src/COMMON',
-    r'src/Command_Line_UI',
-    r'Working_Code'
-])
-
-import faiss
-
+from alr.rag_builders.master_excel_db_builder import _build_sections_Master_map, _sync_sections_master_for_uuid
+from alr.common.sections import*
 import json
 from datetime import datetime
-from COMMON.Excel_Utils import*
-from COMMON.File_Manager import DataAnalyzeManager, Vec_DB_Manager
-from COMMON.JSON_file_Utils import get_key_from_file, get_value_by_pair
-from RAG_BUILDERs.Text_DB_updater import _build_sections_map, _fetch_metadata, _load_abstract_json, _load_recorded_abstracts, _sync_sections_for_uuid
-from RAG_BUILDERs.Vector_DB_Updater import add_new_strings_to_index, create_faiss_index_cosine, load_index_file, save_index_file, search_similar, vectorize_strings
+from alr.common.file_manager import DataAnalyzeManager, Vec_DB_Manager
+from alr.common.json_utils import get_key_from_file, get_value_by_pair
+from alr.rag_builders.text_db_updater import _build_sections_map, _fetch_metadata, _load_abstract_json, _load_recorded_abstracts, _sync_sections_for_uuid
+from alr.rag_builders.vector_db_updater import add_new_strings_to_index, create_faiss_index_cosine, load_index_file, save_index_file, search_similar, vectorize_strings
 from colorama import Fore, Style
-
-
-        
-def _build_sections_map_VDB(VDB):
-    """Keeps the exact same section mapping."""
-    return {
-        "Research Problem": (VDB.Research_problem_DB_bin, VDB.Research_problem_DB_json),
-        "Objective": (VDB.Objective_DB_bin, VDB.Objective_DB_json),
-        "Methodology": (VDB.Methodology_bin, VDB.Methodology_json),
-        "Conclusion": (VDB.Conclusion_DB_bin, VDB.Conclusion_DB_json),
-        "Results": (VDB.Results_DB_bin, VDB.Results_DB_json),
-        "Research Areas": (VDB.Research_Areas_DB_bin, VDB.Research_Areas_DB_json),
-        "Key Concepts": (VDB.Key_concepts_DB_bin, VDB.Key_concepts_DB_json),
-    }
-
+from alr.common.sections import build_sections_map_vdb
 
 def update_VDB_status(VDB, key, str_count, vec_count):
     json_path = VDB.DB_update_logger
@@ -156,8 +127,8 @@ def generate_databases(Storage_path):
     if not recorded_abstracts:
         return
 
-    sections = _build_sections_map(VDB)    
-    Master_map = _build_sections_Master_map(VDB, MASTER_EXCEL_FILE)
+    sections = build_sections_map(VDB)
+    Master_map = build_sections_master_map(VDB, MASTER_EXCEL_FILE)
 
     for UUID in recorded_abstracts:
         MF.update_id_files(UUID)
@@ -176,7 +147,7 @@ def generate_databases(Storage_path):
         )
         _sync_sections_master_for_uuid(UUID, title, file_name, json_data, Master_map) 
     
-    secs_VDB= _build_sections_map_VDB(VDB)   
+    secs_VDB= build_sections_map_vdb(VDB)   
     _sync_sections_VDB(VDB, secs_VDB)
 
 
@@ -189,8 +160,8 @@ def generate_combined_databases(Source_path,Storage_path):
     if not recorded_abstracts:
         return
 
-    sections = _build_sections_map(VDB)
-    Master_map = _build_sections_Master_map(VDB, MASTER_EXCEL_FILE)
+    sections = build_sections_map(VDB)
+    Master_map = build_sections_master_map(VDB, MASTER_EXCEL_FILE)
 
     for UUID in recorded_abstracts:
         MF.update_id_files(UUID)
@@ -209,7 +180,7 @@ def generate_combined_databases(Source_path,Storage_path):
         ) 
         _sync_sections_master_for_uuid(UUID, title, file_name, json_data, Master_map) 
     
-    secs_VDB= _build_sections_map_VDB(VDB)   
+    secs_VDB= build_sections_map_vdb(VDB)   
     _sync_sections_VDB(VDB, secs_VDB)
 
      

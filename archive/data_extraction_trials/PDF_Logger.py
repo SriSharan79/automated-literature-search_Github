@@ -1,21 +1,10 @@
 from pathlib import Path
-import sys
 import os
 
-import PyPDF2
-sys.path.extend([
-    r'src',
-    r'src/COLLECTION',
-    r'Working_Code',
-    r'src/DATA_ANALYSIS',
-    r'src/COMMON',
-    r'src/Command_Line_UI'
-])
-import os
 import pandas as pd
 from PyPDF2 import PdfReader
 from colorama import init, Fore, Style
-from DATA_ANALYSIS.title_extracter import *
+from alr.data_analysis.title_extracter import *
 import traceback
 
 # Initialize colorama

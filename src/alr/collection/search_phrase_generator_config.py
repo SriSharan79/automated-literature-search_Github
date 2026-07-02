@@ -1,14 +1,5 @@
 import os
 
-import sys
-sys.path.extend([
-    r'src',
-    r'src/COLLECTION',
-    r'Working_Code',
-    r'src/DATA_ANALYSIS',
-    r'src/COMMON',
-    r'src/Command_Line_UI'
-])
 
 #  Configuration File 
 

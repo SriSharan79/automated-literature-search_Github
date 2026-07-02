@@ -1,16 +1,6 @@
-import sys
-sys.path.extend([
-    r'src',
-    r'src/COLLECTION',
-    r'Working_Code',
-    r'src/DATA_ANALYSIS',
-    r'src/COMMON',
-    r'src/Command_Line_UI'
-])
 
-from COMMON.File_Manager import DataAnalyzeManager, Vec_DB_Manager
-from COMMON.LLM_Utils import *
-from COMMON.Excel_Utils import*
+from alr.common.file_manager import DataAnalyzeManager, Vec_DB_Manager
+from alr.common.llm_utils import *
 
 from transformers import AutoTokenizer, AutoModelForCausalLM, pipeline
 import torch
@@ -22,8 +12,6 @@ from collections import deque
 import textwrap
 import requests
 import json
-import os
-import tiktoken
 import re # Import regex
 from typing import List,Dict,Any
 # LangChain Imports

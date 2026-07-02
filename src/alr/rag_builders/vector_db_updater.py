@@ -1,12 +1,3 @@
-import sys
-sys.path.extend([
-    r'src',
-    r'src/COLLECTION',
-    r'Working_Code',
-    r'src/DATA_ANALYSIS',
-    r'src/COMMON',
-    r'src/Command_Line_UI'
-])
 
 import os
 from pathlib import Path
@@ -18,10 +9,10 @@ from transformers import AutoTokenizer, AutoModel
 import faiss
 from pathlib import Path
 from colorama import Fore, Style, init
-from COLLECTION.Search_Phrase_Generator_Utils import rank_search_phrases
-from COMMON.File_Manager import Vec_DB_Manager
-from COMMON.JSON_file_Utils import get_key_from_file
-from COMMON.Excel_Utils import get_values_from_sorted_numbers_and_save, sum_columns_ending_with_to_target
+from alr.collection.search_phrase_generator_utils import rank_search_phrases
+from alr.common.file_manager import Vec_DB_Manager
+from alr.common.json_utils import get_key_from_file
+from alr.common.excel_utils import get_values_from_sorted_numbers_and_save, sum_columns_ending_with_to_target
 
 
 model_repo_id = "Qwen/Qwen3-Embedding-8B"

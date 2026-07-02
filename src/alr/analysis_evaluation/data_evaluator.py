@@ -3,24 +3,11 @@ import sys
 from pathlib import Path
 import pandas as pd
 
-sys.path.extend([
-    r'src',
-    r'src/COLLECTION',
-    r'Working_Code',
-    r'src/DATA_ANALYSIS',
-    r'src/COMMON',
-    r'src/Command_Line_UI',
-    r'Working_Code'
-])
-
-import faiss
-import json
-from datetime import datetime
-from COMMON.Excel_Utils import*
-from COMMON.File_Manager import DataAnalyzeManager, Vec_DB_Manager
-from RAG_BUILDERs.Master_excel_DB_Builder import _fetch_metadata, _load_abstract_json, _load_recorded_abstracts
-from COMMON.JSON_file_Utils import get_key_from_file, get_value_by_pair
-from RAG_BUILDERs.Vector_DB_Updater import add_new_strings_to_index, create_faiss_index_cosine, load_index_file, save_index_file, search_similar, vectorize_strings
+from alr.common.file_manager import DataAnalyzeManager, Vec_DB_Manager
+from alr.common.sections import build_sections_eval_map
+from alr.rag_builders.master_excel_db_builder import _fetch_metadata, _load_abstract_json, _load_recorded_abstracts
+from alr.common.json_utils import get_key_from_file, get_value_by_pair
+from alr.rag_builders.vector_db_updater import add_new_strings_to_index, create_faiss_index_cosine, load_index_file, save_index_file, search_similar, vectorize_strings
 from colorama import Fore, Style
 
 
@@ -144,19 +131,6 @@ def _update_master_overview(storage_dir, sheet_name, uuid, title, filename, text
 # CORE PROCESSING LAYER
 # =====================================================================
 
-def _build_sections_Eval_map(VDB):
-    """Returns section maps associated to target outputs."""
-    SECTION_MAP = {
-        "Research Problem": (VDB.Research_problem_Eval_excel, "Research Problem"),
-        "Objective": (VDB.Objective_Eval_excel, "Objective"),
-        "Methodology": (VDB.Methodology_Eval_excel, "Methodology"),
-        "Conclusion": (VDB.Conclusion_Eval_excel, "Conclusion"),
-        "Results": (VDB.Results_Eval_excel, "Results"),
-        "Research Areas": (VDB.Research_Areas_Eval_excel, "Research Areas"),
-        "Key Concepts": (VDB.Key_concepts_Eval_excel, "Key Concepts"),
-    }
-    return SECTION_MAP
-
 
 def _sync_sections_for_uuid(UUID, title, file_name, json_data, sections, storage_path):
     """Iterates through layout mappings to transform and evaluate section lists or strings."""
@@ -263,7 +237,7 @@ def generate_databases(Storage_path):
     if not recorded_abstracts:
         return
 
-    sections = _build_sections_Eval_map(VDB)
+    sections = build_sections_eval_map(VDB)
 
     for UUID in recorded_abstracts:
         MF.update_id_files(UUID)
@@ -291,7 +265,7 @@ def generate_combined_databases(Source_path, Storage_path):
     if not recorded_abstracts:
         return
 
-    sections = _build_sections_Eval_map(VDB)
+    sections = build_sections_eval_map(VDB)
 
     for UUID in recorded_abstracts:
         MF.update_id_files(UUID)

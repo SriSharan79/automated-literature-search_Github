@@ -1,49 +1,23 @@
 import os
 import sys
 
-
-sys.path.extend([
-    r'src',
-    r'src/COLLECTION',
-    r'Working_Code',
-    r'src/DATA_ANALYSIS',
-    r'src/COMMON',
-    r'src/Command_Line_UI',
-    r'Working_Code'
-])
 import faiss
 from colorama import Fore, Back, Style, init
-
+# ADD to the imports:
+from alr.common.sections import build_sections_map_full, build_sections_map_ra_kc
 import pandas as pd
 from pathlib import Path
-from COMMON.Excel_Utils import extract_column, get_column_value
+from alr.common.excel_utils import extract_column, get_column_value
 import json
 from datetime import datetime
-from COMMON.File_Manager import DataAnalyzeManager, Vec_DB_Manager
-from COMMON.File_handlers import move_matching_pdfs,copy_file,copy_matching_pdfs,copy_matching_jsons,sanitize_path_length
-from COMMON.Excel_Utils import aggregate_query_excel_data
-from RAG_BUILDERs.Vector_DB_Updater import search_similar
+from alr.common.file_manager import DataAnalyzeManager, Vec_DB_Manager
+from alr.common.file_handlers import move_matching_pdfs,copy_file,copy_matching_pdfs,copy_matching_jsons,sanitize_path_length
+from alr.common.excel_utils import aggregate_query_excel_data
+from alr.rag_builders.vector_db_updater import search_similar
 # Initialize colorama (autoreset ensures colors don't bleed into the next line)
 init(autoreset=True)
 
-def _build_sections_map_full(VDB):
-    return {
-        "Research Problem": (VDB.Research_problem_DB_excel, VDB.Research_problem_DB_json, VDB.Research_problem_DB_bin),
-        "Objective": (VDB.Objective_DB_excel, VDB.Objective_DB_json, VDB.Objective_DB_bin),
-        "Methodology": (VDB.Methodology_excel, VDB.Methodology_json, VDB.Methodology_bin),
-        "Conclusion": (VDB.Conclusion_DB_excel, VDB.Conclusion_DB_json, VDB.Conclusion_DB_bin),
-        "Results": (VDB.Results_DB_excel, VDB.Results_DB_json, VDB.Results_DB_bin ),
-        "Research Areas": (VDB.Research_Areas_DB_excel, VDB.Research_Areas_DB_json, VDB.Research_Areas_DB_bin),
-        "Key Concepts": (VDB.Key_concepts_DB_excel, VDB.Key_concepts_DB_json, VDB.Key_concepts_DB_bin),
-    }
 
-
-def _build_sections_map_RA_KC(VDB):
-    """Keeps the exact same section mapping."""
-    return {
-        "Research Areas": (VDB.Research_Areas_DB_excel, VDB.Research_Areas_DB_json, VDB.Research_Areas_DB_bin),
-        "Key Concepts": (VDB.Key_concepts_DB_excel, VDB.Key_concepts_DB_json, VDB.Key_concepts_DB_bin),
-    }
 
 def batch_enrich_reports(base_storage_path):
     """
@@ -93,7 +67,7 @@ def batch_enrich_reports(base_storage_path):
 def generate_query_report_RA_KC(query_list, Storage_path):
 
     VDB = Vec_DB_Manager(Storage_path)
-    sec_map = _build_sections_map_RA_KC(VDB)
+    sec_map = build_sections_map_ra_kc(VDB)
     results_storage = VDB.results
 
     for query in query_list:
@@ -174,7 +148,7 @@ def generate_query_report(query_list, storage_path, search_root='/remotedata/U/D
     mf = DataAnalyzeManager(storage_path)
     
     print(f"{Fore.YELLOW}Building sections map...")
-    sec_map = _build_sections_map_full(vdb)
+    sec_map = build_sections_map_full(vdb)
     print(f"{Fore.GREEN}Sections map built with {len(sec_map)} attributes.")
 
     for idx, query in enumerate(query_list, 1):        

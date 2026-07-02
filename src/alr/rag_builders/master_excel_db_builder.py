@@ -1,20 +1,13 @@
-import sys
-sys.path.extend([
-    r'src',
-    r'src/COLLECTION',
-    r'Working_Code',
-    r'src/DATA_ANALYSIS',
-    r'src/COMMON',
-    r'src/Command_Line_UI'
-])
 
 from pathlib import Path
 from colorama import Fore
 import pandas as pd
-from COMMON.File_Manager import DataAnalyzeManager, Vec_DB_Manager
-from COMMON.Excel_Utils import extract_column, get_corresponding_value
+from alr.common.file_manager import DataAnalyzeManager, Vec_DB_Manager
+from alr.common.excel_utils import extract_column, get_corresponding_value
 import json
 import os
+# ADD:
+from alr.common.sections import build_sections_master_map
 
 def save_to_db(master_excel_path, sheet_name, json_path, data_entry):
     """
@@ -169,23 +162,6 @@ def _load_abstract_json(MF, UUID):
         print(Fore.RED + f"Error loading {UUID}: {e}")
         return None
 
-
-def _build_sections_Master_map(VDB, master_excel_path):
-    """
-    Maps section names directly to the Master Excel path, 
-    the target Sheet Name, and its standalone JSON path.
-    """
-    return {
-        "Research Problem": (master_excel_path, "Research_Problem", VDB.Research_problem_DB_json),
-        "Objective": (master_excel_path, "Objective", VDB.Objective_DB_json),
-        "Methodology": (master_excel_path, "Methodology", VDB.Methodology_json),
-        "Conclusion": (master_excel_path, "Conclusion", VDB.Conclusion_DB_json),
-        "Results": (master_excel_path, "Results", VDB.Results_DB_json),
-        "Research Areas": (master_excel_path, "Research_Areas", VDB.Research_Areas_DB_json),
-        "Key Concepts": (master_excel_path, "Key_Concepts", VDB.Key_concepts_DB_json),
-    }
-
-
 def _sync_sections_master_for_uuid(UUID, title, file_name, json_data, sections):
     """Iterate sections and save either list items or a single string entry."""
     for key, (ex_path, sheet_name, j_path) in sections.items():
@@ -286,7 +262,7 @@ if __name__ == "__main__":
     MASTER_EXCEL_FILE=VDB.Abstract_Overview
     
     # 1. Map sections tracking the single Excel file + specific sheets
-    sections_map = _build_sections_Master_map(VDB, MASTER_EXCEL_FILE)
+    sections_map = build_sections_master_map(VDB, MASTER_EXCEL_FILE)
     
     # 2. Extract logged UUIDs to process
     recorded_uuids = extract_column(EXCEL_REGISTRY_PATH,"UUID")

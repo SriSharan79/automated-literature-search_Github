@@ -1,14 +1,6 @@
 import sys
 
-from COMMON.General_Utils import is_similar
-sys.path.extend([
-    r'src',
-    r'src/COLLECTION',
-    r'Working_Code',
-    r'src/DATA_ANALYSIS',
-    r'src/COMMON',
-    r'src/Command_Line_UI'
-])
+from alr.common.general_utils import is_similar
 from datetime import datetime
 import json
 import os

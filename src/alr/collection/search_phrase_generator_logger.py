@@ -1,17 +1,8 @@
 import sys
 import traceback
 
-from COMMON.General_Utils import is_similar
-from COLLECTION.Search_Phrase_Generator_Config import COLUMNS, COLUMNS_Keyphrase
-sys.path.extend([
-    r'src',
-    r'src/COLLECTION',
-    r'Working_Code',
-    r'src/DATA_ANALYSIS',
-    r'src/COMMON',
-    r'src/Command_Line_UI'
-])
-
+from alr.common.general_utils import is_similar
+from alr.collection.search_phrase_generator_config import COLUMNS, COLUMNS_Keyphrase
 import difflib
 import json
 import os
