@@ -1,7 +1,7 @@
 import os
 import sys
 
-import faiss
+# faiss is heavyweight; imported lazily inside the functions that use it.
 from colorama import Fore, Back, Style, init
 # ADD to the imports:
 from alr.common.sections import build_sections_map_full, build_sections_map_ra_kc
@@ -65,6 +65,7 @@ def batch_enrich_reports(base_storage_path):
     print(f"\n{Fore.CYAN}{Style.BRIGHT}--- Batch Processing Complete ---")
 
 def generate_query_report_RA_KC(query_list, Storage_path):
+    import faiss
 
     VDB = Vec_DB_Manager(Storage_path)
     sec_map = build_sections_map_ra_kc(VDB)
@@ -178,6 +179,8 @@ def generate_query_report(query_list, storage_path, search_root='/remotedata/U/D
 
 
 def process_attribute_query(query, attr, excel_ref, bin_path, vdb):
+    import faiss
+
     if not bin_path.exists() or bin_path.stat().st_size == 0:
         print(f"{Fore.RED}   [!] Warning: No Vector DB for '{attr}'. Skipping.")
         return

@@ -11,7 +11,8 @@ from datetime import datetime
 import time
 from itertools import chain, combinations,product
 from alr.common.llm_utils import blabla_ask_llm
-from langchain_core.prompts import PromptTemplate
+# langchain_core.prompts.PromptTemplate transitively pulls in transformers/torch,
+# so it is imported lazily inside Phrase_Processing() where it is actually used.
 from alr.collection.collection_system_prompts import SYSTEM_PROMPT_ClASSIFIER,PROMPT_TEMPLATE_ClASSIFIER
 # Initialize colorama
 init(autoreset=True)
@@ -93,7 +94,8 @@ def Classification_of_Phrase(qa_prompt_template, Phrase):
         return ""
 
 def Phrase_Processing(Phrase):
-    
+    from langchain_core.prompts import PromptTemplate
+
     prompt = PromptTemplate(
     template=PROMPT_TEMPLATE_ClASSIFIER,
     input_variables=["data"]

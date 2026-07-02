@@ -22,6 +22,7 @@ batch_output/
 *.zip
 *.PDF
 *.txt
+!requirements.txt
 *.xlsm
 
 

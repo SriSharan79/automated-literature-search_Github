@@ -205,10 +205,11 @@ def classify_excel_data_to_sheets(
 
 
 # --- Execution ---
-excel_file = "/remotedata/U/DLR+kata_du/ALR DATA/Only_MBSA/Title_Assessment.xlsx" 
-target_column = 'Publication Name' 
+if __name__ == "__main__":
+    excel_file = "/remotedata/U/DLR+kata_du/ALR DATA/Only_MBSA/Title_Assessment.xlsx"
+    target_column = 'Publication Name'
 
-modified_sheets = classify_excel_data_to_sheets(
-    file_path=excel_file,
-    column_name=target_column
-)
+    modified_sheets = classify_excel_data_to_sheets(
+        file_path=excel_file,
+        column_name=target_column
+    )

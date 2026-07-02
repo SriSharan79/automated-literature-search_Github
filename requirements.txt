@@ -1,0 +1,41 @@
+# Direct dependencies for the Automated Literature Search (alr) package.
+# Pinned to versions verified working on Python 3.11+ (tested on 3.12).
+# Install with:  pip install -r requirements.txt
+#
+# The heavy ML/document stack (torch, transformers, docling, faiss) is only
+# needed at runtime for the embedding / Docling extraction steps; the code
+# imports them lazily, so the app and its UIs start without loading them.
+
+# --- Core / utilities ---
+colorama==0.4.6
+numpy==2.5.0
+pandas==3.0.3
+openpyxl==3.1.5
+requests==2.34.2
+tqdm==4.68.3
+tiktoken==0.13.0
+
+# --- PDF / document handling ---
+PyPDF2==3.0.1
+pdfplumber==0.11.10
+PyMuPDF==1.28.0
+
+# --- LLM / prompting ---
+langchain-core==1.4.8
+
+# --- Literature search ---
+scholarly==1.7.11
+
+# --- Text analysis / metrics ---
+nltk==3.9.4
+scikit-learn==1.9.0
+python-Levenshtein==0.27.3
+jiwer==4.0.0
+rouge-score==0.1.2
+
+# --- Heavy ML / document extraction (loaded lazily at runtime) ---
+torch==2.12.1
+transformers==5.8.1
+docling==2.108.0
+docling-core==2.85.0
+faiss-cpu==1.14.3
