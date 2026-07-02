@@ -39,3 +39,7 @@ transformers==5.8.1
 docling==2.108.0
 docling-core==2.85.0
 faiss-cpu==1.14.3
+
+# --- OCR engine for Docling (RapidOCR on ONNX Runtime; models fetched on first use) ---
+rapidocr==3.9.1
+onnxruntime==1.27.0

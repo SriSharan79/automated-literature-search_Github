@@ -66,15 +66,27 @@ for mod in [
 ]:
     _safe_collect_all(mod)
 
-# ---- Optional OCR engine used by Docling when do_ocr=True ----
-for mod in ["rapidocr", "rapidocr_onnxruntime", "onnxruntime"]:
+# ---- OCR engine used by Docling when do_ocr=True (RapidOCR on ONNX Runtime) ----
+for mod in ["rapidocr", "onnxruntime"]:
     _safe_collect_all(mod)
+
+# RapidOCR ships config YAMLs and bundled ONNX models as package data that
+# collect_all misses; add them explicitly so OCR works inside the frozen app.
+try:
+    from PyInstaller.utils.hooks import collect_data_files
+    datas += collect_data_files(
+        "rapidocr",
+        includes=["**/*.yaml", "**/*.onnx", "**/*.txt", "**/*.ttf", "**/*.gitkeep"],
+    )
+except Exception as e:
+    print(f"[spec] rapidocr data collection skipped: {e}")
 
 # ---- Runtime metadata some libs read via importlib.metadata ----
 for pkg in [
     "torch", "transformers", "tokenizers", "safetensors", "huggingface-hub",
     "tqdm", "regex", "requests", "filelock", "pyyaml", "packaging",
     "docling", "docling-core", "tiktoken", "numpy",
+    "rapidocr", "onnxruntime",
 ]:
     _safe_copy_metadata(pkg)
 

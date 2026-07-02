@@ -86,6 +86,17 @@ class DoclingExtractor:
         pipeline_options.generate_page_images = False
         pipeline_options.generate_picture_images = True
 
+        # Use RapidOCR (ONNX Runtime backend) as the OCR engine. Unlike the
+        # EasyOCR default it is lightweight and bundles cleanly into a standalone
+        # build; its models are fetched on first use. Fall back to the default
+        # engine if RapidOCR is unavailable.
+        if _ocr:
+            try:
+                from docling.datamodel.pipeline_options import RapidOcrOptions
+                pipeline_options.ocr_options = RapidOcrOptions(lang=["english"])
+            except Exception as e:
+                logger.warning(f"RapidOCR unavailable, using default OCR engine: {e}")
+
         self.doc_converter = DocumentConverter(
             format_options={
                 InputFormat.PDF: PdfFormatOption(pipeline_options=pipeline_options)

@@ -47,9 +47,11 @@ Result: `dist\AutomatedLiteratureReview\AutomatedLiteratureReview.exe`
   `alr/common/LLM_Config.py` / `alr/rag_builders/vector_db_updater.py`. Ship/point those
   paths appropriately, or the analysis/RAG steps that need them will fail at run time
   (the app still starts and the LLM-API features work without them).
-- **OCR:** Docling OCR (`do_ocr=True`) needs an OCR engine (e.g. `rapidocr-onnxruntime`).
-  If you rely on OCR, `pip install rapidocr-onnxruntime onnxruntime` before building; the
-  spec already tries to collect them if present.
+- **OCR is included.** Docling OCR (`do_ocr=True`) is wired to **RapidOCR** on the
+  ONNX Runtime backend (`rapidocr` + `onnxruntime`, both pinned in `requirements.txt`).
+  The spec bundles the engine, its native DLLs, config YAMLs and the small default ONNX
+  models. RapidOCR fetches its detection/recognition models from ModelScope **on first
+  use**, so the first OCR run needs internet; afterwards they are cached locally.
 - **First launch** creates `~/Automated Literature Review/` (config, storage, and the
   `alr_analyzed_data.db` review database).
 
