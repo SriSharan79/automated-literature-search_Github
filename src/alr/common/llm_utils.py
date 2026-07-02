@@ -1,11 +1,11 @@
 from alr.common.System_prompts import General_Sys_Prompt
 from alr.common.general_utils import caluculate_time_taken, print_with_separator
-from alr.common.LLM_Config import BLABLADOR_BASE_URL, PREFERRED_BLABLADOR_MODELS, check_api_key,local_model_dir,model_repo_id
+from alr.common.LLM_Config import BLABLADOR_BASE_URL, PREFERRED_BLABLADOR_MODELS, check_api_key,local_model_dir,model_repo_id, OLLAMA_BASE_URL, DEFAULT_BLABLADOR_MODEL, DEFAULT_OLLAMA_MODEL
 from alr.common.file_manager import ALR_main_folder
 
 from collections import deque
-from transformers import AutoTokenizer, AutoModelForCausalLM, pipeline
-import torch
+# NOTE: transformers/torch are heavyweight and only needed for the local
+# Hugging Face model path; they are imported lazily inside hf_pipeline_with_Lamma().
 from colorama import Fore, Style, init
 import pandas as pd
 from datetime import datetime
@@ -20,7 +20,6 @@ import re # Import regex
 from typing import List,Dict,Any
 # LangChain Imports
 from langchain_core.prompts import PromptTemplate
-from transformers import Mistral3ForConditionalGeneration, FineGrainedFP8Config, AutoTokenizer, pipeline
 from colorama import Fore, init
 init(autoreset=True)
 import time
@@ -28,6 +27,112 @@ from typing import List,Dict,Any
 
 
 REQUEST_TIMES = deque(maxlen=10)
+
+
+# ---------------------------------------------------------------------------
+# Runtime-configurable model selection
+# ---------------------------------------------------------------------------
+# The models used for each remote service. These start at the configured
+# defaults (preserving previous behaviour) but can be changed at runtime, e.g.
+# via select_model_interactive() from the CLI or a dropdown in the desktop UI.
+SELECTED_MODELS = {
+    "BlaBla": DEFAULT_BLABLADOR_MODEL,
+    "DLR Ollama": DEFAULT_OLLAMA_MODEL,
+}
+
+
+def get_selected_model(service: str) -> str:
+    """Return the currently selected model for a service ('BlaBla' or 'DLR Ollama')."""
+    return SELECTED_MODELS.get(service)
+
+
+def set_selected_model(service: str, model: str) -> None:
+    """Set the model to use for a service for the rest of the session."""
+    if service not in SELECTED_MODELS:
+        raise ValueError(f"Unknown service '{service}'. Expected one of {list(SELECTED_MODELS)}.")
+    SELECTED_MODELS[service] = model
+    print(Fore.GREEN + f"✅ {service} model set to: {model}" + Style.RESET_ALL)
+
+
+def list_blablador_models(blablador_key: str = None) -> list:
+    """Fetch the list of currently available Blablador model ids (live call)."""
+    BlaBla_API_Key = check_api_key('BlaBla Door')
+    key = blablador_key or BlaBla_API_Key
+    if not key:
+        print(Fore.YELLOW + "⚠️ No Blablador API key - cannot list models." + Style.RESET_ALL)
+        return []
+    try:
+        resp = requests.get(
+            f"{BLABLADOR_BASE_URL}/models",
+            headers={"Authorization": f"Bearer {key}"},
+            timeout=30,
+        )
+        resp.raise_for_status()
+        return [m['id'] for m in resp.json().get('data', [])]
+    except Exception as e:
+        print(Fore.RED + f"❌ Failed to list Blablador models: {e}" + Style.RESET_ALL)
+        return []
+
+
+def list_ollama_models(ollama_key: str = None) -> list:
+    """Fetch the list of currently available DLR Ollama model ids (live call)."""
+    Ollama_DLR_API_Key = check_api_key('DLR Ollama')
+    key = ollama_key or Ollama_DLR_API_Key
+    headers = {}
+    if key:
+        headers["Authorization"] = f"Bearer {key}"
+    try:
+        resp = requests.get(f"{OLLAMA_BASE_URL}/models", headers=headers, timeout=30)
+        resp.raise_for_status()
+        data = resp.json()
+        # OpenAI-compatible ({"data": [{"id": ...}]}) or native Ollama ({"models": [{"name": ...}]})
+        if isinstance(data, dict) and data.get('data'):
+            return [m.get('id') for m in data['data'] if m.get('id')]
+        if isinstance(data, dict) and data.get('models'):
+            return [m.get('name') or m.get('model') for m in data['models'] if (m.get('name') or m.get('model'))]
+        return []
+    except Exception as e:
+        print(Fore.RED + f"❌ Failed to list DLR Ollama models: {e}" + Style.RESET_ALL)
+        return []
+
+
+def list_available_models(service: str) -> list:
+    """Return live available model ids for 'BlaBla' or 'DLR Ollama'."""
+    if service == "BlaBla":
+        return list_blablador_models()
+    if service == "DLR Ollama":
+        return list_ollama_models()
+    raise ValueError(f"Unknown service '{service}'.")
+
+
+def select_model_interactive(service: str) -> str:
+    """
+    Fetch the live list of available models for a service, show it to the user,
+    and let them pick one. The chosen model is stored for the rest of the session
+    and returned. Pressing Enter keeps the current selection.
+    """
+    current = get_selected_model(service)
+    models = list_available_models(service)
+
+    if not models:
+        print(Fore.YELLOW + f"⚠️ No models returned for {service}; keeping current: {current}" + Style.RESET_ALL)
+        return current
+
+    print(Fore.CYAN + f"\nAvailable {service} models:" + Style.RESET_ALL)
+    for i, m in enumerate(models, 1):
+        marker = "  (current)" if m == current else ""
+        print(f"  {i}. {m}{marker}")
+
+    while True:
+        choice = input(f"Select a {service} model [1-{len(models)}], or Enter to keep '{current}': ").strip()
+        if choice == "":
+            print(Fore.GREEN + f"Keeping current {service} model: {current}" + Style.RESET_ALL)
+            return current
+        if choice.isdigit() and 1 <= int(choice) <= len(models):
+            chosen = models[int(choice) - 1]
+            set_selected_model(service, chosen)
+            return chosen
+        print(Fore.RED + "Invalid selection, please try again." + Style.RESET_ALL)
 
 
 def count_tokens(messages, response_text, model):
@@ -175,10 +280,13 @@ def Ollama_ask_llm(
     sys_prompt: str,
     temperature: float = 0.2,
     max_tokens: int = 2000,
-    model: str = "gpt-oss:20b",
+    model: str = None,
 ) -> str:
 
     # print_with_separator("DebugLog",'/')
+
+    # Resolve the model: explicit arg > session selection > configured default.
+    model = model or get_selected_model("DLR Ollama") or DEFAULT_OLLAMA_MODEL
 
     start_time = time.time()
 
@@ -197,7 +305,7 @@ def Ollama_ask_llm(
     if Ollama_DLR_API_Key:
         headers["Authorization"] = f"Bearer {Ollama_DLR_API_Key}"
 
-    url = 'http://ollama.nimbus.dlr.de/api/chat/completions'
+    url = f'{OLLAMA_BASE_URL}/chat/completions'
     resp = requests.post(url, headers=headers, json=payload)
 
     # Raise an informative error if something went wrong
@@ -327,9 +435,10 @@ def blabla_ask_llm(
     sys_prompt: str,
     temperature: float = 0.3,
     max_tokens: int = 8192,
-    blablador_key: str = None
+    blablador_key: str = None,
+    model: str = None,
 ) -> str:
-    """Query Blablador LLM with dynamic model selection."""
+    """Query Blablador LLM with the selected (or default) model."""
     
     time.sleep(3)
         
@@ -353,9 +462,9 @@ def blabla_ask_llm(
 
     start_time = time.time()
     # print_with_separator("DebugLog",'/')
-    
-    # Dynamically select best model
-    model = "01 - GPT-OSS-120b - an open model released by OpenAI in August 2025"
+
+    # Resolve the model: explicit arg > session selection > configured default.
+    model = model or get_selected_model("BlaBla") or DEFAULT_BLABLADOR_MODEL
     # print(f"🤖 Using model: {model}")
     
     messages = [
@@ -413,9 +522,11 @@ def blabla_ask_llm(
     return content.strip() if content else ""
 
 
-# hugging face pipline 
+# hugging face pipline
 def hf_pipeline_with_Lamma():
-    
+
+    from transformers import AutoTokenizer, AutoModelForCausalLM, pipeline
+
     if local_model_dir:
         print_with_separator("DebugLog",'/')
         try:
@@ -559,7 +670,7 @@ def timeout_function(func, args=(), timeout=120, fallback=None):
         return result
 
 # Main LLM call method
-def llm_call(prompt: str, system_prompt: str, service: str):
+def llm_call(prompt: str, system_prompt: str, service: str, model: str = None):
     # Use provided prompt if valid; otherwise fallback
     if system_prompt:
         sys_prompt = system_prompt
@@ -567,12 +678,21 @@ def llm_call(prompt: str, system_prompt: str, service: str):
         sys_prompt = General_Sys_Prompt
 
     # print_with_separator("DebugLog",'/')
-    
+
     # print(f"System Prompt: {sys_prompt}")
     # print(f"User Prompt: {prompt}")
 
     # Normalize service input
     s = service.lower()
+
+    # Optional per-call model override: record it as the session selection for
+    # the targeted service so the ask_* helpers (called via timeout_function)
+    # pick it up.
+    if model:
+        if s == 'b':
+            set_selected_model("BlaBla", model)
+        elif s == 'o':
+            set_selected_model("DLR Ollama", model)
 
     # Service calling logic with timeout and fallback
     if s == 'b':

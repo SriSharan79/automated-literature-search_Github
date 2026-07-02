@@ -14,11 +14,8 @@ import fitz
 import pandas as pd
 from tqdm import tqdm
 
-from docling_core.types.doc import PictureItem
-from docling.datamodel.pipeline_options import PdfPipelineOptions
-from docling.document_converter import DocumentConverter, PdfFormatOption
-from docling.datamodel.base_models import InputFormat
-
+# Docling is heavy to import; its symbols are imported lazily inside the
+# methods that use them (see DoclingExtractor.__init__ and _extract_images).
 
 logger = logging.getLogger(__name__)
 
@@ -78,6 +75,10 @@ class DoclingExtractor:
 
         _ocr = enable_ocr if enable_ocr is not None else True
         _scale = image_resolution_scale if image_resolution_scale is not None else 1.0
+
+        from docling.datamodel.pipeline_options import PdfPipelineOptions
+        from docling.document_converter import DocumentConverter, PdfFormatOption
+        from docling.datamodel.base_models import InputFormat
 
         pipeline_options = PdfPipelineOptions()
         pipeline_options.do_ocr = _ocr
@@ -183,6 +184,8 @@ class DoclingExtractor:
 
     def _extract_images(self, doc) -> List[Dict]:
         """Extract all images with deduplication. Includes 'hash' field per entry."""
+        from docling_core.types.doc import PictureItem
+
         images_data = []
         picture_counter = 0
         self.images_output_path.mkdir(parents=True, exist_ok=True)

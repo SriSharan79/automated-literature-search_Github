@@ -77,6 +77,15 @@ PREFERRED_BLABLADOR_MODELS = [
     "Mistral-Large-Instruct-2407", "Mistral-7B-Instruct-v0.3"
 ]
 
+# DLR Ollama OpenAI-compatible endpoint (base; specific paths are appended).
+OLLAMA_BASE_URL = "http://ollama.nimbus.dlr.de/api"
+
+# Default models used unless the user selects a different one at runtime.
+# Keep these as the previously hard-coded values so behaviour is unchanged
+# out of the box; interactive selection can override them per session.
+DEFAULT_BLABLADOR_MODEL = "01 - GPT-OSS-120b - an open model released by OpenAI in August 2025"
+DEFAULT_OLLAMA_MODEL = "gpt-oss:20b"
+
 if __name__ == "__main__":
     
     Ollama_DLR_API_Key=check_api_key('DLR Ollama')

@@ -8,7 +8,6 @@ from alr.common.llm_utils import llm_call
 
 from alr.data_analysis.Data_analysis_system_prompts import Sys_Prompt_Title_Analyzer
 from PyPDF2 import PdfReader
-from docling.document_converter import DocumentConverter
 import pdfplumber
 import fitz  # PyMuPDF
 import re

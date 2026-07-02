@@ -2,11 +2,9 @@
 import os
 from pathlib import Path
 import numpy as np
-import torch
-import torch.nn.functional as F
-from torch import Tensor
-from transformers import AutoTokenizer, AutoModel
-import faiss
+# NOTE: torch, transformers and faiss are heavyweight and are imported lazily
+# inside the functions that use them, so simply importing this module does not
+# pull them in or load the embedding model.
 from pathlib import Path
 from colorama import Fore, Style, init
 from alr.collection.search_phrase_generator_utils import rank_search_phrases
@@ -21,9 +19,23 @@ base_path = "/localdata/user/kata_du/LLM Models"
 # Adjust the path to your required model directory
 local_model_dir = os.path.join(base_path, "00_LLM_model", model_repo_id)
 
+# Lazily-initialised embedding model/tokenizer (loaded on first embedding call).
+_tokenizer = None
+_model = None
+
+
+def _get_model_and_tokenizer():
+    """Load and cache the embedding model/tokenizer on first use."""
+    global _tokenizer, _model
+    if _model is None:
+        _tokenizer, _model = load_model_and_tokenizer(local_model_dir)
+    return _tokenizer, _model
+
 
 # Function to pool the last hidden states
-def last_token_pool(last_hidden_states: Tensor, attention_mask: Tensor) -> Tensor:
+def last_token_pool(last_hidden_states: "Tensor", attention_mask: "Tensor") -> "Tensor":
+    import torch
+
     left_padding = (attention_mask[:, -1].sum() == attention_mask.shape[0])
     if left_padding:
         return last_hidden_states[:, -1]
@@ -34,6 +46,9 @@ def last_token_pool(last_hidden_states: Tensor, attention_mask: Tensor) -> Tenso
 
 # ---------- model loading (GPU) ----------
 def load_model_and_tokenizer(local_model_dir: str):
+    import torch
+    from transformers import AutoTokenizer, AutoModel
+
     if not local_model_dir:
         raise ValueError("local_model_dir is empty/None")
 
@@ -59,35 +74,43 @@ def load_model_and_tokenizer(local_model_dir: str):
     model.eval()
     return tokenizer, model
 
-tokenizer, model = load_model_and_tokenizer(local_model_dir)
-@torch.inference_mode()
+
 def vectorize_strings(input_strings: list[str], max_length: int = 512) -> np.ndarray:
+    import torch
+    import torch.nn.functional as F
 
-    batch = tokenizer(
-        input_strings,
-        padding=True,
-        truncation=True,
-        max_length=max_length,
-        return_tensors="pt",
-    )
-    batch = {k: v.to(model.device) for k, v in batch.items()}
+    tokenizer, model = _get_model_and_tokenizer()
 
-    outputs = model(**batch)
-    emb = last_token_pool(outputs.last_hidden_state, batch["attention_mask"])
+    with torch.inference_mode():
+        batch = tokenizer(
+            input_strings,
+            padding=True,
+            truncation=True,
+            max_length=max_length,
+            return_tensors="pt",
+        )
+        batch = {k: v.to(model.device) for k, v in batch.items()}
 
-    # Normalise => cosine similarity works with inner product / L2
-    emb = F.normalize(emb, p=2, dim=1)
+        outputs = model(**batch)
+        emb = last_token_pool(outputs.last_hidden_state, batch["attention_mask"])
 
-    return emb.detach().cpu().numpy().astype(np.float32)
+        # Normalise => cosine similarity works with inner product / L2
+        emb = F.normalize(emb, p=2, dim=1)
+
+        return emb.detach().cpu().numpy().astype(np.float32)
 
 
-def create_faiss_index_cosine(vectors: np.ndarray) -> faiss.Index:
+def create_faiss_index_cosine(vectors: np.ndarray) -> "faiss.Index":
+    import faiss
+
     # With normalised vectors: inner product == cosine similarity
     index = faiss.IndexFlatIP(vectors.shape[1])
     index.add(vectors)
     return index
 
 def save_index_file(index, file_path):
+    import faiss
+
     # Validate index
     if index is None or not hasattr(index, "ntotal"):
         raise TypeError(f"index is not a faiss Index. Got type={type(index)}")
@@ -103,6 +126,8 @@ def save_index_file(index, file_path):
     print(f"FAISS index saved to: {file_path} (vectors stored: {index.ntotal})")
 
 def load_index_file(file_path):
+    import faiss
+
     if file_path is None:
         return None
 
@@ -115,7 +140,9 @@ def load_index_file(file_path):
 
 
 def add_new_strings_to_index(index_file: str, new_strings: list[str], max_length: int = 512):
-        # Normalise file_path to a real string
+    import faiss
+
+    # Normalise file_path to a real string
     if index_file is None:
         raise ValueError("index_file is None")
 

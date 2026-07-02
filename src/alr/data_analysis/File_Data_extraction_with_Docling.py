@@ -9,8 +9,6 @@ from alr.data_analysis.Table_image_extractor import DoclingExtractor
 
 
 import re
-from docling.document_converter import DocumentConverter
-from docling.chunking import HybridChunker
 from colorama import Fore,Style
 
 import time  # <--- Add this line
@@ -26,8 +24,17 @@ from openpyxl import load_workbook
 import traceback
 
 
-converter = DocumentConverter()
-chunker = HybridChunker()
+# Docling is heavy to import; defer it until a chunker is actually needed.
+_chunker = None
+
+
+def _get_chunker():
+    """Lazily create and cache the Docling HybridChunker on first use."""
+    global _chunker
+    if _chunker is None:
+        from docling.chunking import HybridChunker
+        _chunker = HybridChunker()
+    return _chunker
 
 
 def process_llm_refined_structure(llm_output_string):
@@ -256,7 +263,7 @@ def _extract_and_chunk(MF,logger, file_path, start_time):
             
             # Extract original text chunks via the provided chunker
             logger.info("Executing text chunker pipeline...")
-            raw_chunks = list(chunker.chunk(dl_doc=doc))
+            raw_chunks = list(_get_chunker().chunk(dl_doc=doc))
             
             # Transform text chunks into a JSON-serializable structure
             for chunk in raw_chunks:

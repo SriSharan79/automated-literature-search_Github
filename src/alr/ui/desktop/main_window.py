@@ -12,6 +12,7 @@ from alr.collection.search_phrase_generator_utils import Keywords_Processing_wit
 from alr.collection.collection_system_prompts import KEYWORD_GENERATOR_PROMPT, SCOPE_DERIVATOR_PROMPT
 
 from alr.common.general_utils import Proccess_string_to_list
+from alr.common.llm_utils import list_available_models, set_selected_model, get_selected_model
 from alr.data_analysis.Pdf_File_processor import process_pdf_mode_file
 from alr.data_analysis.Folder_Data_Analyzer import process_folder
 from alr.rag_builders.db_manager import generate_databases
@@ -111,6 +112,10 @@ class AutomatedLiteratureUI(tk.Tk):
         self.llm_choice_col.set("O")
         self.llm_choice_col.grid(row=2, column=1, padx=5, pady=5, sticky="w")
         ttk.Label(inputs_frame, text="(O = DLR ollama Nimbus Service | B = BlaBla LLM models)").grid(row=2, column=1, padx=70, pady=5, sticky="w")
+
+        ttk.Button(inputs_frame, text="Choose Model...",
+                   command=lambda: self._choose_model_action(self.llm_choice_col.get())
+                   ).grid(row=3, column=1, padx=5, pady=5, sticky="w")
 
         # Scope Action Area
         scope_frame = tk.LabelFrame(tab, text="Refined Scope Setup")
@@ -346,6 +351,9 @@ class AutomatedLiteratureUI(tk.Tk):
         self.llm_choice_an = ttk.Combobox(llm_frame, values=["O", "B"], width=5, state="readonly")
         self.llm_choice_an.set("O")
         self.llm_choice_an.pack(side="left", padx=5)
+        ttk.Button(llm_frame, text="Choose Model...",
+                   command=lambda: self._choose_model_action(self.llm_choice_an.get())
+                   ).pack(side="left", padx=5)
 
         # Process Execute
         btn_run_analysis = ttk.Button(tab, text="Execute Document Extraction & Analysis", command=self._run_analysis_action)
@@ -450,6 +458,61 @@ class AutomatedLiteratureUI(tk.Tk):
         if folder_selected:
             target_entry.delete(0, tk.END)
             target_entry.insert(0, str(Path(folder_selected).resolve()))
+
+    def _choose_model_action(self, provider_code):
+        """
+        Fetch the live list of available models for the selected provider
+        ('O' = DLR Ollama, 'B' = Blablador), let the user pick one, and store
+        it as the session model used by all subsequent LLM calls.
+        """
+        service = "DLR Ollama" if str(provider_code).upper() == "O" else "BlaBla"
+
+        print(f"Fetching available {service} models...")
+        try:
+            models = list_available_models(service)
+        except Exception as e:
+            messagebox.showerror("Model list failed", f"Could not fetch models for {service}:\n{e}")
+            return
+
+        if not models:
+            messagebox.showwarning("No models", f"No models returned for {service}.\nKeeping current: {get_selected_model(service)}")
+            return
+
+        current = get_selected_model(service)
+
+        dialog = tk.Toplevel(self)
+        dialog.title(f"Select {service} Model")
+        dialog.geometry("560x400")
+        dialog.transient(self)
+        dialog.grab_set()
+
+        ttk.Label(dialog, text=f"Available {service} models (current: {current}):",
+                  font=("Arial", 10, "bold")).pack(padx=10, pady=8, anchor="w")
+
+        list_frame = ttk.Frame(dialog)
+        list_frame.pack(fill="both", expand=True, padx=10, pady=5)
+        scrollbar = ttk.Scrollbar(list_frame, orient="vertical")
+        listbox = tk.Listbox(list_frame, yscrollcommand=scrollbar.set)
+        scrollbar.config(command=listbox.yview)
+        scrollbar.pack(side="right", fill="y")
+        listbox.pack(side="left", fill="both", expand=True)
+
+        for m in models:
+            listbox.insert(tk.END, m)
+        if current in models:
+            idx = models.index(current)
+            listbox.selection_set(idx)
+            listbox.see(idx)
+
+        def _on_confirm():
+            sel = listbox.curselection()
+            if not sel:
+                messagebox.showinfo("No selection", "Please select a model, or close the dialog to keep the current one.")
+                return
+            set_selected_model(service, models[sel[0]])
+            dialog.destroy()
+
+        ttk.Button(dialog, text="Use Selected Model", command=_on_confirm).pack(pady=10)
 
 
 if __name__ == "__main__":

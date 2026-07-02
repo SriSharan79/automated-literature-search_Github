@@ -7,16 +7,33 @@ from alr.common.llm_utils import llm_call
 from alr.common.file_manager import DataAnalyzeManager
 from alr.data_analysis.Refrences_log_utils import log_Ref_data_extracted, save_references_to_json
 import re
-from docling.document_converter import DocumentConverter
-from docling.chunking import HybridChunker
 from colorama import Fore,Style
 
 from pathlib import Path
 import os
 import json
 
-converter = DocumentConverter()
-chunker = HybridChunker()
+# Docling is heavy to import; defer it until a converter/chunker is needed.
+_converter = None
+_chunker = None
+
+
+def _get_converter():
+    """Lazily create and cache the Docling DocumentConverter on first use."""
+    global _converter
+    if _converter is None:
+        from docling.document_converter import DocumentConverter
+        _converter = DocumentConverter()
+    return _converter
+
+
+def _get_chunker():
+    """Lazily create and cache the Docling HybridChunker on first use."""
+    global _chunker
+    if _chunker is None:
+        from docling.chunking import HybridChunker
+        _chunker = HybridChunker()
+    return _chunker
 
 def has_dash_in_last_n(text: str, n: int = 5) -> bool:
     """Check if '-' exists in last N chars (after stripping trailing whitespace)."""
@@ -256,8 +273,8 @@ def docling_process_references_file(file_path, ID, Main_Folder):
     # Paths and Setup
     try:
         # # 1. Extraction
-        doc = converter.convert(file_path).document
-        chunks = list(chunker.chunk(dl_doc=doc))
+        doc = _get_converter().convert(file_path).document
+        chunks = list(_get_chunker().chunk(dl_doc=doc))
 
         process_references_from_chunks(chunks,Main_Folder.ref_json_path)
 

@@ -11,23 +11,35 @@ from alr.data_analysis.Pdf_File_processor import process_pdf_file, process_pdf_m
 from alr.data_analysis.Folder_Data_Analyzer import process_folder
 from alr.rag_builders.db_manager import generate_databases
 from alr.rag_builders.query_executor import generate_query_report
+from alr.common.llm_utils import select_model_interactive, get_selected_model
 
 username = os.environ.get("USERNAME")
 
 def _choose_llm_service():
 
-    LLM_Choice_Message=f""" 
+    LLM_Choice_Message=f"""
 please choose the llm service that you would like to use:
 
-'O' or 'o': DLR ollama Nimbus Service 
+'O' or 'o': DLR ollama Nimbus Service
 'B' or 'b': BlaBla LLM models
 
-Only input the number of your choice 
+Only input the number of your choice
 example: B
 
     """
     print(LLM_Choice_Message)
     user_choice = input("Enter the number of your choice: ").strip()
+
+    # Optionally let the user pick a specific model for the chosen service.
+    # The default model is kept unless the user opts to change it.
+    service = "DLR Ollama" if user_choice.upper() == "O" else "BlaBla" if user_choice.upper() == "B" else None
+    if service:
+        change = input(
+            f"Current {service} model: {get_selected_model(service)}\n"
+            f"Do you want to choose a different model? (y/n): "
+        ).strip().lower()
+        if change == "y":
+            select_model_interactive(service)
 
     return user_choice
 
