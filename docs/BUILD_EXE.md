@@ -53,7 +53,15 @@ Result: `dist\AutomatedLiteratureReview\AutomatedLiteratureReview.exe`
 - **First launch** creates `~/Automated Literature Review/` (config, storage, and the
   `alr_analyzed_data.db` review database).
 
-## Cross-building without a Windows machine
-Use a Windows VM, a Windows CI runner (e.g. GitHub Actions `windows-latest`), or Wine
-(unsupported/fiddly). A GitHub Actions job that runs `build_exe.bat` and uploads
-`dist\AutomatedLiteratureReview` as an artifact is the most reliable hands-off option.
+## Cross-building without a Windows machine (GitHub Actions)
+No Windows machine needed — `.github/workflows/build-exe.yml` builds the `.exe` on a
+GitHub-hosted `windows-latest` runner and uploads it as an artifact.
+
+- **Run it:** push a tag like `v1.0.0`, or trigger it manually from the repo's
+  **Actions** tab → *Build Windows EXE* → *Run workflow*.
+- **Get the `.exe`:** open the finished run and download the
+  **`AutomatedLiteratureReview-windows`** artifact (a zip of the one-folder build).
+
+The runner installs `requirements.txt` + PyInstaller, runs `UI_pipeline.spec`, and
+publishes `dist/AutomatedLiteratureReview`. The build is heavy (torch/transformers/
+docling), so expect it to take a while.
