@@ -122,7 +122,7 @@ Input file path: """
 
 
 if __name__ == "__main__":
-    input_path="U:\Literature\Lai-et-al.-2021-Integrating-Safety-Analysis-into-Model-Based-Systems-Engineering-for-Aircraft-Systems-A-Literature-Review-and-Met2.pdf"
+    input_path=r"U:\Literature\Lai-et-al.-2021-Integrating-Safety-Analysis-into-Model-Based-Systems-Engineering-for-Aircraft-Systems-A-Literature-Review-and-Met2.pdf"
     res = analyse_pdf_input_path(input_path, recursive=True)
     print(res.kind, res.pdf_count)
     print(res.pdf_paths[:5])

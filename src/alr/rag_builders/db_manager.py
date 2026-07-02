@@ -1,12 +1,12 @@
 
 
-from alr.rag_builders.master_excel_db_builder import _build_sections_Master_map, _sync_sections_master_for_uuid
+from alr.rag_builders.master_excel_db_builder import _sync_sections_master_for_uuid
 from alr.common.sections import*
 import json
 from datetime import datetime
 from alr.common.file_manager import DataAnalyzeManager, Vec_DB_Manager
 from alr.common.json_utils import get_key_from_file, get_value_by_pair
-from alr.rag_builders.text_db_updater import _build_sections_map, _fetch_metadata, _load_abstract_json, _load_recorded_abstracts, _sync_sections_for_uuid
+from alr.rag_builders.text_db_updater import _fetch_metadata, _load_abstract_json, _load_recorded_abstracts, _sync_sections_for_uuid
 from alr.rag_builders.vector_db_updater import add_new_strings_to_index, create_faiss_index_cosine, load_index_file, save_index_file, search_similar, vectorize_strings
 from colorama import Fore, Style
 from alr.common.sections import build_sections_map_vdb
