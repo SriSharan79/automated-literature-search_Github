@@ -1,0 +1,32 @@
+# Python
+__pycache__/
+
+# Virtual Environment
+venv/
+
+# Project-specific outputs
+output/
+batch_output/
+*.json
+*.xlsx
+*.csv
+*.png
+*.jpg
+*.jpeg
+*.pdf
+*.doc
+*.docx
+*.zip
+*.PDF
+*.txt
+*.xlsm
+
+
+# Logs
+*.log
+logs/
+
+# Environment variables
+.env
+.env.local
+

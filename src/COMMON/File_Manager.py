@@ -1,0 +1,321 @@
+import sys
+
+from COMMON.General_Utils import print_with_separator
+sys.path.extend([
+    r'src',
+    r'src/COLLECTION',
+    r'Working_Code',
+    r'src/DATA_ANALYSIS',
+    r'src/COMMON',
+    r'src/Command_Line_UI'
+])
+
+import os
+import pandas as pd
+from pathlib import Path
+from datetime import datetime
+
+
+home_folder = Path.home()
+ALR_main_folder= home_folder/ "Automated Literature Review"
+ALR_main_folder.mkdir(parents=True, exist_ok=True)
+ALR_colletion_folder=ALR_main_folder/ "01_Collection"
+ALR_data_analyze_folder=ALR_main_folder/ "02_Analyzed_Data"
+ALR_Vec_DB_folder=ALR_main_folder/ "10_Vector_DBs"
+
+
+class CollectionManager:
+    def __init__(self,Collection_Folder=ALR_colletion_folder):
+        """
+        Initializes the folder structure and static paths.
+        """
+        # 1. Convert to Path object FIRST
+        self.folder = Path(Collection_Folder)
+        
+        # 2. Now you can safely call mkdir
+        self.folder.mkdir(parents=True, exist_ok=True)
+
+        # PDF Folders
+        self.keywords_list_folder = self.folder / "keywords_lists"
+        self.keywords_list_folder.mkdir(exist_ok=True)
+        self.keywords_list_log_path = os.path.join(self.folder, "keywords_list_log.xlsx")
+
+        self.search_phrase_list_folder = self.folder / "search_phrase_lists"
+        self.search_phrase_list_folder.mkdir(exist_ok=True)
+        self.search_phrase_log_path = os.path.join(self.folder, "search_phrase_list_log.xlsx")
+
+        self.publications_list_folder = self.folder / "publications_lists"
+        self.publications_list_folder.mkdir(exist_ok=True)
+        self.publications_log_path = os.path.join(self.folder, "publications_list_log.xlsx")
+        
+
+        # Placeholders for ID-specific paths
+        self.topic_id= None
+        self.keywords_list_excel = None
+        self.search_phrase_list_excel = None
+        self.publications_list_excel = None
+
+        self.Research_Area = None
+        self.Research_Question = None
+        self.Research_Scope = None
+        self.Keyword_list = None
+        self.Keyword_count = None
+        self.Search_phrase_count = None
+        self.Search_phrase_list = None       
+        
+        self.llm_service = 'b'
+        print_with_separator("DebugLog",'/')
+
+        print(f"Data Storage Initialized at: {Collection_Folder}")
+
+    def update_topic_files(self, doc_id):
+        """
+        Updates the specific JSON paths for a given document ID.
+        Replaces the old 'Update_ID_Files' global logic.
+        """
+        self.topic_id = doc_id
+
+        self.keywords_list_json = os.path.join(self.keywords_list_folder, f"{doc_id}_keywords_list.json")
+
+        self.search_phrase_list_excel = os.path.join(self.search_phrase_list_folder, f"{doc_id}_search_phrase_list.xlsx")
+        self.search_phrase_sorted_list_excel = os.path.join(self.search_phrase_list_folder, f"{doc_id}_search_phrase_sorted_list.xlsx")
+
+        self.publications_list_excel = os.path.join(self.publications_list_folder, f"{doc_id}_publications_list.xlsx")
+
+        
+        print_with_separator("DebugLog",'/')
+
+        print(f"File paths updated for ID: {doc_id}")
+        
+    def update_llm_service(self, Value):
+        self.llm_service =Value
+        print_with_separator("DebugLog",'/')        
+        print(f"updated llm_service: {Value}")
+
+    def update_Research_Area(self, Value):
+        self.Research_Area =Value
+        print_with_separator("DebugLog",'/')        
+        print(f"updated Research_Area: {Value}")
+
+    def update_Research_Question(self, Value):
+        self.Research_Question =Value
+        print_with_separator("DebugLog",'/')        
+        print(f"updated Research_Question: {Value}")
+
+    def update_Research_Scope(self, Value):
+        self.Research_Scope =Value
+        print_with_separator("DebugLog",'/')        
+        print(f"updated Research_Scope: {Value}")
+
+    def update_Keyword_list(self, Value):
+        self.Keyword_list =Value
+        self.Keyword_count =len(Value)
+        print_with_separator("DebugLog",'/')        
+        print(f"updated list of {len(Value)} Keywords: {Value}")
+
+    def update_Search_phrase_list(self, Value):
+        self.Search_phrase_list =Value      
+        self.Search_phrase_count =len(Value)
+        print_with_separator("DebugLog",'/')
+        print(f"updated list of {len(Value)} Search_phrases")
+
+
+class DataAnalyzeManager:
+    def __init__(self, folder_path=ALR_data_analyze_folder):
+        """
+        Initializes the folder structure and static paths.
+        """
+        # 1. Convert to Path object FIRST
+        self.folder = Path(folder_path)
+        
+        # 2. Now you can safely call mkdir
+        self.folder.mkdir(parents=True, exist_ok=True)
+        # Core Excel Files
+        self.excel_success = self.folder / "Processed_file_registry.xlsx"
+        self.excel_failed = self.folder / "failed_files.xlsx"
+
+        # PDF Folders
+        self.pdf_subfolder = self.folder / "pdf_files"
+        self.pdf_subfolder.mkdir(exist_ok=True)
+
+        self.failed_pdf_folder = self.folder / "failed_pdfs"
+        self.failed_pdf_folder.mkdir(exist_ok=True)
+
+        # Section JSON Logic
+        self.raw_chunks_subfolder = self.folder / "Raw_Chunk_files"
+        self.raw_chunks_subfolder.mkdir(exist_ok=True)
+        
+        self.tables_subfolder = self.folder / "Raw_Tables_files"
+        self.tables_subfolder.mkdir(exist_ok=True)
+                        
+        self.images_subfolder = self.folder / "Raw_Images_files"
+        self.images_subfolder.mkdir(exist_ok=True)
+        
+        #refined Sections
+        self.raw_section_subfolder = self.folder / "Raw_Section_JSON_Files"
+        self.raw_section_subfolder.mkdir(exist_ok=True)
+        self.raw_section_excel_log_path = os.path.join(self.raw_section_subfolder, "Raw_Section_log.xlsx")
+        
+        #File_usage_Log
+        self.Files_Usage_Log_subfolder = self.folder / "Files_Usage_Log_files"
+        self.Files_Usage_Log_subfolder.mkdir(exist_ok=True)
+
+        # References JSON Logic
+        self.references_subfolder = self.folder / "References_JSON_Files"
+        self.references_subfolder.mkdir(exist_ok=True)
+        self.refrences_excel_log_path = os.path.join(self.references_subfolder, "Refrences_log.xlsx")
+
+        #Analyzed Data 
+        self.AD = self.folder / "Analyzed_Data_Files"
+        self.AD.mkdir(exist_ok=True)
+        self.AD_log_path = os.path.join(self.AD, "AD_log.xlsx")#---Usagae not defined
+
+        self.AD_Abstract = self.AD/ "Abstract_Data_Files"
+        self.AD_Abstract.mkdir(exist_ok=True)
+        self.AD_Abstract_log_path = os.path.join(self.AD_Abstract, "Abstract_log.xlsx")
+        
+        
+        self.AD_Intro = self.AD/ "Introduction_Data_Files"
+        self.AD_Intro.mkdir(exist_ok=True)
+        self.AD_Intro_log_path = os.path.join(self.AD_Intro, "Introduction_log.xlsx")
+
+        # Placeholders for ID-specific paths
+        self.raw_sec_json_path = None
+        self.raw_chunks_json_path = None
+        self.file_usage_log_path = None
+        self.ref_json_path = None
+        self.current_id = None
+        self.abstract_json_path = None
+        self.intro_json_path = None
+        self.tables_storage_path=None
+        self.image_storage_path=None
+        
+        self.llm_service = 'b'
+
+        # print(f"Data Storage Initialized at: {folder_path}")
+
+    def update_id_files(self, doc_id):
+        """
+        Updates the specific JSON paths for a given document ID.
+        Replaces the old 'Update_ID_Files' global logic.
+        """
+        self.current_id = doc_id        
+        self.raw_sec_json_path = os.path.join(self.raw_section_subfolder, f"{doc_id}_raw_sections.json")
+        self.raw_chunks_json_path = os.path.join(self.raw_chunks_subfolder, f"{doc_id}_raw_chunks.json")
+        self.file_usage_log_path = os.path.join(self.Files_Usage_Log_subfolder, f"{doc_id}_file_usage.log")
+        self.ref_json_path = os.path.join(self.references_subfolder, f"{doc_id}_References.json")
+        self.abstract_json_path=os.path.join(self.AD_Abstract, f"{doc_id}_Abstract.json")
+        self.intro_json_path=os.path.join(self.AD_Intro, f"{doc_id}_Intro.json")
+        
+        # Seperate table folder
+        self.tables_storage_path = self.tables_subfolder / f"{doc_id}_Tables_files"
+        self.tables_storage_path.mkdir(exist_ok=True)
+        
+        self.image_storage_path = self.images_subfolder / f"{doc_id}_Images_files"
+        self.image_storage_path.mkdir(exist_ok=True)
+
+        # print(f"File paths updated for ID: {doc_id}")
+    
+    def update_llm_service(self, Value):
+        self.llm_service =Value
+        print_with_separator("DebugLog",'/')        
+        print(f"updated llm_service: {Value}")
+
+
+class Vec_DB_Manager:
+    def __init__(self, folder_path=ALR_Vec_DB_folder):
+        """
+        Initializes the folder structure and static paths.
+        """
+        # 1. Convert to Path object FIRST
+        self.folder = Path(folder_path)
+        
+        # 2. Now you can safely call mkdir
+        self.folder.mkdir(parents=True, exist_ok=True)
+        
+        current_date = datetime.now().strftime("%Y-%m-%d")
+        # Abstract DBs
+        self.Abstract_DB = self.folder / "Abstract_DB"
+        self.Abstract_DB.mkdir(exist_ok=True)
+        
+        self.Abstract_Overview_folder = self.Abstract_DB / "Abstract_Overview_folder"
+        self.Abstract_Overview_folder.mkdir(exist_ok=True)
+        
+        self.Abstract_Overview = self.Abstract_Overview_folder / f"{current_date}_Abstract_Overview.xlsx"
+         
+        self.Abstract_Eval_Overview = self.Abstract_Overview_folder / f"{current_date}_Abstract_Eval_Overview.xlsx"
+        
+        self.Abstract_Eval = self.Abstract_DB / "Abstract_LLM_evaluation"
+        self.Abstract_Eval.mkdir(exist_ok=True)
+        
+        self.results = self.folder/ "Querry_results"
+        self.results.mkdir(exist_ok=True)
+
+        self.DB_update_logger= self.Abstract_DB / "DB_update_logger.json"
+
+        # Core Excel Files
+        self.Research_problem_DB_excel = self.Abstract_DB / "Research_problem_DB.xlsx"
+        self.Objective_DB_excel = self.Abstract_DB / "Objective_DB.xlsx"
+        self.Methodology_DB_excel = self.Abstract_DB / "Methodology_DB.xlsx"
+        self.Conclusion_DB_excel = self.Abstract_DB / "Conclusion_DB.xlsx" 
+        self.Results_DB_excel = self.Abstract_DB / "Results_DB.xlsx"   
+        self.Key_concepts_DB_excel = self.Abstract_DB / "Key_concepts_DB.xlsx"   
+        self.Research_Areas_DB_excel = self.Abstract_DB / "Research_Areas_DB.xlsx"     
+         
+        # Core JSON Files
+        self.Research_problem_DB_json = self.Abstract_DB / "Research_problem_DB.json"
+        self.Objective_DB_json = self.Abstract_DB / "Objective_DB.json"
+        self.Methodology_json = self.Abstract_DB / "Methodology_DB.json"
+        self.Conclusion_DB_json = self.Abstract_DB / "Conclusion_DB.json"
+        self.Results_DB_json = self.Abstract_DB / "Results_DB.json"   
+        self.Key_concepts_DB_json = self.Abstract_DB / "Key_concepts_DB.json"   
+        self.Research_Areas_DB_json = self.Abstract_DB / "Research_Areas_DB.json"   
+        
+        # Core DB files
+        self.Research_problem_DB_bin = self.Abstract_DB / "Research_problem_DB.bin"
+        self.Objective_DB_bin = self.Abstract_DB / "Objective_DB.bin"
+        self.Methodology_bin = self.Abstract_DB / "Methodology_DB.bin"
+        self.Conclusion_DB_bin = self.Abstract_DB / "Conclusion_DB.bin"
+        self.Results_DB_bin = self.Abstract_DB / "Results_DB.bin"   
+        self.Key_concepts_DB_bin = self.Abstract_DB / "Key_concepts_DB.bin"   
+        self.Research_Areas_DB_bin = self.Abstract_DB / "Research_Areas_DB.bin"   
+        
+        
+        self.Research_problem_Eval_excel = self.Abstract_Eval/ "Research_problem_Eval.xlsx"
+        self.Objective_Eval_excel = self.Abstract_Eval/ "Objective_Eval.xlsx"
+        self.Methodology_Eval_excel = self.Abstract_Eval/ "Methodology_Eval.xlsx"
+        self.Conclusion_Eval_excel = self.Abstract_Eval/ "Conclusion_Eval.xlsx" 
+        self.Results_Eval_excel = self.Abstract_Eval/ "Results_Eval.xlsx"   
+        self.Key_concepts_Eval_excel = self.Abstract_Eval/ "Key_concepts_Eval.xlsx"   
+        self.Research_Areas_Eval_excel = self.Abstract_Eval/ "Research_Areas_Eval.xlsx"  
+
+        self.key_folder=None
+        self.querry_storage=None
+
+        self.querry_storage_pdfs=None
+        self.querry_storage_Abs_jsons=None
+
+    def update_key_folder(self, key):
+        self.key_folder=self.results/key
+        self.key_folder.mkdir(exist_ok=True)
+
+    def update_query_folder(self, query_name):
+        # 1. Define the base query folder
+        query_folder = self.results / "Queries"
+        
+        # 2. Create the date-based subfolder path
+        current_date = datetime.now().strftime("%Y-%m-%d")
+        date_folder = query_folder / current_date
+        
+        # 3. Create all directories at once (parents=True handles "Queries")
+        date_folder.mkdir(parents=True, exist_ok=True)
+        
+        # 4. Set the final storage path
+        self.query_storage = date_folder / query_name
+        self.query_storage.mkdir(exist_ok=True)
+
+        self.querry_storage_pdfs = self.query_storage / 'Pdf_files'
+        self.querry_storage_pdfs.mkdir(exist_ok=True)
+
+        self.querry_storage_Abs_jsons = self.query_storage / 'Abstract_Json_files'
+        self.querry_storage_Abs_jsons.mkdir(exist_ok=True)

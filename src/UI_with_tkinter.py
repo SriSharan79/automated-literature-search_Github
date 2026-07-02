@@ -1,0 +1,464 @@
+import os
+import tkinter as tk
+from tkinter import ttk, filedialog, messagebox
+from pathlib import Path
+import sys
+sys.path.extend([
+    r'/localdata/user/kata_du/Automated Literature Survey/src',
+    r'/localdata/user/kata_du/Automated Literature Survey/src/COLLECTION',
+    r'/localdata/user/kata_du/Automated Literature Survey/Working_Code',
+    r'/localdata/user/kata_du/Automated Literature Survey/src/DATA_ANALYSIS',
+    r'/localdata/user/kata_du/Automated Literature Survey/src/COMMON'
+])
+# --- Import your existing backend logic ---
+from COMMON.Excel_Utils import extract_column, get_values_from_sorted_numbers, get_values_from_sorted_numbers_and_save
+from COMMON.File_Manager import CollectionManager, DataAnalyzeManager, Vec_DB_Manager
+from COMMON.General_Utils import clean_folder_path, generate_unique_id
+from COLLECTION.Search_Phrase_Generator_Logger import log_Keyword_Json
+from COLLECTION.Search_Phrase_Generator_Utils import Keywords_Processing_with_scope, run_scholarly
+from COLLECTION.Collection_system_prompts import KEYWORD_GENERATOR_PROMPT, SCOPE_DERIVATOR_PROMPT
+
+from COMMON.General_Utils import Proccess_string_to_list
+from DATA_ANALYSIS.Pdf_File_processor import process_pdf_mode_file
+from DATA_ANALYSIS.Folder_Data_Analyzer import process_folder
+from RAG_BUILDERs.DB_Manager import generate_databases
+from RAG_BUILDERs.querry_excecuter import generate_query_report
+from Command_Line_UI.Data_analysis_UI import analyse_pdf_input_path
+
+
+class CustomTerminalText(tk.Text):
+    """Custom Text widget to redirect stdout/stderr to the GUI window."""
+    def write(self, string):
+        self.insert(tk.END, string)
+        self.see(tk.END)
+    def flush(self):
+        pass
+
+
+class AutomatedLiteratureUI(tk.Tk):
+    def __init__(self):
+        super().__init__()
+
+        self.title("Automated Literature Review Support Tool")
+        self.geometry("900x750")
+        self.username = os.environ.get("USERNAME", "User")
+        
+        # Track active manager objects
+        self.CM = None
+        self.MF = None
+
+        self._create_widgets()
+        
+        # Redirect stdout to our custom GUI terminal widget
+        sys.stdout = self.terminal_output
+        sys.stderr = self.terminal_output
+
+        print(f"Welcome, {self.username}! Application Initialized.")
+
+    def _create_widgets(self):
+        # Top Greeting
+        greeting_lbl = tk.Label(self, text=f"Hello, {self.username}! Automated Literature Review Support Tool", font=("Arial", 12, "bold"))
+        greeting_lbl.pack(pady=10)
+
+        # Tab Control (Notebook)
+        self.notebook = ttk.Notebook(self)
+        self.notebook.pack(expand=True, fill="both", padx=10, pady=5)
+
+        # Build individual Tabs
+        self._build_collect_tab()
+        self._build_analyze_tab()
+        self._build_visualize_tab()
+
+        # Integrated Console Terminal Output Box at Bottom
+        terminal_frame = tk.LabelFrame(self, text="Console Output Log")
+        terminal_frame.pack(fill="both", expand=True, padx=10, pady=10)
+
+        self.terminal_output = CustomTerminalText(terminal_frame, wrap="word", background="black", foreground="white", font=("Courier New", 10))
+        scrollbar = ttk.Scrollbar(terminal_frame, command=self.terminal_output.yview)
+        self.terminal_output.configure(yscrollcommand=scrollbar.set)
+        
+        scrollbar.pack(side="right", fill="y")
+        self.terminal_output.pack(side="left", fill="both", expand=True)
+
+    # ==========================================
+    # TAB 1: LITERATURE COLLECTION
+    # ==========================================
+    def _build_collect_tab(self):
+        tab = ttk.Frame(self.notebook)
+        self.notebook.add(tab, text="1. Collect Literature")
+
+        # Storage Path configuration
+        path_frame = tk.LabelFrame(tab, text="Data Storage Configuration")
+        path_frame.pack(fill="x", padx=10, pady=5)
+
+        self.custom_path_var_col = tk.BooleanVar(value=False)
+        chk = ttk.Checkbutton(path_frame, text="Use Custom Storage Path?", variable=self.custom_path_var_col, command=self._toggle_collect_path_btn)
+        chk.grid(row=0, column=0, padx=5, pady=5, sticky="w")
+
+        self.collect_path_entry = ttk.Entry(path_frame, width=50, state="disabled")
+        self.collect_path_entry.grid(row=0, column=1, padx=5, pady=5)
+        
+        self.collect_path_btn = ttk.Button(path_frame, text="Browse...", state="disabled", command=lambda: self._browse_folder(self.collect_path_entry))
+        self.collect_path_btn.grid(row=0, column=2, padx=5, pady=5)
+
+        # Inputs Frame
+        inputs_frame = tk.LabelFrame(tab, text="Research Scope & Details")
+        inputs_frame.pack(fill="x", padx=10, pady=5)
+
+        ttk.Label(inputs_frame, text="Research Area/Topic:").grid(row=0, column=0, padx=5, pady=5, sticky="w")
+        self.ra_entry = ttk.Entry(inputs_frame, width=70)
+        self.ra_entry.grid(row=0, column=1, padx=5, pady=5)
+
+        ttk.Label(inputs_frame, text="Research Questions/Gaps:").grid(row=1, column=0, padx=5, pady=5, sticky="w")
+        self.rq_entry = ttk.Entry(inputs_frame, width=70)
+        self.rq_entry.grid(row=1, column=1, padx=5, pady=5)
+
+        ttk.Label(inputs_frame, text="LLM Provider:").grid(row=2, column=0, padx=5, pady=5, sticky="w")
+        self.llm_choice_col = ttk.Combobox(inputs_frame, values=["O", "B"], width=5, state="readonly")
+        self.llm_choice_col.set("O")
+        self.llm_choice_col.grid(row=2, column=1, padx=5, pady=5, sticky="w")
+        ttk.Label(inputs_frame, text="(O = DLR ollama Nimbus Service | B = BlaBla LLM models)").grid(row=2, column=1, padx=70, pady=5, sticky="w")
+
+        # Scope Action Area
+        scope_frame = tk.LabelFrame(tab, text="Refined Scope Setup")
+        scope_frame.pack(fill="x", padx=10, pady=5)
+
+        btn_derive_scope = ttk.Button(scope_frame, text="Generate Scope via LLM", command=self._generate_scope_action)
+        btn_derive_scope.pack(side="left", padx=5, pady=5)
+
+        self.scope_entry = ttk.Entry(scope_frame, width=65)
+        self.scope_entry.pack(side="left", padx=5, fill="x", expand=True)
+
+        # Keywords Control Area
+        keyword_frame = tk.LabelFrame(tab, text="Keywords & Search Phrase Automation")
+        keyword_frame.pack(fill="both", expand=True, padx=10, pady=5)
+
+        kw_action_frame = ttk.Frame(keyword_frame)
+        kw_action_frame.pack(fill="x")
+
+        self.suggest_kw_var = tk.BooleanVar(value=True)
+        ttk.Checkbutton(kw_action_frame, text="Suggest keywords using LLM?", variable=self.suggest_kw_var).pack(side="left", padx=5, pady=5)
+
+        btn_gen_kw = ttk.Button(kw_action_frame, text="Process Keywords", command=self._process_keywords_action)
+        btn_gen_kw.pack(side="left", padx=5, pady=5)
+
+        # Phrase settings 
+        ttk.Label(kw_action_frame, text="Top Phrases count:").pack(side="left", padx=20, pady=5)
+        self.phrases_count_spin = ttk.Spinbox(kw_action_frame, from_=1, to=100, width=5)
+        self.phrases_count_spin.set(10)
+        self.phrases_count_spin.pack(side="left", pady=5)
+
+        # Ranking Framework selection
+        rank_frame = ttk.Frame(keyword_frame)
+        rank_frame.pack(fill="x", pady=2)
+        ttk.Label(rank_frame, text="Phrases ranking strategy:").pack(side="left", padx=5)
+        self.ranking_var = tk.StringVar(value="1")
+        ttk.Radiobutton(rank_frame, text="1. Research Area Basis", variable=self.ranking_var, value="1").pack(side="left", padx=5)
+        ttk.Radiobutton(rank_frame, text="2. Research Question Basis", variable=self.ranking_var, value="2").pack(side="left", padx=5)
+        ttk.Radiobutton(rank_frame, text="3. Comb. RA + RQ", variable=self.ranking_var, value="3").pack(side="left", padx=5)
+        ttk.Radiobutton(rank_frame, text="4. Total Rank (All Inputs)", variable=self.ranking_var, value="4").pack(side="left", padx=5)
+
+        # Executer Execution trigger buttons
+        exec_frame = ttk.Frame(keyword_frame)
+        exec_frame.pack(fill="x", pady=5)
+        
+        self.btn_scholarly = ttk.Button(exec_frame, text="Run Scholarly Search", state="disabled", command=lambda: self._execute_search_strategy("s"))
+        self.btn_scholarly.pack(side="left", padx=5)
+
+        self.btn_save_excel = ttk.Button(exec_frame, text="Save Ranking to Excel Only", state="disabled", command=lambda: self._execute_search_strategy("e"))
+        self.btn_save_excel.pack(side="left", padx=5)
+
+    def _toggle_collect_path_btn(self):
+        if self.custom_path_var_col.get():
+            self.collect_path_entry.configure(state="normal")
+            self.collect_path_btn.configure(state="normal")
+        else:
+            self.collect_path_entry.configure(state="disabled")
+            self.collect_path_btn.configure(state="disabled")
+
+    def _generate_scope_action(self):
+        # Move the heavy imports here!
+        from COLLECTION.Collection_system_prompts import SCOPE_DERIVATOR_PROMPT
+        from COMMON.LLM_Utils import llm_call
+        
+        ra = self.ra_entry.get().strip()
+        rq = self.rq_entry.get().strip()
+        service = self.llm_choice_col.get()
+
+        if not ra or not rq:
+            messagebox.showerror("Error", "Please clarify both Research Area and Research Question items first.")
+            return
+
+        # Setup Collection Manager Object
+        if self.custom_path_var_col.get() and self.collect_path_entry.get().strip():
+            clean_path = clean_folder_path(self.collect_path_entry.get().strip())
+            self.CM = CollectionManager(clean_path)
+        else:
+            self.CM = CollectionManager()
+
+        self.CM.update_Research_Area(ra)
+        self.CM.update_Research_Question(rq)
+        self.CM.update_llm_service(service)
+
+        # Handle ID assignment
+        topic_id = generate_unique_id(ra, extract_column(self.CM.keywords_list_log_path, 'UUID'))
+        self.CM.update_topic_files(topic_id)
+
+        print("\n[LLM System Process] Deriving standard research scope limits definitions...")
+        scope_inputs = f"\n1. Research Area/Topic: {ra}\n2. Key Research Questions/Gaps: {rq}"
+        derived_scope = llm_call(scope_inputs, SCOPE_DERIVATOR_PROMPT, service)
+        
+        self.scope_entry.delete(0, tk.END)
+        self.scope_entry.insert(0, derived_scope)
+        print(f"Scope Derived: {derived_scope}")
+
+    def _process_keywords_action(self):
+        from COMMON.LLM_Utils import llm_call
+        if not self.CM:
+            messagebox.showerror("Error", "Please initialize the scope config system parameters using 'Generate Scope' first.")
+            return
+
+        # Explicitly pull any structural adjustments user may have typed directly into the scope entry line
+        refined_scope = self.scope_entry.get().strip()
+        self.CM.update_Research_Scope(refined_scope)
+
+        service = self.llm_choice_col.get()
+        keywords_list = []
+
+        if self.suggest_kw_var.get():
+            kw_prompt_inputs = f"\n1. Research Area/Topic: {self.CM.Research_Area}\n2. Key Research Questions/Gaps: {self.CM.Research_Question}\n3. Refined Scope: To {refined_scope}"
+            raw_keywords = llm_call(kw_prompt_inputs, KEYWORD_GENERATOR_PROMPT, service)
+            keywords_list = Proccess_string_to_list(raw_keywords)
+
+            # Open a pop-up window interface for selecting keyword indices if requested
+            keywords_list = self._prompt_keyword_indices_selection(keywords_list)
+        else:
+            # Custom input manual text fallback dialogue context setup box
+            manual_input = filedialog.SimpleDialog(self, text="Enter comma-separated keywords:", title="Manual Keywords Choice Input")
+            user_string = manual_input.go()
+            if user_string:
+                keywords_list = [item.strip() for item in user_string.split(",") if item.strip()]
+
+        if not keywords_list:
+            print("Action halted or keywords context returned blank frame arrays.")
+            return
+
+        self.CM.update_Keyword_list(keywords_list)
+        log_Keyword_Json(self.CM)
+        self.CM = Keywords_Processing_with_scope(self.CM)
+
+        print(f"\nSuccessfully logged structural pipeline setups. Ready to rank/export across {self.CM.Search_phrase_count} expressions.")
+        self.btn_scholarly.configure(state="normal")
+        self.btn_save_excel.configure(state="normal")
+
+    def _prompt_keyword_indices_selection(self, original_list):
+        # Mini secondary functional frame pop-up window
+        dialog = tk.Toplevel(self)
+        dialog.title("Refine LLM Suggested Keywords")
+        dialog.geometry("500x450")
+        dialog.grab_set() # Modal interaction enforcement
+
+        ttk.Label(dialog, text="LLM Suggested keywords list (Check items to KEEP):", font=("Arial", 10, "bold")).pack(pady=5)
+
+        canvas = tk.Canvas(dialog)
+        scrollbar = ttk.Scrollbar(dialog, orient="vertical", command=canvas.yview)
+        scrollable_frame = ttk.Frame(canvas)
+
+        scrollable_frame.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
+        canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
+        canvas.configure(yscrollcommand=scrollbar.set)
+
+        checkbox_vars = []
+        for index, item in enumerate(original_list):
+            var = tk.BooleanVar(value=True) # Default all to selected state
+            checkbox_vars.append((var, item))
+            chk = ttk.Checkbutton(scrollable_frame, text=f"[{index}] {item}", variable=var)
+            chk.pack(anchor="w", padx=10, pady=2)
+
+        canvas.pack(side="left", fill="both", expand=True, padx=5, pady=5)
+        scrollbar.pack(side="right", fill="y")
+
+        final_keywords = []
+
+        def _on_confirm():
+            nonlocal final_keywords
+            final_keywords = [text for var, text in checkbox_vars if var.get()]
+            dialog.destroy()
+
+        ttk.Button(dialog, text="Confirm Selected List Strategy", command=_on_confirm).pack(pady=10)
+        self.wait_window(dialog)
+        return final_keywords
+
+    def _execute_search_strategy(self, choice_mode):
+        strategy_map = {"1": "RA_Rank", "2": "RQ_Rank", "3": "RA+RQ_Rank", "4": "TOTAL_Rank"}
+        rank_col = strategy_map.get(self.ranking_var.get(), "TOTAL_Rank")
+        
+        num_phrases = int(self.phrases_count_spin.get())
+        
+        phrase_excel_file = Path(self.CM.search_phrase_list_excel)
+        sp_sorted_path = Path(self.CM.search_phrase_sorted_list_excel)
+
+        sorted_phrases = get_values_from_sorted_numbers(phrase_excel_file, rank_col, 'Phrase', num_phrases)
+
+        if choice_mode == "s":
+            print(f"\nRunning Scholarly search framework profiles matching ranking setup: {rank_col}")
+            results = run_scholarly(sorted_phrases, self.CM, 15)
+            if not results:
+                print("Fallback triggered automatically: Saving calculations into target spreadsheet.")
+                get_values_from_sorted_numbers_and_save(phrase_excel_file, rank_col, 'Phrase', num_phrases, sp_sorted_path)
+        else:
+            print(f"\nExtracting top numerical items context vectors targets to location mapping index matching file: {sp_sorted_path}")
+            get_values_from_sorted_numbers_and_save(phrase_excel_file, rank_col, 'Phrase', num_phrases, sp_sorted_path)
+        
+        print("Collection Operations Sequence Completed.")
+
+    # ==========================================
+    # TAB 2: LITERATURE ANALYSIS
+    # ==========================================
+    def _build_analyze_tab(self):
+        tab = ttk.Frame(self.notebook)
+        self.notebook.add(tab, text="2. Analyze Literature")
+
+        # Select file or folder
+        path_frame = tk.LabelFrame(tab, text="Input Selection Targets (.pdf format)")
+        path_frame.pack(fill="x", padx=10, pady=10)
+
+        self.analysis_input_entry = ttk.Entry(path_frame, width=65)
+        self.analysis_input_entry.grid(row=0, column=0, padx=5, pady=10)
+
+        btn_file = ttk.Button(path_frame, text="Select File", command=lambda: self._browse_file(self.analysis_input_entry))
+        btn_file.grid(row=0, column=1, padx=2, pady=10)
+
+        btn_folder = ttk.Button(path_frame, text="Select Folder", command=lambda: self._browse_folder(self.analysis_input_entry))
+        btn_folder.grid(row=0, column=2, padx=2, pady=10)
+
+        # Storage Management parameters Config settings
+        storage_frame = tk.LabelFrame(tab, text="Analysis Storage Config Options")
+        storage_frame.pack(fill="x", padx=10, pady=5)
+
+        self.custom_path_var_an = tk.BooleanVar(value=False)
+        chk = ttk.Checkbutton(storage_frame, text="Use Custom Storage Folder Path Location?", variable=self.custom_path_var_an, command=self._toggle_analyze_path_btn)
+        chk.grid(row=0, column=0, padx=5, pady=5, sticky="w")
+
+        self.analyze_storage_entry = ttk.Entry(storage_frame, width=50, state="disabled")
+        self.analyze_storage_entry.grid(row=0, column=1, padx=5, pady=5)
+        
+        self.analyze_storage_btn = ttk.Button(storage_frame, text="Browse...", state="disabled", command=lambda: self._browse_folder(self.analyze_storage_entry))
+        self.analyze_storage_btn.grid(row=0, column=2, padx=5, pady=5)
+
+        # Operational Settings
+        llm_frame = ttk.Frame(tab)
+        llm_frame.pack(fill="x", padx=10, pady=10)
+        ttk.Label(llm_frame, text="LLM Processing Service Engine:").pack(side="left", padx=5)
+        self.llm_choice_an = ttk.Combobox(llm_frame, values=["O", "B"], width=5, state="readonly")
+        self.llm_choice_an.set("O")
+        self.llm_choice_an.pack(side="left", padx=5)
+
+        # Process Execute
+        btn_run_analysis = ttk.Button(tab, text="Execute Document Extraction & Analysis", command=self._run_analysis_action)
+        btn_run_analysis.pack(pady=20, ipadx=10, ipady=5)
+
+    def _toggle_analyze_path_btn(self):
+        if self.custom_path_var_an.get():
+            self.analyze_storage_entry.configure(state="normal")
+            self.analyze_storage_btn.configure(state="normal")
+        else:
+            self.analyze_storage_entry.configure(state="disabled")
+            self.analyze_storage_btn.configure(state="disabled")
+
+    def _run_analysis_action(self):
+        input_target = self.analysis_input_entry.get().strip()
+        service = self.llm_choice_an.get()
+
+        if not input_target:
+            messagebox.showerror("Error", "Please input or select a valid target path destination first.")
+            return
+
+        result = analyse_pdf_input_path(input_target, recursive=True)
+        print(f"\n[Validation Log Check] Processing input detected structure template parameters: {result.kind}")
+
+        if result.kind not in ("pdf_file", "folder"):
+            messagebox.showerror("Error", "Input verified path target structure configuration not recognized or invalid.")
+            return
+
+        # Setup Framework Data Storage Analyzer Config instance parameters
+        if self.custom_path_var_an.get() and self.analyze_storage_entry.get().strip():
+            clean_path = clean_folder_path(self.analyze_storage_entry.get().strip())
+            self.MF = DataAnalyzeManager(clean_path)
+        else:
+            self.MF = DataAnalyzeManager()
+
+        self.MF.update_llm_service(service)
+
+        print("[Processing Strategy Active] Directing targets into analysis execution channels pipeline context framework maps...")
+        if result.kind == "pdf_file":
+            process_pdf_mode_file(result.input_path, self.MF.folder, 'a')
+        elif result.kind == "folder":
+            process_folder(result.input_path, self.MF.folder)
+        
+        print("Analysis Execution Chain Log Sequence Finished.")
+
+    # ==========================================
+    # TAB 3: VISUALIZE & RAG QUERY
+    # ==========================================
+    def _build_visualize_tab(self):
+        tab = ttk.Frame(self.notebook)
+        self.notebook.add(tab, text="3. Visualize & Query")
+
+        v_frame = tk.LabelFrame(tab, text="RAG Database Query Engine (Vector DB Layout Profiles)")
+        v_frame.pack(fill="both", expand=True, padx=10, pady=10)
+
+        # Storage Vector Path Layout Selection parameters settings setup
+        db_path_frame = ttk.Frame(v_frame)
+        db_path_frame.pack(fill="x", padx=5, pady=10)
+        
+        ttk.Label(db_path_frame, text="Select Data Storage Engine Source Directory Path:").pack(anchor="w", padx=5)
+        self.visualize_storage_entry = ttk.Entry(db_path_frame, width=65)
+        self.visualize_storage_entry.pack(side="left", padx=5, pady=5)
+        ttk.Button(db_path_frame, text="Browse...", command=lambda: self._browse_folder(self.visualize_storage_entry)).pack(side="left", padx=2, pady=5)
+
+        # Query Formulation block structures
+        query_frame = ttk.Frame(v_frame)
+        query_frame.pack(fill="x", padx=5, pady=10)
+
+        ttk.Label(query_frame, text="Provide Statement/Search Query to identify Literature items:").pack(anchor="w", padx=5)
+        self.query_entry = ttk.Entry(query_frame, width=80)
+        self.query_entry.pack(fill="x", padx=5, pady=5)
+
+        btn_run_query = ttk.Button(v_frame, text="Generate DB Framework & Query Report", command=self._run_visualization_query_action)
+        btn_run_query.pack(pady=20, ipadx=10, ipady=5)
+
+    def _run_visualization_query_action(self):
+        storage_choice = self.visualize_storage_entry.get().strip()
+        query_text = self.query_entry.get().strip()
+
+        if not storage_choice or not query_text:
+            messagebox.showerror("Error", "Please make sure to supply both data engine reference destination parameters and active query statements strings text models templates.")
+            return
+
+        print("\n[RAG Database Architecture Step] Synchronizing local vector storage mapping structures...")
+        generate_databases(storage_choice)
+        
+        print(f"[Query Pipeline Dispatch] Running query text profiling execution match targeting expression: '{query_text}'")
+        generate_query_report([query_text], storage_choice)
+        print("Query Generation Suite Logging Executed successfully.")
+
+    # ==========================================
+    # GLOBAL UTILITY OPERATIONS HELPER MAPPINGS
+    # ==========================================
+    def _browse_file(self, target_entry):
+        file_selected = filedialog.askopenfilename(filetypes=[("PDF Documents", "*.pdf"), ("All Document Items", "*.*")])
+        if file_selected:
+            target_entry.delete(0, tk.END)
+            target_entry.insert(0, str(Path(file_selected).resolve()))
+
+    def _browse_folder(self, target_entry):
+        folder_selected = filedialog.askdirectory()
+        if folder_selected:
+            target_entry.delete(0, tk.END)
+            target_entry.insert(0, str(Path(folder_selected).resolve()))
+
+
+if __name__ == "__main__":
+    app = AutomatedLiteratureUI()
+    app.mainloop()

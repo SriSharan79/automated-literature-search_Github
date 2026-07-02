@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Automated Literature</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+        }
+        .container {
+            display: flex;
+        }
+        .left-section {
+            width: 50%;
+            padding: 20px;
+        }
+        .right-section {
+            width: 40%;
+            padding: 20px;
+            border-left: 1px solid #ccc;
+        }
+        .section {
+            margin-bottom: 20px;
+        }
+        .section input, .section textarea {
+            width: 100%;
+            padding: 10px;
+            margin-top: 5px;
+            margin-bottom: 10px;
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+        table td {
+            padding: 10px;
+        }
+        .add-row {
+            cursor: pointer;
+            font-size: 20px;
+            color: #007bff;
+        }
+        .process-button {
+            width: 100%;
+            padding: 10px;
+            background-color: #007bff;
+            color: white;
+            font-size: 16px;
+            cursor: pointer;
+        }
+        .process-button:disabled {
+            background-color: #ccc;
+        }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <div class="left-section">
+        <h1 style="text-align: center;">Automated Literature</h1>
+        
+        <div class="section">
+            <h2>Scope of the Literature</h2>
+            <textarea id="scope_description" name="scope_description" placeholder="Scope description"></textarea>
+        </div>
+
+        <div class="section">
+            <h2>Keywords</h2>
+            <table id="keywords-table">
+                <tr>
+                    <td><input type="checkbox" class="keyword-checkbox"></td>
+                    <td><input type="text" name="keyword[]" class="keyword-input" placeholder="Enter keyword"></td>
+                </tr>
+            </table>
+            <span class="add-row" onclick="addRow()">+</span>
+        </div>
+
+        <button class="process-button" id="process-button" onclick="processForm()" disabled>Process</button>
+    </div>
+
+    <div class="right-section">
+        <h2>Processing Logs</h2>
+        <div id="log-box"
+             style="
+                height: 400px;
+                border: 1px solid #ccc;
+                padding: 10px;
+                overflow-y: auto;
+                background-color: #f9f9f9;
+                white-space: pre-wrap;
+                font-family: monospace;">
+        </div>
+    </div>
+    
+</div>
+
+<script>
+    function addRow() {
+        const table = document.getElementById('keywords-table');
+        const newRow = table.insertRow();
+        newRow.innerHTML = `
+            <td><input type="checkbox" class="keyword-checkbox"></td>
+            <td><input type="text" name="keyword[]" class="keyword-input" placeholder="Enter keyword"></td>
+        `;
+    }
+
+    function processForm() {
+        const scopeDescription = document.getElementById('scope_description').value;
+        const keywords = Array.from(document.querySelectorAll('.keyword-input')).map(input => input.value);
+        const selectedKeywords = Array.from(document.querySelectorAll('.keyword-checkbox:checked')).map(checkbox => checkbox.value);
+        
+        // Validate form
+        if (!scopeDescription || keywords.length === 0 || selectedKeywords.length === 0) {
+            alert("Please fill out all required fields.");
+            return;
+        }
+
+        const formData = new FormData();
+        formData.append('scope_description', scopeDescription);
+        keywords.forEach((keyword, index) => {
+            formData.append('keyword', keyword);
+            if (document.querySelectorAll('.keyword-checkbox')[index].checked) {
+                formData.append('selected', keyword);
+            }
+        });
+
+        fetch('/process', {
+            method: 'POST',
+            body: formData
+        })
+        .then(response => response.json())
+        .then(data => {
+            const logBox = document.getElementById('log-box');
+            logBox.textContent = data.logs;
+            logBox.scrollTop = logBox.scrollHeight;
+        })
+        .catch(error => {
+            console.error('Error:', error);
+        });
+
+    }
+
+    // Enable the process button when all required fields are filled
+    document.getElementById('scope_description').addEventListener('input', checkForm);
+    document.querySelectorAll('.keyword-input').forEach(input => input.addEventListener('input', checkForm));
+    document.querySelectorAll('.keyword-checkbox').forEach(checkbox => checkbox.addEventListener('change', checkForm));
+
+    function checkForm() {
+        const scopeDescription = document.getElementById('scope_description').value;
+        const keywords = document.querySelectorAll('.keyword-input');
+        const selectedKeywords = document.querySelectorAll('.keyword-checkbox:checked');
+        
+        // Enable the button if all fields are filled
+        if (scopeDescription && keywords.length > 0 && selectedKeywords.length > 0) {
+            document.getElementById('process-button').disabled = false;
+        } else {
+            document.getElementById('process-button').disabled = true;
+        }
+    }
+</script>
+
+</body>
+</html>
