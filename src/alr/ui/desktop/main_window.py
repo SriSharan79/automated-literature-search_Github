@@ -13,6 +13,9 @@ from alr.collection.collection_system_prompts import KEYWORD_GENERATOR_PROMPT, S
 
 from alr.common.general_utils import Proccess_string_to_list
 from alr.common.llm_utils import list_available_models, set_selected_model, get_selected_model
+from alr.common.LLM_Config import get_stored_api_key, set_api_key, KEY_ENV_NAMES
+from alr.common.sql_store import sync_storage_to_sql
+from alr.ui.desktop.review_view import ReviewDataView, open_review_window
 from alr.data_analysis.Pdf_File_processor import process_pdf_mode_file
 from alr.data_analysis.Folder_Data_Analyzer import process_folder
 from alr.rag_builders.db_manager import generate_databases
@@ -50,9 +53,12 @@ class AutomatedLiteratureUI(tk.Tk):
         print(f"Welcome, {self.username}! Application Initialized.")
 
     def _create_widgets(self):
-        # Top Greeting
-        greeting_lbl = tk.Label(self, text=f"Hello, {self.username}! Automated Literature Review Support Tool", font=("Arial", 12, "bold"))
-        greeting_lbl.pack(pady=10)
+        # Top bar: greeting + global actions
+        top_bar = tk.Frame(self)
+        top_bar.pack(fill="x", pady=10)
+        greeting_lbl = tk.Label(top_bar, text=f"Hello, {self.username}! Automated Literature Review Support Tool", font=("Arial", 12, "bold"))
+        greeting_lbl.pack(side="left", padx=10)
+        ttk.Button(top_bar, text="API Keys...", command=self._manage_api_keys_action).pack(side="right", padx=10)
 
         # Tab Control (Notebook)
         self.notebook = ttk.Notebook(self)
@@ -62,6 +68,7 @@ class AutomatedLiteratureUI(tk.Tk):
         self._build_collect_tab()
         self._build_analyze_tab()
         self._build_visualize_tab()
+        self._build_review_tab()
 
         # Integrated Console Terminal Output Box at Bottom
         terminal_frame = tk.LabelFrame(self, text="Console Output Log")
@@ -187,6 +194,9 @@ class AutomatedLiteratureUI(tk.Tk):
             messagebox.showerror("Error", "Please clarify both Research Area and Research Question items first.")
             return
 
+        if not self._ensure_api_key(service):
+            return
+
         # Setup Collection Manager Object
         if self.custom_path_var_col.get() and self.collect_path_entry.get().strip():
             clean_path = clean_folder_path(self.collect_path_entry.get().strip())
@@ -221,6 +231,8 @@ class AutomatedLiteratureUI(tk.Tk):
         self.CM.update_Research_Scope(refined_scope)
 
         service = self.llm_choice_col.get()
+        if not self._ensure_api_key(service):
+            return
         keywords_list = []
 
         if self.suggest_kw_var.get():
@@ -375,6 +387,9 @@ class AutomatedLiteratureUI(tk.Tk):
             messagebox.showerror("Error", "Please input or select a valid target path destination first.")
             return
 
+        if not self._ensure_api_key(service):
+            return
+
         result = analyse_pdf_input_path(input_target, recursive=True)
         print(f"\n[Validation Log Check] Processing input detected structure template parameters: {result.kind}")
 
@@ -396,8 +411,17 @@ class AutomatedLiteratureUI(tk.Tk):
             process_pdf_mode_file(result.input_path, self.MF.folder, 'a')
         elif result.kind == "folder":
             process_folder(result.input_path, self.MF.folder)
-        
+
         print("Analysis Execution Chain Log Sequence Finished.")
+
+        # Mirror the analyzed results into the central SQLite store for review.
+        try:
+            synced = sync_storage_to_sql(self.MF)
+            print(f"[Database Sync] {synced} document(s) written to the review database.")
+            if hasattr(self, "review_view"):
+                self.review_view.refresh()
+        except Exception as e:
+            print(f"[Database Sync] Skipped/failed: {e}")
 
     # ==========================================
     # TAB 3: VISUALIZE & RAG QUERY
@@ -443,6 +467,69 @@ class AutomatedLiteratureUI(tk.Tk):
         print(f"[Query Pipeline Dispatch] Running query text profiling execution match targeting expression: '{query_text}'")
         generate_query_report([query_text], storage_choice)
         print("Query Generation Suite Logging Executed successfully.")
+
+    # ==========================================
+    # TAB 4: REVIEW ANALYZED DATA
+    # ==========================================
+    def _build_review_tab(self):
+        tab = ttk.Frame(self.notebook)
+        self.notebook.add(tab, text="4. Review Data")
+
+        header = ttk.Frame(tab)
+        header.pack(fill="x", padx=10, pady=(8, 0))
+        ttk.Label(header, text="Browse and curate analyzed documents (stored in the local SQLite database).").pack(side="left")
+        ttk.Button(header, text="Pop out ▸", command=lambda: open_review_window(self)).pack(side="right")
+
+        container = ttk.Frame(tab)
+        container.pack(fill="both", expand=True)
+        self.review_view = ReviewDataView(container)
+
+    # ==========================================
+    # API KEY MANAGEMENT
+    # ==========================================
+    def _manage_api_keys_action(self):
+        """Modal dialog to view/enter and persist the provider API keys."""
+        dialog = tk.Toplevel(self)
+        dialog.title("Manage API Keys")
+        dialog.geometry("520x220")
+        dialog.transient(self)
+        dialog.grab_set()
+
+        ttk.Label(dialog, text="API keys are stored as environment variables and persisted for next launch.",
+                  wraplength=480).pack(padx=12, pady=10, anchor="w")
+
+        entries = {}
+        form = ttk.Frame(dialog)
+        form.pack(fill="x", padx=12, pady=5)
+        for i, key_type in enumerate(KEY_ENV_NAMES):
+            ttk.Label(form, text=f"{key_type}:", width=14).grid(row=i, column=0, sticky="w", pady=6)
+            var = tk.StringVar(value=get_stored_api_key(key_type) or "")
+            entry = ttk.Entry(form, textvariable=var, width=48, show="*")
+            entry.grid(row=i, column=1, pady=6, padx=5)
+            entries[key_type] = var
+
+        def _save():
+            for key_type, var in entries.items():
+                value = var.get().strip()
+                if value:
+                    set_api_key(key_type, value)
+            messagebox.showinfo("Saved", "API keys saved.")
+            dialog.destroy()
+
+        ttk.Button(dialog, text="Save", command=_save).pack(pady=12)
+
+    def _ensure_api_key(self, provider_code):
+        """
+        Ensure a key exists for the selected provider ('O'/'B'). If missing, open
+        the key dialog. Returns True if a key is now present, else False.
+        """
+        key_type = "DLR Ollama" if str(provider_code).upper() == "O" else "BlaBla Door"
+        if get_stored_api_key(key_type):
+            return True
+        messagebox.showinfo("API key required",
+                            f"No API key found for {key_type}. Please enter it to continue.")
+        self._manage_api_keys_action()
+        return bool(get_stored_api_key(key_type))
 
     # ==========================================
     # GLOBAL UTILITY OPERATIONS HELPER MAPPINGS

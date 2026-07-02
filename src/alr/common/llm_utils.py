@@ -1,6 +1,6 @@
 from alr.common.System_prompts import General_Sys_Prompt
 from alr.common.general_utils import caluculate_time_taken, print_with_separator
-from alr.common.LLM_Config import BLABLADOR_BASE_URL, PREFERRED_BLABLADOR_MODELS, check_api_key,local_model_dir,model_repo_id, OLLAMA_BASE_URL, DEFAULT_BLABLADOR_MODEL, DEFAULT_OLLAMA_MODEL
+from alr.common.LLM_Config import BLABLADOR_BASE_URL, PREFERRED_BLABLADOR_MODELS, check_api_key, get_stored_api_key,local_model_dir,model_repo_id, OLLAMA_BASE_URL, DEFAULT_BLABLADOR_MODEL, DEFAULT_OLLAMA_MODEL
 from alr.common.file_manager import ALR_main_folder
 
 from collections import deque
@@ -54,8 +54,8 @@ def set_selected_model(service: str, model: str) -> None:
 
 def list_blablador_models(blablador_key: str = None) -> list:
     """Fetch the list of currently available Blablador model ids (live call)."""
-    BlaBla_API_Key = check_api_key('BlaBla Door')
-    key = blablador_key or BlaBla_API_Key
+    # Non-prompting: this is called from the UI, so never block on console input.
+    key = blablador_key or get_stored_api_key('BlaBla Door')
     if not key:
         print(Fore.YELLOW + "⚠️ No Blablador API key - cannot list models." + Style.RESET_ALL)
         return []
@@ -74,8 +74,8 @@ def list_blablador_models(blablador_key: str = None) -> list:
 
 def list_ollama_models(ollama_key: str = None) -> list:
     """Fetch the list of currently available DLR Ollama model ids (live call)."""
-    Ollama_DLR_API_Key = check_api_key('DLR Ollama')
-    key = ollama_key or Ollama_DLR_API_Key
+    # Non-prompting: this is called from the UI, so never block on console input.
+    key = ollama_key or get_stored_api_key('DLR Ollama')
     headers = {}
     if key:
         headers["Authorization"] = f"Bearer {key}"

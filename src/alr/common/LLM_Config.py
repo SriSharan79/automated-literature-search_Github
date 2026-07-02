@@ -15,60 +15,94 @@ local_model_dir = os.path.join(base_path, "00_LLM_model", model_repo_id)
 
 API_keys_config= os.path.join(ALR_main_folder, "API_keys_config.json")
 
-sys_env_DLR_ollama=os.getenv("Ollama_DLR_API_Key")
-sys_env_BlaBla=os.getenv("BlaBla_API_Key")
-Ollama_DLR_API_Key= None
-BlaBla_API_Key=None
+# Map the human-readable key type to its environment-variable name.
+KEY_ENV_NAMES = {
+    'DLR Ollama': "Ollama_DLR_API_Key",
+    'BlaBla Door': "BlaBla_API_Key",
+}
 
-def get_api_key(API_Key_type):
-    # Check if the config file exists
+
+def _load_config():
+    """Return the persisted API-key config as a dict (empty if none/invalid)."""
     if os.path.exists(API_keys_config):
-        with open(API_keys_config, 'r') as file:
-            config_data = json.load(file)
-        
-        # Check if API key exists in the config file
-        api_key = config_data.get(API_Key_type, None)
-        if api_key:
-            # print(f"{API_Key_type} API Key found in the config file.")
-            return api_key
-        else:
-            print(f"{API_Key_type} API Key not found in the config file.")
-    else:
-        print("Config file not found.")
-    
-    # Prompt user for the API key if not found
-    api_key = input(f"Please enter your {API_Key_type} API Key: ")
-    
-    # Save the entered API key to the config file
-    with open(API_keys_config, 'w') as file:
-        config_data = {API_Key_type: api_key}
-        json.dump(config_data, file, indent=4)
+        try:
+            with open(API_keys_config, 'r') as file:
+                return json.load(file)
+        except (json.JSONDecodeError, OSError):
+            pass
+    return {}
 
-    # Store API key as environment variable
-    
-    if API_Key_type=='DLR Ollama':
-        os.environ["Ollama_DLR_API_Key"] = api_key 
-        
-    
-    if API_Key_type=='BlaBla Door':         
-        os.environ["BlaBla_API_Key"] = api_key 
-    print("API Key stored as environment variable.")
+
+def _load_persisted_keys_into_env():
+    """
+    On import, copy any persisted keys into os.environ (unless already set in
+    the environment), so stored keys behave like env vars across launches.
+    """
+    config_data = _load_config()
+    for key_type, env_name in KEY_ENV_NAMES.items():
+        if not os.getenv(env_name):
+            value = config_data.get(key_type)
+            if value:
+                os.environ[env_name] = value
+
+
+_load_persisted_keys_into_env()
+
+
+def get_stored_api_key(API_Key_type):
+    """
+    Return the API key for a service from the environment (or persisted config),
+    or None if it has not been set. Never prompts.
+    """
+    env_name = KEY_ENV_NAMES.get(API_Key_type)
+    if env_name and os.getenv(env_name):
+        return os.getenv(env_name)
+    return _load_config().get(API_Key_type) or None
+
+
+def set_api_key(API_Key_type, api_key):
+    """
+    Store an API key: set it in os.environ for the current session AND persist
+    it to the config file (merging, not overwriting other keys) so it is loaded
+    on the next launch.
+    """
+    api_key = (api_key or "").strip()
+    if not api_key:
+        return None
+
+    env_name = KEY_ENV_NAMES.get(API_Key_type)
+    if env_name:
+        os.environ[env_name] = api_key
+
+    config_data = _load_config()
+    config_data[API_Key_type] = api_key
+    try:
+        with open(API_keys_config, 'w') as file:
+            json.dump(config_data, file, indent=4)
+    except OSError as e:
+        print(f"Warning: could not persist API key to {API_keys_config}: {e}")
     return api_key
 
+
+def get_api_key(API_Key_type):
+    """
+    CLI helper: return the stored key, or prompt for it on the console and
+    persist it. UI code should use get_stored_api_key/set_api_key instead.
+    """
+    existing = get_stored_api_key(API_Key_type)
+    if existing:
+        return existing
+
+    print(f"{API_Key_type} API Key not found.")
+    api_key = input(f"Please enter your {API_Key_type} API Key: ")
+    return set_api_key(API_Key_type, api_key)
+
+
 def check_api_key(API_Key_type):
-    if API_Key_type=='DLR Ollama':
-        if sys_env_DLR_ollama:
-            return sys_env_DLR_ollama
-        else:
-            return get_api_key(API_Key_type)
-            
-    
-    if API_Key_type=='BlaBla Door':
-        if sys_env_BlaBla:
-            return sys_env_BlaBla
-        else:
-            return get_api_key(API_Key_type)    
-   
+    """Return the stored key, prompting on the console (CLI) only if missing."""
+    return get_api_key(API_Key_type)
+
+
 # System Prompts
 
 BLABLADOR_BASE_URL = "https://api.helmholtz-blablador.fz-juelich.de/v1"
