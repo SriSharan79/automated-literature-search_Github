@@ -7,6 +7,7 @@ dist/
 # Virtual Environment
 venv/
 .venv/
+build_venv/
 # Project-specific outputs
 output/
 batch_output/

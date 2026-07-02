@@ -8,11 +8,12 @@ if not exist venv (
 :: Step 2: Activate virtual environment
 call venv\Scripts\activate.bat
 
-:: Step 3: Install requirements
+:: Step 3: Install requirements + the app package
 pip install -r requirements.txt
+pip install -e .
 
-:: Step 4: Run the Python script
-python todo.py %*
+:: Step 4: Launch the desktop app from source
+python src\gui_main.py %*
 
 :: Optional: Deactivate the virtual environment
 deactivate
