@@ -7,8 +7,11 @@ class JSONRestructurerUI:
 
     def __init__(self, root):
         self.root = root
-        self.root.title("JSON Section Restructurer & Editor")
-        self.root.geometry("750x700")
+        # Only set window properties when embedded directly in a Tk/Toplevel;
+        # when hosted inside a Frame (e.g. a notebook tab) these are skipped.
+        if hasattr(root, "title"):
+            self.root.title("JSON Section Restructurer & Editor")
+            self.root.geometry("750x700")
 
         # Underlying state data
         self.file_path = None
@@ -262,6 +265,13 @@ class JSONRestructurerUI:
                     messagebox.showinfo("Saved", "JSON document saved successfully!")
                 except Exception as e:
                     messagebox.showerror("Error", f"Failed to save file structure:\n{str(e)}")
+
+
+def open_section_editor_window(master=None):
+    """Open the JSON section editor in its own top-level window."""
+    win = tk.Toplevel(master) if master is not None else tk.Tk()
+    JSONRestructurerUI(win)
+    return win
 
 
 if __name__ == "__main__":

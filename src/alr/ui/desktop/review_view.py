@@ -8,6 +8,7 @@ self-contained widget class (like ``section_rewriter_view.JSONRestructurerUI``)
 so it can be embedded as a notebook tab or popped out into its own window.
 """
 
+import csv
 import json
 import os
 import subprocess
@@ -17,6 +18,7 @@ from tkinter import ttk, filedialog, messagebox
 
 from alr.common.sql_store import (
     AnalyzedDataStore,
+    COLUMNS,
     SECTION_COLUMNS,
     LIST_SECTIONS,
     sync_storage_to_sql,
@@ -69,6 +71,8 @@ class ReviewDataView:
         ttk.Button(toolbar, text="Clear", command=self._clear_search).pack(side="left", padx=2)
         ttk.Button(toolbar, text="Sync from storage folder...",
                    command=self._sync_action).pack(side="left", padx=8)
+        ttk.Button(toolbar, text="Export CSV...", command=self._export_csv).pack(side="left", padx=2)
+        ttk.Button(toolbar, text="Export Excel...", command=self._export_excel).pack(side="left", padx=2)
         self.count_lbl = ttk.Label(toolbar, text="")
         self.count_lbl.pack(side="right")
 
@@ -230,6 +234,47 @@ class ReviewDataView:
         except Exception as e:
             messagebox.showerror("Sync failed", str(e))
         self.refresh()
+
+    def _current_rows(self):
+        """The documents currently shown (respects the search filter)."""
+        return self.store.list_documents(self.search_var.get().strip() or None)
+
+    def _export_csv(self):
+        rows = self._current_rows()
+        if not rows:
+            messagebox.showinfo("Nothing to export", "There are no documents to export.")
+            return
+        path = filedialog.asksaveasfilename(
+            title="Export analyzed data to CSV", defaultextension=".csv",
+            filetypes=[("CSV files", "*.csv")], initialfile="analyzed_data.csv")
+        if not path:
+            return
+        try:
+            with open(path, "w", newline="", encoding="utf-8") as f:
+                writer = csv.DictWriter(f, fieldnames=COLUMNS, extrasaction="ignore")
+                writer.writeheader()
+                for r in rows:
+                    writer.writerow({c: r.get(c) for c in COLUMNS})
+            messagebox.showinfo("Exported", f"Exported {len(rows)} document(s) to:\n{path}")
+        except Exception as e:
+            messagebox.showerror("Export failed", str(e))
+
+    def _export_excel(self):
+        rows = self._current_rows()
+        if not rows:
+            messagebox.showinfo("Nothing to export", "There are no documents to export.")
+            return
+        path = filedialog.asksaveasfilename(
+            title="Export analyzed data to Excel", defaultextension=".xlsx",
+            filetypes=[("Excel files", "*.xlsx")], initialfile="analyzed_data.xlsx")
+        if not path:
+            return
+        try:
+            import pandas as pd
+            pd.DataFrame(rows, columns=COLUMNS).to_excel(path, index=False)
+            messagebox.showinfo("Exported", f"Exported {len(rows)} document(s) to:\n{path}")
+        except Exception as e:
+            messagebox.showerror("Export failed", str(e))
 
     def _open_pdf(self):
         if not self.current_doc:

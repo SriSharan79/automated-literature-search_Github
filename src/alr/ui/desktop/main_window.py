@@ -16,6 +16,7 @@ from alr.common.llm_utils import list_available_models, set_selected_model, get_
 from alr.common.LLM_Config import get_stored_api_key, set_api_key, KEY_ENV_NAMES
 from alr.common.sql_store import sync_storage_to_sql
 from alr.ui.desktop.review_view import ReviewDataView, open_review_window
+from alr.ui.desktop.section_rewriter_view import JSONRestructurerUI, open_section_editor_window
 from alr.data_analysis.Pdf_File_processor import process_pdf_mode_file
 from alr.data_analysis.Folder_Data_Analyzer import process_folder
 from alr.rag_builders.db_manager import generate_databases
@@ -69,6 +70,7 @@ class AutomatedLiteratureUI(tk.Tk):
         self._build_analyze_tab()
         self._build_visualize_tab()
         self._build_review_tab()
+        self._build_section_editor_tab()
 
         # Integrated Console Terminal Output Box at Bottom
         terminal_frame = tk.LabelFrame(self, text="Console Output Log")
@@ -483,6 +485,22 @@ class AutomatedLiteratureUI(tk.Tk):
         container = ttk.Frame(tab)
         container.pack(fill="both", expand=True)
         self.review_view = ReviewDataView(container)
+
+    # ==========================================
+    # TAB 5: SECTION JSON EDITOR
+    # ==========================================
+    def _build_section_editor_tab(self):
+        tab = ttk.Frame(self.notebook)
+        self.notebook.add(tab, text="5. Section Editor")
+
+        header = ttk.Frame(tab)
+        header.pack(fill="x", padx=10, pady=(8, 0))
+        ttk.Label(header, text="Restructure and edit section JSON files.").pack(side="left")
+        ttk.Button(header, text="Pop out ▸", command=lambda: open_section_editor_window(self)).pack(side="right")
+
+        container = ttk.Frame(tab)
+        container.pack(fill="both", expand=True)
+        self.section_editor = JSONRestructurerUI(container)
 
     # ==========================================
     # API KEY MANAGEMENT
