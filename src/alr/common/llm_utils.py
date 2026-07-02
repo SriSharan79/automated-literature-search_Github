@@ -18,8 +18,6 @@ import os
 import tiktoken
 import re # Import regex
 from typing import List,Dict,Any
-# LangChain Imports
-from langchain_core.prompts import PromptTemplate
 from colorama import Fore, init
 init(autoreset=True)
 import time

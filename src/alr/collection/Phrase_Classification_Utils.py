@@ -10,7 +10,8 @@ import pandas as pd
 from datetime import datetime
 import time
 from itertools import chain, combinations,product
-from alr.common.llm_utils import blabla_ask_llm,PromptTemplate
+from alr.common.llm_utils import blabla_ask_llm
+from langchain_core.prompts import PromptTemplate
 from alr.collection.collection_system_prompts import SYSTEM_PROMPT_ClASSIFIER,PROMPT_TEMPLATE_ClASSIFIER
 # Initialize colorama
 init(autoreset=True)
