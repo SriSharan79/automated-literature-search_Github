@@ -1,137 +1,102 @@
-#!/usr/bin/env python3
 """
-verify_phase5.py
-==================
+test_embeddings.py
 
-Runs the Phase 5 verification checks:
-  1. Imports every module under src/alr/ and reports any that fail
-     (catches circular imports, missing symbols after 3f deletions,
-     and runtime AttributeErrors like the Methodology bug — none of
-     which a static checker like Pylance will catch).
-  2. Scans for leftover sys.path.extend(...) blocks (Phase 3a not done yet).
-  3. Scans for leftover references to the old underscored section-map
-     function names (_build_sections_map*, _build_sections_Master_map)
-     that should have been deleted/renamed in Phase 3f.
-  4. Checks that nothing under src/alr/ imports from archive/ or notebooks/
-     (those should be dead ends, not dependencies).
+Standalone test script for:
+  1. Discovering which models on DLR Ollama and Blablador are embedding models
+     (i.e. their id/name contains 'embed').
+  2. Resolving the default embedding model for each service, preferring
+     'qwen3-8b-embeddings' when it's available.
+  3. Calling the embeddings endpoint for each service with sample text.
+  4. Saving the returned embedding vectors (and raw API response) to a JSON
+     file on disk via save_embedding_result().
 
-This assumes you've already run `pip install -e .` from the repo root
-(Phase 5.1) so `import alr...` resolves the same way this script sees it.
+Run:
+    python test_embeddings.py
 
-Usage:
-    Edit REPO_PATH below, then run:
-        python verify_phase5.py
+Notes:
+  - Requires valid API keys already stored/registered the same way the rest
+    of llm_utils.py expects (see check_api_key / get_stored_api_key).
+  - If a service has no reachable /models endpoint or no embedding models,
+    the script reports it and moves on to the next service rather than
+    crashing.
 """
 
-from __future__ import annotations
-
-import importlib
-import re
-import sys
-import traceback
-from pathlib import Path
-
-
-def find_alr_modules(repo_root: Path) -> list[str]:
-    """Convert every src/alr/**/*.py file into its dotted module name."""
-    alr_root = repo_root / "src" / "alr"
-    modules = []
-    for path in sorted(alr_root.rglob("*.py")):
-        rel = path.relative_to(repo_root / "src").with_suffix("")
-        parts = rel.parts
-        if parts[-1] == "__init__":
-            parts = parts[:-1]
-        if not parts:
-            continue
-        modules.append(".".join(parts))
-    return modules
-
-
-def run_import_smoke_test(modules: list[str]) -> tuple[list[str], list[tuple[str, str]]]:
-    passed, failed = [], []
-    for mod_name in modules:
-        try:
-            importlib.import_module(mod_name)
-            passed.append(mod_name)
-        except Exception:
-            failed.append((mod_name, traceback.format_exc()))
-    return passed, failed
-
-
-LEFTOVER_SYS_PATH_RE = re.compile(r"sys\.path\.extend\(")
-LEFTOVER_UNDERSCORE_SECTION_FN_RE = re.compile(
-    r"\b(_build_sections_map\w*|_build_sections_Master_map)\b"
-)
-ARCHIVE_OR_NOTEBOOK_IMPORT_RE = re.compile(
-    r"^\s*(from|import)\s+(archive|notebooks)\b", re.MULTILINE
+from alr.common.llm_utils import (
+    list_embedding_models,
+    get_default_embedding_model,
+    set_selected_embedding_model,
+    get_embedding,
+    save_embedding_result,
+    DEFAULT_EMBEDDING_MODEL,
 )
 
+SAMPLE_TEXTS = [
+    "The quick brown fox jumps over the lazy dog.",
+    "Embeddings turn text into numerical vectors for semantic search.",
+]
 
-def scan_repo_text(repo_root: Path) -> dict[str, list[str]]:
-    findings: dict[str, list[str]] = {
-        "sys.path.extend still present": [],
-        "old underscored section-map names still referenced": [],
-        "src/alr importing from archive/ or notebooks/": [],
-    }
-    for path in (repo_root / "src" / "alr").rglob("*.py"):
-        text = path.read_text(encoding="utf-8")
-        rel = str(path.relative_to(repo_root))
-
-        if LEFTOVER_SYS_PATH_RE.search(text):
-            findings["sys.path.extend still present"].append(rel)
-        if LEFTOVER_UNDERSCORE_SECTION_FN_RE.search(text):
-            findings["old underscored section-map names still referenced"].append(rel)
-        if ARCHIVE_OR_NOTEBOOK_IMPORT_RE.search(text):
-            findings["src/alr importing from archive/ or notebooks/"].append(rel)
-
-    return {k: v for k, v in findings.items() if v}
+SERVICES = ["DLR Ollama", "BlaBla"]
 
 
-def main(repo_path: str) -> int:
-    repo_root = Path(repo_path).expanduser().resolve()
+def test_service(service: str):
+    print("\n" + "=" * 70)
+    print(f"Testing embedding models for: {service}")
+    print("=" * 70)
 
-    if not (repo_root / "src" / "alr").is_dir():
-        print(f"Error: {repo_root / 'src' / 'alr'} not found — run this after Phase 2/3.",
-              file=sys.stderr)
-        return 1
+    # 1. Discover embedding models available right now.
+    embedding_models = list_embedding_models(service)
+    print(f"[1] Embedding models found for {service}: {embedding_models}")
 
-    print("== 5.3a: import smoke test ==")
-    modules = find_alr_modules(repo_root)
-    print(f"Found {len(modules)} modules under src/alr/\n")
+    if not embedding_models:
+        print(f"[!] No embedding models available for {service} - skipping call test.")
+        return None
 
-    passed, failed = run_import_smoke_test(modules)
+    # 2. Resolve which one to use (prefers DEFAULT_EMBEDDING_MODEL, currently
+    #    set to '{}').
+    default_model = get_default_embedding_model(service)
+    print(f"[2] Resolved default embedding model for {service}: {default_model}")
 
-    print(f"PASSED: {len(passed)}")
-    print(f"FAILED: {len(failed)}\n")
+    # Optional: force a specific model instead of the resolved default, e.g.:
+    # set_selected_embedding_model(service, "qwen3-8b-embeddings")
 
-    if failed:
-        print("== Failures ==")
-        for mod_name, tb in failed:
-            print(f"\n--- {mod_name} ---")
-            print(tb)
+    # 3. Call the embeddings endpoint with sample text (batch of 2 strings).
+    try:
+        result = get_embedding(SAMPLE_TEXTS, service=service, model=default_model)
+    except Exception as e:
+        print(f"[X] Embedding call failed for {service}: {e}")
+        return None
 
-    print("\n== 5.3b/5.4: leftover migration artifacts ==")
-    findings = scan_repo_text(repo_root)
-    if not findings:
-        print("None found — sys.path.extend, old section-map names, and "
-              "archive/notebook imports are all clean.")
-    else:
-        for category, files in findings.items():
-            print(f"\n  {category}:")
-            for f in files:
-                print(f"    {f}")
+    embeddings = result["embeddings"]
+    print(f"[3] Received {len(embeddings)} embedding vector(s) using model '{result['model']}'")
+    for i, vec in enumerate(embeddings):
+        preview = vec[:5]
+        print(f"    - text[{i}]: dim={len(vec)}, first 5 values={preview}")
 
-    print("\n== Summary ==")
-    ok = not failed and not findings
-    print("ALL CLEAR — safe to proceed to manual entry-point smoke runs (5.5)."
-          if ok else
-          "ISSUES FOUND — resolve the above before committing / running entry points.")
-    return 0 if ok else 1
+    # 4. Persist the result (vectors + raw response) to disk.
+    saved_path = save_embedding_result(result, prefix=f"test_{service.replace(' ', '_')}")
+    print(f"[4] Saved embedding result to: {saved_path}")
+
+    return result
+
+
+def main():
+    results = {}
+    for service in SERVICES:
+        results[service] = test_service(service)
+
+    print("\n" + "=" * 70)
+    print("SUMMARY")
+    print("=" * 70)
+    for service, result in results.items():
+        if result:
+            dim = len(result["embeddings"][0]) if result["embeddings"] else 0
+            print(
+                f"{service}: OK - model='{result['model']}', "
+                f"vectors={len(result['embeddings'])}, dim={dim}"
+            )
+        else:
+            print(f"{service}: SKIPPED / FAILED")
 
 
 if __name__ == "__main__":
-    # ---- Settings: edit this, then run `python verify_phase5.py` ----
-    REPO_PATH = r"C:\Users\kata_du\git\automated-literature-search_Github"   # <- set this to your local repo path
-    # -------------------------------------------------------------------
-
-    raise SystemExit(main(REPO_PATH))
+    main()

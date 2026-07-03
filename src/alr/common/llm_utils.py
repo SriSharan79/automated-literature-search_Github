@@ -83,6 +83,8 @@ def list_ollama_models(ollama_key: str = None) -> list:
         resp = requests.get(f"{OLLAMA_BASE_URL}/models", headers=headers, timeout=30)
         resp.raise_for_status()
         data = resp.json()
+        # with open("models_cache.json", 'w') as f:
+        #     json.dump(data, f, indent=2)
         # OpenAI-compatible ({"data": [{"id": ...}]}) or native Ollama ({"models": [{"name": ...}]})
         if isinstance(data, dict) and data.get('data'):
             return [m.get('id') for m in data['data'] if m.get('id')]
@@ -133,6 +135,313 @@ def select_model_interactive(service: str) -> str:
         print(Fore.RED + "Invalid selection, please try again." + Style.RESET_ALL)
 
 
+# ---------------------------------------------------------------------------
+# Embedding model discovery & selection
+# ---------------------------------------------------------------------------
+# Preferred default embedding model. If it shows up in the live model list for
+# a service, it is used; otherwise we fall back to the first embedding model
+# found (or to this name anyway, in case listing fails).
+DEFAULT_EMBEDDING_MODEL = "qwen3-8b-embeddings"
+
+SELECTED_EMBEDDING_MODELS = {
+    "BlaBla": None,
+    "DLR Ollama": None,
+}
+
+
+def _filter_embedding_models(models: list) -> list:
+    """Return only the models whose id/name contains 'embed' (case-insensitive)."""
+    return [m for m in (models or []) if m and "embed" in m.lower()]
+
+
+def list_embedding_models(service: str) -> list:
+    """
+    Fetch the live model list for a service ('BlaBla' or 'DLR Ollama') via the
+    existing /models call, and return only the ones that look like embedding
+    models (id/name contains 'embed').
+    """
+    all_models = list_available_models(service)
+    embedding_models = _filter_embedding_models(all_models)
+    return embedding_models
+
+
+def get_default_embedding_model(service: str, preferred: str = DEFAULT_EMBEDDING_MODEL) -> str:
+    """
+    Resolve which embedding model to use for `service`.
+
+    Preference order:
+      1. Embedding model already selected earlier this session.
+      2. `preferred` ('qwen3-8b-embeddings' by default), if it is present in
+         the live embedding-model list.
+      3. First embedding model found in the live list.
+      4. `preferred` as a last-resort fallback if the live list is empty
+         (e.g. the /models call failed).
+    """
+    if SELECTED_EMBEDDING_MODELS.get(service):
+        return SELECTED_EMBEDDING_MODELS[service]
+
+    embedding_models = list_embedding_models(service)
+
+    if not embedding_models:
+        print(Fore.YELLOW + f"⚠️ No embedding models found for {service}; falling back to '{preferred}'." + Style.RESET_ALL)
+        SELECTED_EMBEDDING_MODELS[service] = preferred
+        return preferred
+
+    # Case-insensitive match against the preferred model name: exact match,
+    # or the preferred name appearing as a substring (e.g. preferred
+    # 'qwen3-8b-embeddings' matching a served id like 'qwen3-8b-embeddings-Q4').
+    for m in embedding_models:
+        if m.lower() == preferred.lower() or preferred.lower() in m.lower():
+            SELECTED_EMBEDDING_MODELS[service] = m
+            print(Fore.GREEN + f"✅ {service} default embedding model: {m}" + Style.RESET_ALL)
+            return m
+
+    # Preferred model not available for this service; use the first one found.
+    chosen = embedding_models[0]
+    SELECTED_EMBEDDING_MODELS[service] = chosen
+    print(Fore.YELLOW + f"⚠️ '{preferred}' not available for {service}; using '{chosen}' instead." + Style.RESET_ALL)
+    return chosen
+
+
+def set_selected_embedding_model(service: str, model: str) -> None:
+    """Set the embedding model to use for a service for the rest of the session."""
+    if service not in SELECTED_EMBEDDING_MODELS:
+        raise ValueError(f"Unknown service '{service}'. Expected one of {list(SELECTED_EMBEDDING_MODELS)}.")
+    SELECTED_EMBEDDING_MODELS[service] = model
+    print(Fore.GREEN + f"✅ {service} embedding model set to: {model}" + Style.RESET_ALL)
+
+
+def get_embedding(
+    text,
+    service: str,
+    model: str = None,
+    api_key: str = None,
+    timeout: int = 60,
+) -> dict:
+    """
+    Get embedding vector(s) for `text` from the given service's OpenAI-compatible
+    /embeddings endpoint.
+
+    Args:
+        text: a single string, or a list of strings (batch embedding).
+        service: 'BlaBla' or 'DLR Ollama'.
+        model: explicit model id to use; otherwise the resolved default
+               embedding model for the service is used (qwen3-8b-embeddings
+               if available).
+        api_key: optional explicit API key override.
+        timeout: request timeout in seconds.
+
+    Returns:
+        {
+            "model": <model actually used>,
+            "service": <service>,
+            "embeddings": [[...], [...], ...],   # one vector per input, in order
+            "raw": <raw JSON response from the API>,
+        }
+    """
+    if service not in ("BlaBla", "DLR Ollama"):
+        raise ValueError(f"Unknown service '{service}'. Expected 'BlaBla' or 'DLR Ollama'.")
+
+    inputs = text if isinstance(text, list) else [text]
+    resolved_model = model or get_default_embedding_model(service)
+
+    if service == "BlaBla":
+        base_url = BLABLADOR_BASE_URL
+        key = api_key or check_api_key('BlaBla Door')
+    else:
+        base_url = OLLAMA_BASE_URL
+        key = api_key or check_api_key('DLR Ollama')
+
+    headers = {"Content-Type": "application/json"}
+    if key:
+        headers["Authorization"] = f"Bearer {key}"
+
+    payload = {
+        "model": resolved_model,
+        "input": inputs,
+    }
+
+    url = f"{base_url}/embeddings"
+
+    start_time = time.time()
+    resp = requests.post(url, headers=headers, json=payload, timeout=timeout)
+    resp.raise_for_status()
+    result = resp.json()
+    end_time = time.time()
+
+    try:
+        # OpenAI-compatible embeddings response: {"data": [{"embedding": [...], "index": 0}, ...]}
+        data_sorted = sorted(result.get("data", []), key=lambda d: d.get("index", 0))
+        embeddings = [d["embedding"] for d in data_sorted]
+        if not embeddings:
+            raise ValueError("No embedding vectors returned")
+    except (KeyError, TypeError, ValueError) as exc:
+        print(f"❌ {service} embedding call failed. Full response: {result}")
+        raise ValueError(f"Unexpected embedding response format from {service}: {exc}") from exc
+
+    print(
+        Fore.GREEN
+        + f"✅ {service} embeddings received ({len(embeddings)} vector(s), model={resolved_model}, "
+        + f"{caluculate_time_taken(start_time, end_time)})"
+        + Style.RESET_ALL
+    )
+
+    return {
+        "model": resolved_model,
+        "service": service,
+        "embeddings": embeddings,
+        "raw": result,
+    }
+
+
+def save_embedding_result(result: dict, out_dir: str = None, prefix: str = "embedding") -> str:
+    """
+    Save an embedding result (as returned by get_embedding) to a timestamped
+    JSON file. Returns the path to the saved file.
+    """
+    if out_dir is None:
+        out_dir = os.path.join(str(ALR_main_folder), "00_LLM_Log_Data", "embeddings")
+    os.makedirs(out_dir, exist_ok=True)
+
+    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S_%f")
+    service_tag = str(result.get("service", "unknown")).replace(" ", "_")
+    filename = f"{prefix}_{service_tag}_{timestamp}.json"
+    path = os.path.join(out_dir, filename)
+
+    embeddings = result.get("embeddings") or []
+    payload = {
+        "timestamp": datetime.now().isoformat(),
+        "service": result.get("service"),
+        "model": result.get("model"),
+        "num_vectors": len(embeddings),
+        "vector_dim": len(embeddings[0]) if embeddings else 0,
+        "embeddings": embeddings,
+        "raw_response": result.get("raw"),
+    }
+
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(payload, f, indent=2)
+
+    print(Fore.GREEN + f"💾 Saved embedding result to: {path}" + Style.RESET_ALL)
+    return path
+
+
+# ---------------------------------------------------------------------------
+# Local embedding model (GPU/CPU) - HuggingFace
+# ---------------------------------------------------------------------------
+# NOTE: torch/transformers are heavyweight and only imported lazily inside the
+# functions below - this mirrors hf_pipeline_with_Lamma() / Local_Model_call()
+# further down in this file, which follow the same lazy-load pattern for the
+# local chat model.
+embedding_model_repo_id = "Qwen/Qwen3-Embedding-8B"
+# base path where the models were stored
+embedding_base_path = "/localdata/user/kata_du/LLM Models"
+# Adjust the path to your required embedding model directory
+local_embedding_model_dir = os.path.join(embedding_base_path, "00_LLM_model", embedding_model_repo_id)
+
+# Lazily-initialised local embedding model/tokenizer (loaded on first use).
+_embedding_tokenizer = None
+_embedding_model = None
+
+
+def last_token_pool(last_hidden_states: "Tensor", attention_mask: "Tensor") -> "Tensor":
+    """Pool the last non-padding hidden state per sequence (Qwen3-embedding style pooling)."""
+    import torch
+
+    left_padding = (attention_mask[:, -1].sum() == attention_mask.shape[0])
+    if left_padding:
+        return last_hidden_states[:, -1]
+    else:
+        sequence_lengths = attention_mask.sum(dim=1) - 1
+        batch_size = last_hidden_states.shape[0]
+        return last_hidden_states[torch.arange(batch_size, device=last_hidden_states.device), sequence_lengths]
+
+
+def load_embedding_model_and_tokenizer(local_dir: str = None):
+    """
+    Load the local HuggingFace embedding model + tokenizer from disk
+    (GPU if available, else CPU fallback). Mirrors the local-loading pattern
+    used by hf_pipeline_with_Lamma() for the chat model.
+    """
+    import torch
+    from transformers import AutoTokenizer, AutoModel
+
+    local_dir = local_dir or local_embedding_model_dir
+    if not local_dir:
+        raise ValueError("local_embedding_model_dir is empty/None")
+
+    print_with_separator("DebugLog", '/')
+    try:
+        print(f"\nLoading embedding tokenizer from local path: {local_dir}")
+        tokenizer = AutoTokenizer.from_pretrained(
+            local_dir,
+            padding_side="left",
+            local_files_only=True,
+            trust_remote_code=True,
+        )
+
+        print(f"Loading embedding model from local path: {local_dir}")
+        use_cuda = torch.cuda.is_available()
+        dtype = torch.float16 if use_cuda else torch.float32
+        device_map = "auto" if use_cuda else "cpu"
+
+        model = AutoModel.from_pretrained(
+            local_dir,
+            local_files_only=True,
+            trust_remote_code=True,
+            torch_dtype=dtype,
+            device_map=device_map,
+        )
+        model.eval()
+    except Exception as e:
+        print(Fore.RED + f"Error loading local embedding model: {e}" + Fore.RESET)
+        print(Fore.RED + "Please ensure the model is correctly downloaded at the specified path and all required libraries (transformers, torch, accelerate) are installed." + Fore.RESET)
+        raise
+
+    return tokenizer, model
+
+
+def _get_embedding_model_and_tokenizer():
+    """Load and cache the local embedding model/tokenizer on first use."""
+    global _embedding_tokenizer, _embedding_model
+    if _embedding_model is None:
+        _embedding_tokenizer, _embedding_model = load_embedding_model_and_tokenizer(local_embedding_model_dir)
+    return _embedding_tokenizer, _embedding_model
+
+
+def vectorize_strings_local(input_strings: list, max_length: int = 512):
+    """
+    Embed a list of strings using the local GPU/CPU HuggingFace model
+    (Qwen/Qwen3-Embedding-8B by default, same weights as before).
+
+    Returns an (N, dim) float32 numpy array, L2-normalised so cosine
+    similarity == inner product (matches an IndexFlatIP FAISS index).
+    """
+    import numpy as np
+    import torch
+    import torch.nn.functional as F
+
+    tokenizer, model = _get_embedding_model_and_tokenizer()
+
+    with torch.inference_mode():
+        batch = tokenizer(
+            input_strings,
+            padding=True,
+            truncation=True,
+            max_length=max_length,
+            return_tensors="pt",
+        )
+        batch = {k: v.to(model.device) for k, v in batch.items()}
+
+        outputs = model(**batch)
+        emb = last_token_pool(outputs.last_hidden_state, batch["attention_mask"])
+
+        # Normalise => cosine similarity works with inner product / L2
+        emb = F.normalize(emb, p=2, dim=1)
+
+        return emb.detach().cpu().numpy().astype(np.float32)
+
+
 def count_tokens(messages, response_text, model):
     """
     Calculates input and output token counts.
@@ -180,33 +489,6 @@ def count_tokens(messages, response_text, model):
     except Exception:
         # Absolute last-resort safety net
         return "NA", "NA"
-
-
-
-# def count_tokens(messages, response_text, model):
-#     """Calculates tokens for both the input message list and the output string."""
-#     try:
-#         encoding = tiktoken.encoding_for_model(model)
-#     except KeyError:
-#         encoding = tiktoken.get_encoding("cl100k_base")
-
-#     # Calculate Input Tokens (Messages)
-#     # Each message has overhead: <|start|>role<|per_msg_extra|>content<|end|>
-#     tokens_per_message = 3 
-#     tokens_per_name = 1
-#     input_tokens = 0
-#     for message in messages:
-#         input_tokens += tokens_per_message
-#         for key, value in message.items():
-#             input_tokens += len(encoding.encode(value))
-#             if key == "name":
-#                 input_tokens += tokens_per_name
-#     input_tokens += 3  # every reply is primed with <|start|>assistant<|message|>
-
-#     # Calculate Output Tokens
-#     output_tokens = len(encoding.encode(response_text))
-    
-#     return input_tokens, output_tokens
 
 
 def log_llm_interaction(model, service, messages, response_text,time_taken):
@@ -712,4 +994,6 @@ def llm_call(prompt: str, system_prompt: str, service: str, model: str = None):
 
 # print(llm_call('hi','','o'))
 if __name__ == "__main__":
-    cache_blablador_models()
+    list_ollama_models()
+    print("DLR Ollama embedding models:", list_embedding_models("DLR Ollama"))
+    print("BlaBla embedding models:", list_embedding_models("BlaBla"))
