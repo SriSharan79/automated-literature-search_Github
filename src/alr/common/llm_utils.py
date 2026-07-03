@@ -18,10 +18,8 @@ import os
 import tiktoken
 import re # Import regex
 from typing import List,Dict,Any
-from colorama import Fore, init
 init(autoreset=True)
 import time
-from typing import List,Dict,Any
 
 
 REQUEST_TIMES = deque(maxlen=10)
@@ -247,10 +245,14 @@ def get_embedding(
 
     if service == "BlaBla":
         base_url = BLABLADOR_BASE_URL
-        key = api_key or check_api_key('BlaBla Door')
+        # Non-prompting key lookup: get_embedding may be called from the desktop
+        # UI, so it must never block on console input() the way check_api_key
+        # does. If no key is stored the request goes out unauthenticated and the
+        # server returns a clear 401 rather than the app hanging.
+        key = api_key or get_stored_api_key('BlaBla Door')
     else:
         base_url = OLLAMA_BASE_URL
-        key = api_key or check_api_key('DLR Ollama')
+        key = api_key or get_stored_api_key('DLR Ollama')
 
     headers = {"Content-Type": "application/json"}
     if key:
@@ -270,9 +272,18 @@ def get_embedding(
     end_time = time.time()
 
     try:
-        # OpenAI-compatible embeddings response: {"data": [{"embedding": [...], "index": 0}, ...]}
-        data_sorted = sorted(result.get("data", []), key=lambda d: d.get("index", 0))
-        embeddings = [d["embedding"] for d in data_sorted]
+        embeddings = None
+        if isinstance(result, dict) and result.get("data"):
+            # OpenAI-compatible: {"data": [{"embedding": [...], "index": 0}, ...]}
+            data_sorted = sorted(result["data"], key=lambda d: d.get("index", 0))
+            embeddings = [d["embedding"] for d in data_sorted if "embedding" in d]
+        elif isinstance(result, dict) and result.get("embeddings"):
+            # Native Ollama batch (/api/embed): {"embeddings": [[...], [...]]}
+            embeddings = result["embeddings"]
+        elif isinstance(result, dict) and result.get("embedding"):
+            # Native Ollama single (/api/embeddings): {"embedding": [...]}
+            embeddings = [result["embedding"]]
+
         if not embeddings:
             raise ValueError("No embedding vectors returned")
     except (KeyError, TypeError, ValueError) as exc:
@@ -909,7 +920,6 @@ def Local_Model_call(prompt: str, sys_prompt: str) :
         return None
 
 
-import time
 import threading
 
 # Timeout wrapper function

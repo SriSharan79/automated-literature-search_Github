@@ -1,4 +1,5 @@
 import os
+import json
 from pathlib import Path
 import numpy as np
 from colorama import Fore, Style, init
@@ -19,13 +20,109 @@ from alr.common.llm_utils import (
     get_embedding,
     get_default_embedding_model,
     DEFAULT_EMBEDDING_MODEL,
+    local_embedding_model_dir,
+    embedding_model_repo_id,
 )
 
 # Which embedding method to use by default:
 #   'local' -> local GPU/CPU HuggingFace model (vectorize_strings_local in llm_utils.py)
 #   'api'   -> remote DLR Ollama / Blablador /embeddings call (get_embedding in llm_utils.py)
-EMBEDDING_METHOD = "local"
-EMBEDDING_SERVICE = "DLR Ollama"  # only used when EMBEDDING_METHOD == "api"
+#
+# The default is deployment-aware so the packaged Windows .exe does not try to
+# load the multi-GB local HuggingFace model from a Linux-only path that does not
+# exist there. It can always be forced with the ALR_EMBEDDING_METHOD env var.
+
+
+def _resolve_default_embedding_method() -> str:
+    override = os.getenv("ALR_EMBEDDING_METHOD")
+    if override:
+        return override.strip().lower()
+    # Use the local model only when its weights are actually present on disk
+    # (true on the Linux GPU box, false in the packaged Windows build).
+    try:
+        if local_embedding_model_dir and os.path.isdir(local_embedding_model_dir):
+            return "local"
+    except Exception:
+        pass
+    return "api"
+
+
+EMBEDDING_METHOD = _resolve_default_embedding_method()
+EMBEDDING_SERVICE = os.getenv("ALR_EMBEDDING_SERVICE", "DLR Ollama")  # only used when method == "api"
+
+
+# ---------------------------------------------------------------------------
+# Index <-> embedding-backend metadata
+# ---------------------------------------------------------------------------
+# A FAISS index is only meaningful when queried with the SAME embedding model
+# that built it (different models -> different dimensionality / vector space).
+# We persist a small sidecar file next to each index recording how it was built,
+# and validate it at query time so a mismatched backend fails loudly instead of
+# silently returning garbage similarity scores.
+
+def _meta_path(index_file) -> str:
+    return str(index_file) + ".meta.json"
+
+
+def _recorded_model(method: str, service: str, model: str = None) -> str:
+    """Best-effort identifier of the embedding model an index was built with."""
+    if method == "local":
+        return f"local:{embedding_model_repo_id}"
+    if model:
+        return model
+    try:
+        return get_default_embedding_model(service)
+    except Exception:
+        return DEFAULT_EMBEDDING_MODEL
+
+
+def write_index_metadata(index_file, method, service, model, dim) -> None:
+    meta = {
+        "method": method,
+        "service": service if method == "api" else None,
+        "model": _recorded_model(method, service, model),
+        "dim": int(dim),
+    }
+    try:
+        with open(_meta_path(index_file), "w", encoding="utf-8") as f:
+            json.dump(meta, f, indent=2)
+    except OSError as e:
+        print(Fore.YELLOW + f"⚠️ Could not write index metadata for {index_file}: {e}" + Style.RESET_ALL)
+
+
+def read_index_metadata(index_file):
+    path = _meta_path(index_file)
+    if os.path.exists(path):
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except (OSError, json.JSONDecodeError):
+            return None
+    return None
+
+
+def _validate_query_against_index(index_file, method, service, model, query_dim) -> None:
+    """Warn/raise when the query embedding backend differs from what built the index."""
+    meta = read_index_metadata(index_file)
+    if not meta:
+        return  # legacy index built before metadata existed - nothing to check
+
+    if meta.get("dim") is not None and int(meta["dim"]) != int(query_dim):
+        raise ValueError(
+            f"Embedding dimension mismatch for '{index_file}': index was built with "
+            f"dim={meta['dim']} but the query produced dim={query_dim}. Rebuild the index "
+            f"with the same embedding method/model, or query with the matching backend."
+        )
+
+    query_model = _recorded_model(method, service, model)
+    if meta.get("model") and query_model and meta["model"] != query_model:
+        print(
+            Fore.RED
+            + f"⚠️ Embedding backend mismatch for '{index_file}': index built with "
+            + f"model='{meta['model']}' (method='{meta.get('method')}') but querying with "
+            + f"model='{query_model}' (method='{method}'). Similarity scores may be invalid."
+            + Style.RESET_ALL
+        )
 
 
 def vectorize_strings(
@@ -78,7 +175,7 @@ def create_faiss_index_cosine(vectors: np.ndarray) -> "faiss.Index":
     return index
 
 
-def save_index_file(index, file_path):
+def save_index_file(index, file_path, method: str = EMBEDDING_METHOD, service: str = EMBEDDING_SERVICE, model: str = None):
     import faiss
 
     # Validate index
@@ -93,6 +190,8 @@ def save_index_file(index, file_path):
     Path(file_path).parent.mkdir(parents=True, exist_ok=True)
 
     faiss.write_index(index, file_path)
+    # Record how this index was built so queries can be validated against it.
+    write_index_metadata(file_path, method, service, model, index.d)
     print(f"FAISS index saved to: {file_path} (vectors stored: {index.ntotal})")
 
 
@@ -149,6 +248,8 @@ def add_new_strings_to_index(
 
     # Save the updated index
     faiss.write_index(index, index_file)
+    # Record/refresh the embedding-backend metadata for this index.
+    write_index_metadata(index_file, method, service, model, index.d)
     print(f"Added {len(new_strings)} vectors and saved updated index: {index_file}")
 
 
@@ -163,6 +264,8 @@ def search_similar(
 ):
     index = load_index_file(index_file)
     qvec = vectorize_strings([query], method=method, service=service, model=model, max_length=max_length)
+    # Fail loudly if the query backend does not match the one that built the index.
+    _validate_query_against_index(index_file, method, service, model, qvec.shape[1])
     scores, ids = index.search(qvec, top_k)  # scores are cosine (since IndexFlatIP + normalised)
     return scores[0].tolist(), ids[0].tolist()
 
