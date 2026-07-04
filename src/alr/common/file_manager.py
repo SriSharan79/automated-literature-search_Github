@@ -13,6 +13,20 @@ ALR_main_folder.mkdir(parents=True, exist_ok=True)
 ALR_colletion_folder=ALR_main_folder/ "01_Collection"
 ALR_data_analyze_folder=ALR_main_folder/ "02_Analyzed_Data"
 ALR_Vec_DB_folder=ALR_main_folder/ "10_Vector_DBs"
+# Fixed home for generated cross-space overviews.
+ALR_overviews_folder = ALR_main_folder / "20_Overviews"
+ALR_overviews_folder.mkdir(parents=True, exist_ok=True)
+
+# Canonical markers that identify a DataAnalyzeManager storage space on disk.
+# Single source of truth reused by the storage-space scanner.
+STORAGE_MARKER_FILES = ("Processed_file_registry.xlsx",)
+STORAGE_MARKER_DIRS = (
+    "Analyzed_Data_Files",
+    "Raw_Section_JSON_Files",
+    "References_JSON_Files",
+    "pdf_files",
+    "Raw_Chunk_files",
+)
 
 
 class CollectionManager:
@@ -170,6 +184,16 @@ class DataAnalyzeManager:
         self.AD_Intro.mkdir(exist_ok=True)
         self.AD_Intro_log_path = os.path.join(self.AD_Intro, "Introduction_log.xlsx")
 
+        # Fixed managed locations for enrichment outputs (DOI metadata,
+        # publication classification). Always created inside the storage space.
+        self.doi_metadata_subfolder = self.folder / "DOI_Metadata_Files"
+        self.doi_metadata_subfolder.mkdir(exist_ok=True)
+        self.doi_metadata_excel = os.path.join(self.doi_metadata_subfolder, "DOI_Metadata.xlsx")
+
+        self.classification_subfolder = self.folder / "Publication_Classification_Files"
+        self.classification_subfolder.mkdir(exist_ok=True)
+        self.classification_excel = os.path.join(self.classification_subfolder, "Publication_Classification.xlsx")
+
         # Placeholders for ID-specific paths
         self.raw_sec_json_path = None
         self.raw_chunks_json_path = None
@@ -206,11 +230,49 @@ class DataAnalyzeManager:
         self.image_storage_path.mkdir(exist_ok=True)
 
         # print(f"File paths updated for ID: {doc_id}")
-    
+
     def update_llm_service(self, Value):
         self.llm_service =Value
-        print_with_separator("DebugLog",'/')        
+        print_with_separator("DebugLog",'/')
         print(f"updated llm_service: {Value}")
+
+    @staticmethod
+    def describe_folder(path):
+        """
+        Read-only inspection of a folder to decide whether it is a
+        DataAnalyzeManager storage space, and how complete it is. Does NOT
+        create anything. Returns a dict with marker presence and counts.
+        """
+        p = Path(path)
+        registry = p / "Processed_file_registry.xlsx"
+        ad = p / "Analyzed_Data_Files"
+        abstract_dir = ad / "Abstract_Data_Files"
+
+        present_dirs = [d for d in STORAGE_MARKER_DIRS if (p / d).is_dir()]
+        n_pdfs = len(list((p / "pdf_files").glob("*.pdf"))) if (p / "pdf_files").is_dir() else 0
+        n_abstracts = len(list(abstract_dir.glob("*_Abstract.json"))) if abstract_dir.is_dir() else 0
+
+        n_registry = 0
+        if registry.exists():
+            try:
+                n_registry = len(pd.read_excel(registry))
+            except Exception:
+                n_registry = 0
+
+        has_registry = registry.exists()
+        is_space = has_registry or len(present_dirs) >= 2
+        complete = has_registry and n_abstracts > 0
+
+        return {
+            "path": str(p),
+            "is_space": is_space,
+            "status": ("complete" if complete else "partial") if is_space else "none",
+            "has_registry": has_registry,
+            "present_dirs": present_dirs,
+            "n_pdfs": n_pdfs,
+            "n_registry": n_registry,
+            "n_abstracts": n_abstracts,
+        }
 
 
 class Vec_DB_Manager:

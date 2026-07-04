@@ -128,11 +128,48 @@ exe = EXE(
     entitlements_file=None,
 )
 
+# ---- Second executable: the standalone Review tool (shares collected deps) ----
+a_review = Analysis(
+    ['src/review_main.py'],
+    pathex=['src'],
+    binaries=binaries,
+    datas=datas,
+    hiddenimports=hiddenimports,
+    hookspath=['.'],
+    hooksconfig={},
+    runtime_hooks=[],
+    excludes=[],
+    noarchive=False,
+    optimize=0,
+)
+pyz_review = PYZ(a_review.pure)
+exe_review = EXE(
+    pyz_review,
+    a_review.scripts,
+    [],
+    exclude_binaries=True,
+    name='ReviewTool',
+    debug=False,
+    bootloader_ignore_signals=False,
+    strip=False,
+    upx=False,
+    console=True,
+    disable_windowed_traceback=False,
+    argv_emulation=False,
+    target_arch=None,
+    codesign_identity=None,
+    entitlements_file=None,
+)
+
 # One-folder build (COLLECT) - far more reliable than one-file for torch/docling.
+# Both executables live in the same folder and share the collected binaries/data.
 coll = COLLECT(
     exe,
     a.binaries,
     a.datas,
+    exe_review,
+    a_review.binaries,
+    a_review.datas,
     strip=False,
     upx=False,
     upx_exclude=[],

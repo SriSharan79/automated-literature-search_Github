@@ -45,13 +45,22 @@ LIST_SECTIONS = {"Results", "Research Areas", "Key Concepts"}
 # The key store_to_json_with_text writes for the raw abstract text.
 ABSTRACT_TEXT_KEY = "Abstract Text identified:"
 
+# Enrichment columns populated by DOI/metadata extraction, publication
+# classification, and download-log bibliographic data.
+ENRICHMENT_COLUMNS = [
+    "doi_link", "publisher", "container", "publication_year",
+    "authors", "first_author", "publication_type", "classification",
+    "link", "pub_name",
+]
+
 # Full column order for the documents table.
 COLUMNS = (
     ["uuid", "title", "filename", "relative_path", "timestamp", "time_taken",
      "status_sectioning", "status_references", "status_abstract", "status_introduction"]
     + list(SECTION_COLUMNS.values())
-    + ["abstract_text", "introduction_json", "references_json",
-       "source_folder", "created_at", "updated_at"]
+    + ["abstract_text", "introduction_json", "references_json"]
+    + ENRICHMENT_COLUMNS
+    + ["source_folder", "created_at", "updated_at"]
 )
 
 
@@ -84,6 +93,11 @@ class AnalyzedDataStore:
         )
         with self._connect() as conn:
             conn.execute(f"CREATE TABLE IF NOT EXISTS documents (\n            {cols_sql}\n        )")
+            # Lightweight migration: add any columns missing from an older DB.
+            existing = {r[1] for r in conn.execute("PRAGMA table_info(documents)").fetchall()}
+            for col in COLUMNS:
+                if col not in existing:
+                    conn.execute(f"ALTER TABLE documents ADD COLUMN {col} TEXT")
 
     # -- writes -------------------------------------------------------------
     def upsert_document(self, record: dict):
@@ -98,9 +112,14 @@ class AnalyzedDataStore:
 
         placeholders = ", ".join("?" for _ in COLUMNS)
         col_list = ", ".join(COLUMNS)
-        # On conflict, update everything except uuid and created_at.
+        # On conflict, update everything except uuid and created_at. Enrichment
+        # columns are preserved when the incoming record does not supply them
+        # (e.g. a plain re-sync), so DOI/classification/biblio data is not wiped.
         update_cols = [c for c in COLUMNS if c not in ("uuid", "created_at")]
-        update_sql = ", ".join(f"{c}=excluded.{c}" for c in update_cols)
+        update_sql = ", ".join(
+            f"{c}=COALESCE(excluded.{c}, {c})" if c in ENRICHMENT_COLUMNS else f"{c}=excluded.{c}"
+            for c in update_cols
+        )
         sql = (
             f"INSERT INTO documents ({col_list}) VALUES ({placeholders}) "
             f"ON CONFLICT(uuid) DO UPDATE SET {update_sql}"
@@ -146,6 +165,86 @@ class AnalyzedDataStore:
     def count(self) -> int:
         with self._connect() as conn:
             return conn.execute("SELECT COUNT(*) FROM documents").fetchone()[0]
+
+    # -- overviews ----------------------------------------------------------
+    @staticmethod
+    def available_fields() -> list:
+        """All selectable columns for a custom overview (uuid always available)."""
+        return list(COLUMNS)
+
+    def list_source_folders(self) -> list:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT DISTINCT source_folder FROM documents "
+                "WHERE source_folder IS NOT NULL ORDER BY source_folder"
+            ).fetchall()
+        return [r[0] for r in rows]
+
+    def build_overview(self, fields: list = None, filters: dict = None) -> list:
+        """
+        Return a custom overview: the chosen ``fields`` (defaults to all),
+        filtered by an optional ``filters`` dict with any of:
+          source_folder (exact), publication_year (exact),
+          publication_type (exact), research_area (substring, case-insensitive).
+        """
+        fields = [f for f in (fields or COLUMNS) if f in COLUMNS] or ["uuid"]
+        filters = filters or {}
+        where, params = [], []
+
+        for col in ("source_folder", "publication_year", "publication_type"):
+            val = filters.get(col)
+            if val:
+                where.append(f"{col} = ?")
+                params.append(val)
+        if filters.get("research_area"):
+            where.append("LOWER(research_areas) LIKE ?")
+            params.append(f"%{filters['research_area'].lower()}%")
+
+        sql = f"SELECT {', '.join(fields)} FROM documents"
+        if where:
+            sql += " WHERE " + " AND ".join(where)
+        sql += " ORDER BY COALESCE(updated_at, timestamp) DESC"
+        with self._connect() as conn:
+            return [dict(r) for r in conn.execute(sql, params).fetchall()]
+
+    # -- download-log bibliographic merge -----------------------------------
+    def merge_download_log(self, df) -> int:
+        """
+        Merge bibliographic data from a download-log DataFrame into existing
+        documents, matching the log's ``File_Name`` to a document ``filename``.
+        Fills link/authors/publication_year/first_author/pub_name (only where
+        the document currently has no value). Returns the number of rows updated.
+        """
+        # log column -> document column
+        mapping = {
+            "Link": "link",
+            "Authors": "authors",
+            "Publication Year": "publication_year",
+            "First_Author": "first_author",
+            "Pub_Name": "pub_name",
+        }
+        updated = 0
+        with self._connect() as conn:
+            for _, row in df.iterrows():
+                fname = row.get("File_Name")
+                if not fname or (isinstance(fname, float)):
+                    continue
+                doc = conn.execute(
+                    "SELECT uuid FROM documents WHERE filename = ?", (str(fname),)
+                ).fetchone()
+                if not doc:
+                    continue
+                sets, params = [], []
+                for log_col, db_col in mapping.items():
+                    val = row.get(log_col)
+                    if val is not None and str(val).strip() and str(val) != "nan":
+                        sets.append(f"{db_col} = COALESCE(NULLIF({db_col}, ''), ?)")
+                        params.append(str(val))
+                if sets:
+                    params.append(doc[0])
+                    conn.execute(f"UPDATE documents SET {', '.join(sets)} WHERE uuid = ?", params)
+                    updated += 1
+        return updated
 
 
 # ---------------------------------------------------------------------------

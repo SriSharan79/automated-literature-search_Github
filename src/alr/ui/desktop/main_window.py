@@ -15,7 +15,7 @@ from alr.common.general_utils import Proccess_string_to_list
 from alr.common.llm_utils import list_available_models, set_selected_model, get_selected_model
 from alr.common.LLM_Config import get_stored_api_key, set_api_key, KEY_ENV_NAMES
 from alr.common.sql_store import sync_storage_to_sql
-from alr.ui.desktop.review_view import ReviewDataView, open_review_window
+from alr.ui.desktop.review_app import open_review_app
 from alr.ui.desktop.section_rewriter_view import JSONRestructurerUI, open_section_editor_window
 from alr.data_analysis.Pdf_File_processor import process_pdf_mode_file
 from alr.data_analysis.Folder_Data_Analyzer import process_folder
@@ -60,6 +60,7 @@ class AutomatedLiteratureUI(tk.Tk):
         greeting_lbl = tk.Label(top_bar, text=f"Hello, {self.username}! Automated Literature Review Support Tool", font=("Arial", 12, "bold"))
         greeting_lbl.pack(side="left", padx=10)
         ttk.Button(top_bar, text="API Keys...", command=self._manage_api_keys_action).pack(side="right", padx=10)
+        ttk.Button(top_bar, text="Open Review Tool", command=lambda: open_review_app(self)).pack(side="right", padx=4)
 
         # Tab Control (Notebook)
         self.notebook = ttk.Notebook(self)
@@ -69,7 +70,6 @@ class AutomatedLiteratureUI(tk.Tk):
         self._build_collect_tab()
         self._build_analyze_tab()
         self._build_visualize_tab()
-        self._build_review_tab()
         self._build_section_editor_tab()
 
         # Integrated Console Terminal Output Box at Bottom
@@ -420,10 +420,22 @@ class AutomatedLiteratureUI(tk.Tk):
         try:
             synced = sync_storage_to_sql(self.MF)
             print(f"[Database Sync] {synced} document(s) written to the review database.")
-            if hasattr(self, "review_view"):
-                self.review_view.refresh()
         except Exception as e:
             print(f"[Database Sync] Skipped/failed: {e}")
+
+        # Automatic enrichment: DOI/metadata + publication classification.
+        # Non-fatal - failures here must not break the analysis run.
+        try:
+            from alr.data_analysis.doi_metadata import enrich_space_with_doi
+            enrich_space_with_doi(self.MF)
+        except Exception as e:
+            print(f"[DOI Enrichment] Skipped/failed: {e}")
+        try:
+            if self._ensure_api_key(service):
+                from alr.analysis_evaluation.publication_classification.classify_runner import classify_space
+                classify_space(self.MF)
+        except Exception as e:
+            print(f"[Classification] Skipped/failed: {e}")
 
     # ==========================================
     # TAB 3: VISUALIZE & RAG QUERY
@@ -471,27 +483,11 @@ class AutomatedLiteratureUI(tk.Tk):
         print("Query Generation Suite Logging Executed successfully.")
 
     # ==========================================
-    # TAB 4: REVIEW ANALYZED DATA
-    # ==========================================
-    def _build_review_tab(self):
-        tab = ttk.Frame(self.notebook)
-        self.notebook.add(tab, text="4. Review Data")
-
-        header = ttk.Frame(tab)
-        header.pack(fill="x", padx=10, pady=(8, 0))
-        ttk.Label(header, text="Browse and curate analyzed documents (stored in the local SQLite database).").pack(side="left")
-        ttk.Button(header, text="Pop out ▸", command=lambda: open_review_window(self)).pack(side="right")
-
-        container = ttk.Frame(tab)
-        container.pack(fill="both", expand=True)
-        self.review_view = ReviewDataView(container)
-
-    # ==========================================
-    # TAB 5: SECTION JSON EDITOR
+    # TAB 4: SECTION JSON EDITOR
     # ==========================================
     def _build_section_editor_tab(self):
         tab = ttk.Frame(self.notebook)
-        self.notebook.add(tab, text="5. Section Editor")
+        self.notebook.add(tab, text="4. Section Editor")
 
         header = ttk.Frame(tab)
         header.pack(fill="x", padx=10, pady=(8, 0))

@@ -6,9 +6,11 @@ The desktop app (`alr.ui.desktop.main_window`) is packaged with **PyInstaller**.
 > it on macOS/Linux produces a native binary for *that* OS, not a Windows `.exe`.
 
 ## Files involved
-- `src/gui_main.py` — the entry point PyInstaller bundles (launches the Tk app).
+- `src/gui_main.py` — main app entry point (launches the Tk app).
+- `src/review_main.py` — standalone **Review tool** entry point (built as a second exe).
 - `UI_pipeline.spec` — the PyInstaller build recipe (collects the lazily-imported
-  torch / transformers / docling / faiss stacks and their data files).
+  torch / transformers / docling / faiss stacks and their data files). It produces **two**
+  executables in one folder: `AutomatedLiteratureReview.exe` and `ReviewTool.exe`.
 - `hook-tiktoken.py` — bundles the dynamically-loaded `tiktoken_ext` plugins.
 - `build_exe.bat` — one-command Windows build.
 - `build_app.sh` — local macOS/Linux validation build (native binary, **not** `.exe`).
@@ -30,7 +32,9 @@ pip install -e .
 pyinstaller --clean --noconfirm UI_pipeline.spec
 ```
 
-Result: `dist\AutomatedLiteratureReview\AutomatedLiteratureReview.exe`
+Result: `dist\AutomatedLiteratureReview\` containing **two** executables —
+`AutomatedLiteratureReview.exe` (main app) and `ReviewTool.exe` (standalone Review tool,
+also reachable via the main app's "Open Review Tool" button).
 
 **Distribute the whole `dist\AutomatedLiteratureReview\` folder**, not just the `.exe`
 (this is a one-folder build; the `.exe` needs the sibling DLLs and data files).
