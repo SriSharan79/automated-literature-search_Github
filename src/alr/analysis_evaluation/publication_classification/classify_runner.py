@@ -12,13 +12,15 @@ title (reusing :func:`title_classifier.classify_title`), writes the managed
 from __future__ import annotations
 
 
-def classify_space(manager, db_path=None) -> int:
+def classify_space(manager, db_path=None, progress_callback=None) -> int:
     """
     Classify each document in a storage space by title and persist the result.
 
     ``manager`` is a DataAnalyzeManager (or a folder path). Returns the number of
     documents classified. Requires a Blablador API key (classify_title uses it);
     individual titles that fail fall back to an all-False result.
+
+    ``progress_callback(done, total)`` is called after each document if given.
     """
     import pandas as pd
     from alr.common.file_manager import DataAnalyzeManager
@@ -33,15 +35,17 @@ def classify_space(manager, db_path=None) -> int:
 
     rows = []
     updated = 0
-    for d in docs:
+    total = len(docs)
+    for i, d in enumerate(docs, 1):
         title = d.get("title")
-        if not title or str(title).strip() in ("", "Title Not Found"):
-            continue
-        result = classify_title(title)  # {topic: bool}
-        true_topics = [t for t, v in (result or {}).items() if v]
-        store.update_document(d["uuid"], {"classification": ", ".join(true_topics)})
-        rows.append({"filename": d.get("filename"), "title": title, **(result or {})})
-        updated += 1
+        if title and str(title).strip() not in ("", "Title Not Found"):
+            result = classify_title(title)  # {topic: bool}
+            true_topics = [t for t, v in (result or {}).items() if v]
+            store.update_document(d["uuid"], {"classification": ", ".join(true_topics)})
+            rows.append({"filename": d.get("filename"), "title": title, **(result or {})})
+            updated += 1
+        if progress_callback:
+            progress_callback(i, total)
 
     if rows:
         pd.DataFrame(rows).to_excel(manager.classification_excel, index=False)

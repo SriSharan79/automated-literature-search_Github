@@ -15,6 +15,8 @@ tabs:
 
 import csv
 import os
+import queue
+import threading
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 
@@ -29,6 +31,43 @@ DEFAULT_OVERVIEW_FIELDS = [
     "title", "filename", "publication_year", "publication_type",
     "classification", "first_author", "doi_link", "research_areas", "source_folder",
 ]
+
+
+class ProgressDialog:
+    """A small modal dialog with a status message and a progress bar."""
+
+    def __init__(self, master, title="Working…"):
+        self.top = tk.Toplevel(master)
+        self.top.title(title)
+        self.top.geometry("440x130")
+        self.top.transient(master)
+        self.top.grab_set()
+        self.top.resizable(False, False)
+        self.top.protocol("WM_DELETE_WINDOW", lambda: None)  # can't close mid-task
+
+        self.label = ttk.Label(self.top, text="Starting…", wraplength=410, anchor="w", justify="left")
+        self.label.pack(padx=16, pady=(18, 8), fill="x")
+        self.bar = ttk.Progressbar(self.top, mode="indeterminate", length=406)
+        self.bar.pack(padx=16, pady=8)
+        self.bar.start(12)
+
+    def apply(self, done=None, total=None, text=None):
+        if text is not None:
+            self.label.config(text=text)
+        if done is not None and total:
+            # Switch to a determinate bar once we know the item count.
+            if str(self.bar.cget("mode")) != "determinate":
+                self.bar.stop()
+                self.bar.config(mode="determinate", maximum=total)
+            self.bar.config(value=done)
+
+    def close(self):
+        try:
+            self.bar.stop()
+            self.top.grab_release()
+            self.top.destroy()
+        except tk.TclError:
+            pass
 
 
 class ReviewApp:
@@ -117,44 +156,95 @@ class ReviewApp:
             return None
         return self.spaces[int(sel[0])]
 
-    def _run_on_space(self, space, fn, label):
-        """Run a (possibly slow) operation on a space with a wait cursor."""
-        self.container.config(cursor="watch"); self.container.update()
-        try:
-            n = fn(space.path)
-            messagebox.showinfo(label, f"{label}: processed {n} document(s).")
-        except Exception as e:
-            messagebox.showerror(label, str(e))
-        finally:
-            self.container.config(cursor="")
-        self._refresh_all()
+    def _run_threaded(self, work, title, result_word="processed"):
+        """
+        Run ``work(progress)`` on a background thread with a modal progress
+        dialog. The worker only communicates through a thread-safe queue; all Tk
+        access happens on the main thread via a poller scheduled with ``after``
+        (calling Tk from a worker thread is unsafe). ``progress(done=?, total=?,
+        text=?)`` enqueues an update; ``work`` returns an int count. On completion
+        a result/error message is shown and the views are refreshed.
+        """
+        dlg = ProgressDialog(self.container, title)
+        q = queue.Queue()
+        outcome = {}
+
+        def progress(**kw):
+            q.put(("progress", kw))
+
+        def worker():
+            try:
+                q.put(("done", work(progress)))
+            except Exception as e:  # noqa: BLE001 - surface any failure to the UI
+                q.put(("error", e))
+
+        def finish():
+            dlg.close()
+            if "error" in outcome:
+                messagebox.showerror(title, str(outcome["error"]))
+            else:
+                messagebox.showinfo(title, f"{title}: {result_word} {outcome.get('n', 0)} document(s).")
+            self._refresh_all()
+
+        def poll():
+            try:
+                while True:
+                    kind, payload = q.get_nowait()
+                    if kind == "progress":
+                        dlg.apply(**payload)
+                    elif kind == "done":
+                        outcome["n"] = payload
+                        finish()
+                        return
+                    elif kind == "error":
+                        outcome["error"] = payload
+                        finish()
+                        return
+            except queue.Empty:
+                pass
+            self.container.after(80, poll)
+
+        threading.Thread(target=worker, daemon=True).start()
+        self.container.after(80, poll)
 
     def _link_selected(self):
         s = self._selected_space()
-        if s:
-            self._run_on_space(s, lambda p: sync_storage_to_sql(p, db_path=self.store.db_path), "Link to database")
+        if not s:
+            return
+
+        def work(progress):
+            progress(text=f"Linking '{os.path.basename(s.path)}' into the database…")
+            return sync_storage_to_sql(s.path, db_path=self.store.db_path)
+
+        self._run_threaded(work, "Link to database", "linked")
 
     def _link_all(self):
         if not self.spaces:
             return
-        self.container.config(cursor="watch"); self.container.update()
-        total = 0
-        try:
-            for s in self.spaces:
-                total += sync_storage_to_sql(s.path, db_path=self.store.db_path)
-        except Exception as e:
-            messagebox.showerror("Link ALL", str(e))
-        finally:
-            self.container.config(cursor="")
-        messagebox.showinfo("Link ALL", f"Linked {total} document(s) from {len(self.spaces)} space(s).")
-        self._refresh_all()
+
+        def work(progress):
+            total = 0
+            n = len(self.spaces)
+            for i, sp in enumerate(self.spaces, 1):
+                progress(done=i - 1, total=n, text=f"Linking '{os.path.basename(sp.path)}'  ({i}/{n})…")
+                total += sync_storage_to_sql(sp.path, db_path=self.store.db_path)
+            progress(done=n, total=n)
+            return total
+
+        self._run_threaded(work, "Link ALL", "linked")
 
     def _doi_selected(self):
         s = self._selected_space()
         if not s:
             return
         from alr.data_analysis.doi_metadata import enrich_space_with_doi
-        self._run_on_space(s, lambda p: enrich_space_with_doi(p, db_path=self.store.db_path), "Extract DOI/metadata")
+
+        def work(progress):
+            progress(text=f"Extracting DOI / metadata from PDFs in '{os.path.basename(s.path)}'…\n"
+                          "This looks up Crossref/arXiv and may take a while.")
+            return enrich_space_with_doi(s.path, db_path=self.store.db_path)
+
+        self._run_threaded(work, "Extract DOI/metadata", "updated")
 
     def _classify_selected(self):
         s = self._selected_space()
@@ -166,7 +256,16 @@ class ReviewApp:
                                    "Set it in the main application (API Keys…) first.")
             return
         from alr.analysis_evaluation.publication_classification.classify_runner import classify_space
-        self._run_on_space(s, lambda p: classify_space(p, db_path=self.store.db_path), "Classify publications")
+
+        def work(progress):
+            progress(text=f"Classifying publications in '{os.path.basename(s.path)}'…")
+            return classify_space(
+                s.path, db_path=self.store.db_path,
+                progress_callback=lambda done, total: progress(
+                    done=done, total=total, text=f"Classifying publications…  {done}/{total}"),
+            )
+
+        self._run_threaded(work, "Classify publications", "classified")
 
     def _open_selected_space(self):
         s = self._selected_space()
