@@ -98,6 +98,11 @@ class AnalyzedDataStore:
             for col in COLUMNS:
                 if col not in existing:
                     conn.execute(f"ALTER TABLE documents ADD COLUMN {col} TEXT")
+            # Saved overview definitions (field/filter/grouping/chart specs).
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS overview_templates ("
+                "name TEXT PRIMARY KEY, spec_json TEXT, created_at TEXT)"
+            )
 
     # -- writes -------------------------------------------------------------
     def upsert_document(self, record: dict):
@@ -180,6 +185,20 @@ class AnalyzedDataStore:
             ).fetchall()
         return [r[0] for r in rows]
 
+    @staticmethod
+    def _filter_clause(filters: dict):
+        """Build a WHERE clause (without the WHERE keyword) + params from filters."""
+        where, params = [], []
+        for col in ("source_folder", "publication_year", "publication_type"):
+            val = (filters or {}).get(col)
+            if val:
+                where.append(f"{col} = ?")
+                params.append(val)
+        if (filters or {}).get("research_area"):
+            where.append("LOWER(research_areas) LIKE ?")
+            params.append(f"%{filters['research_area'].lower()}%")
+        return (" AND ".join(where), params)
+
     def build_overview(self, fields: list = None, filters: dict = None) -> list:
         """
         Return a custom overview: the chosen ``fields`` (defaults to all),
@@ -188,24 +207,104 @@ class AnalyzedDataStore:
           publication_type (exact), research_area (substring, case-insensitive).
         """
         fields = [f for f in (fields or COLUMNS) if f in COLUMNS] or ["uuid"]
-        filters = filters or {}
-        where, params = [], []
-
-        for col in ("source_folder", "publication_year", "publication_type"):
-            val = filters.get(col)
-            if val:
-                where.append(f"{col} = ?")
-                params.append(val)
-        if filters.get("research_area"):
-            where.append("LOWER(research_areas) LIKE ?")
-            params.append(f"%{filters['research_area'].lower()}%")
-
+        where, params = self._filter_clause(filters or {})
         sql = f"SELECT {', '.join(fields)} FROM documents"
         if where:
-            sql += " WHERE " + " AND ".join(where)
+            sql += " WHERE " + where
         sql += " ORDER BY COALESCE(updated_at, timestamp) DESC"
         with self._connect() as conn:
             return [dict(r) for r in conn.execute(sql, params).fetchall()]
+
+    def grouped_overview(self, group_by: str, filters: dict = None) -> list:
+        """
+        Aggregated overview: count of documents grouped by ``group_by`` (a column),
+        honouring the same filters as build_overview. Returns
+        [{group_by: value, "count": n}, …] ordered by count desc.
+        """
+        if group_by not in COLUMNS:
+            raise ValueError(f"Invalid group-by column: {group_by}")
+        where, params = self._filter_clause(filters or {})
+        sql = (f"SELECT COALESCE(NULLIF({group_by}, ''), '(none)') AS {group_by}, "
+               f"COUNT(*) AS count FROM documents")
+        if where:
+            sql += " WHERE " + where
+        sql += " GROUP BY 1 ORDER BY count DESC, 1 ASC"
+        with self._connect() as conn:
+            return [dict(r) for r in conn.execute(sql, params).fetchall()]
+
+    def stats(self) -> dict:
+        """High-level cross-space statistics over the whole database."""
+        def _nonempty(col):
+            return f"SELECT COUNT(*) FROM documents WHERE {col} IS NOT NULL AND {col} <> ''"
+        with self._connect() as conn:
+            def one(q):
+                return conn.execute(q).fetchone()[0]
+            per_space = [dict(r) for r in conn.execute(
+                "SELECT COALESCE(NULLIF(source_folder, ''), '(unknown)') AS source_folder, "
+                "COUNT(*) AS count FROM documents GROUP BY 1 ORDER BY count DESC"
+            ).fetchall()]
+            return {
+                "total": one("SELECT COUNT(*) FROM documents"),
+                "with_abstract": one(_nonempty("abstract_text")),
+                "with_doi": one(_nonempty("doi_link")),
+                "with_classification": one(_nonempty("classification")),
+                "distinct_years": one(_nonempty("publication_year").replace("COUNT(*)", "COUNT(DISTINCT publication_year)")),
+                "distinct_types": one(_nonempty("publication_type").replace("COUNT(*)", "COUNT(DISTINCT publication_type)")),
+                "per_space": per_space,
+            }
+
+    # -- safe ad-hoc query --------------------------------------------------
+    def run_select(self, sql: str, max_rows: int = 5000):
+        """
+        Run a single read-only SELECT/WITH query and return (columns, rows).
+        Rejects anything that is not a lone SELECT, and runs with query_only so
+        no write can occur even if validation is bypassed.
+        """
+        stmt = (sql or "").strip().rstrip(";").strip()
+        if not stmt:
+            raise ValueError("Empty query.")
+        low = stmt.lower()
+        if not (low.startswith("select") or low.startswith("with")):
+            raise ValueError("Only SELECT queries are allowed.")
+        if ";" in stmt:
+            raise ValueError("Only a single statement is allowed.")
+        for kw in ("attach ", "pragma", "insert ", "update ", "delete ", "drop ",
+                   "alter ", "create ", "replace ", "vacuum"):
+            if kw in low:
+                raise ValueError(f"Disallowed keyword in query: '{kw.strip()}'")
+        with self._connect() as conn:
+            conn.execute("PRAGMA query_only = ON")
+            cur = conn.execute(stmt)
+            cols = [d[0] for d in cur.description] if cur.description else []
+            rows = [dict(r) for r in cur.fetchmany(max_rows)]
+        return cols, rows
+
+    # -- saved overview templates -------------------------------------------
+    def save_template(self, name: str, spec: dict):
+        name = (name or "").strip()
+        if not name:
+            raise ValueError("Template name is required.")
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT INTO overview_templates (name, spec_json, created_at) VALUES (?, ?, ?) "
+                "ON CONFLICT(name) DO UPDATE SET spec_json=excluded.spec_json",
+                (name, json.dumps(spec), datetime.now().strftime("%Y-%m-%d %H:%M:%S")),
+            )
+
+    def list_templates(self) -> list:
+        with self._connect() as conn:
+            return [r[0] for r in conn.execute(
+                "SELECT name FROM overview_templates ORDER BY name").fetchall()]
+
+    def get_template(self, name: str):
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT spec_json FROM overview_templates WHERE name=?", (name,)).fetchone()
+        return json.loads(row[0]) if row else None
+
+    def delete_template(self, name: str):
+        with self._connect() as conn:
+            conn.execute("DELETE FROM overview_templates WHERE name=?", (name,))
 
     # -- download-log bibliographic merge -----------------------------------
     def merge_download_log(self, df) -> int:
