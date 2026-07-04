@@ -63,6 +63,7 @@ for mod in [
     "openpyxl",
     "pandas",
     "numpy",
+    "matplotlib",    # Review-tool charts
 ]:
     _safe_collect_all(mod)
 

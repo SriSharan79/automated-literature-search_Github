@@ -33,6 +33,39 @@ DEFAULT_OVERVIEW_FIELDS = [
 ]
 
 
+def nl_to_overview_spec(description, fields):
+    """
+    Turn a plain-English overview request into a spec dict via the LLM:
+    {"fields": [...], "group_by": <col|None>, "filters": {...}}.
+    Only known columns/filters are kept.
+    """
+    import json
+    import re
+    from alr.common.llm_utils import llm_call
+
+    sys_prompt = (
+        "You convert a user's request into a JSON spec for an overview over a table of "
+        "analyzed research publications. Respond with ONLY a JSON object of the form "
+        '{"fields": ["col", ...], "group_by": "col or null", '
+        '"filters": {"publication_year": "", "publication_type": "", "research_area": "", "source_folder": ""}}. '
+        f"Valid columns are: {', '.join(fields)}. "
+        "Use group_by (a single column) when the user asks for a count/summary/distribution; "
+        "otherwise set it to null and choose relevant fields. Leave a filter empty if not requested. "
+        "Do not invent columns."
+    )
+    resp = llm_call(description, sys_prompt, "b")
+    match = re.search(r"\{.*\}", resp or "", re.DOTALL)
+    spec = json.loads(match.group(0) if match else resp)
+
+    valid = set(fields)
+    spec["fields"] = [c for c in (spec.get("fields") or []) if c in valid]
+    gb = spec.get("group_by")
+    spec["group_by"] = gb if gb in valid else None
+    spec["filters"] = {k: v for k, v in (spec.get("filters") or {}).items()
+                       if k in ("publication_year", "publication_type", "research_area", "source_folder") and v}
+    return spec
+
+
 class ProgressDialog:
     """A small modal dialog with a status message, progress bar and Cancel."""
 
@@ -98,6 +131,7 @@ class ReviewApp:
 
         self._build_spaces_tab()
         self._build_documents_tab()
+        self._build_database_tab()
         self._build_overviews_tab()
 
     # ================================================================ Spaces
@@ -314,6 +348,107 @@ class ReviewApp:
         self.notebook.add(tab, text="Documents")
         self.review_view = ReviewDataView(tab)
 
+    # ============================================================== Database
+    def _build_database_tab(self):
+        tab = ttk.Frame(self.notebook)
+        self.notebook.add(tab, text="Database")
+
+        # -- cross-space stats panel
+        stats_frame = ttk.LabelFrame(tab, text="Database statistics")
+        stats_frame.pack(fill="x", padx=8, pady=(8, 4))
+        self.stats_label = ttk.Label(stats_frame, text="", justify="left", anchor="w")
+        self.stats_label.pack(side="left", fill="x", expand=True, padx=8, pady=6)
+        ttk.Button(stats_frame, text="Refresh", command=self._refresh_database_tab).pack(side="right", padx=8)
+
+        # -- raw table browser
+        browse_frame = ttk.LabelFrame(tab, text="All documents")
+        browse_frame.pack(fill="both", expand=True, padx=8, pady=4)
+        top = ttk.Frame(browse_frame)
+        top.pack(fill="x", padx=4, pady=4)
+        ttk.Label(top, text="Filter:").pack(side="left")
+        self.db_search = tk.StringVar()
+        e = ttk.Entry(top, textvariable=self.db_search, width=30)
+        e.pack(side="left", padx=4)
+        e.bind("<Return>", lambda ev: self._load_db_table())
+        ttk.Button(top, text="Apply", command=self._load_db_table).pack(side="left", padx=2)
+        self.db_browse_status = ttk.Label(top, text="")
+        self.db_browse_status.pack(side="right")
+
+        self.db_tree = ttk.Treeview(browse_frame, show="headings", height=8)
+        dv = ttk.Scrollbar(browse_frame, orient="vertical", command=self.db_tree.yview)
+        dh = ttk.Scrollbar(browse_frame, orient="horizontal", command=self.db_tree.xview)
+        self.db_tree.configure(yscrollcommand=dv.set, xscrollcommand=dh.set)
+        dv.pack(side="right", fill="y")
+        dh.pack(side="bottom", fill="x")
+        self.db_tree.pack(side="left", fill="both", expand=True)
+
+        # -- ad-hoc SELECT query box
+        query_frame = ttk.LabelFrame(tab, text="SQL query (read-only SELECT)")
+        query_frame.pack(fill="both", expand=True, padx=8, pady=4)
+        self.sql_text = tk.Text(query_frame, height=3, wrap="word")
+        self.sql_text.pack(fill="x", padx=4, pady=4)
+        self.sql_text.insert("1.0", "SELECT title, publication_year, publication_type, classification FROM documents")
+        qbar = ttk.Frame(query_frame)
+        qbar.pack(fill="x", padx=4)
+        ttk.Button(qbar, text="Run query", command=self._run_sql_query).pack(side="left")
+        self.sql_status = ttk.Label(qbar, text="Only a single SELECT is allowed.")
+        self.sql_status.pack(side="left", padx=8)
+        ttk.Button(qbar, text="Export result…", command=self._export_sql_result).pack(side="right")
+        self.sql_tree = ttk.Treeview(query_frame, show="headings", height=6)
+        sv = ttk.Scrollbar(query_frame, orient="vertical", command=self.sql_tree.yview)
+        sh = ttk.Scrollbar(query_frame, orient="horizontal", command=self.sql_tree.xview)
+        self.sql_tree.configure(yscrollcommand=sv.set, xscrollcommand=sh.set)
+        sv.pack(side="right", fill="y")
+        sh.pack(side="bottom", fill="x")
+        self.sql_tree.pack(side="left", fill="both", expand=True)
+        self._last_sql_result = ([], [])
+
+        self._refresh_database_tab()
+
+    @staticmethod
+    def _fill_tree(tree, columns, rows, limit=2000):
+        tree.delete(*tree.get_children())
+        tree["columns"] = columns
+        for c in columns:
+            tree.heading(c, text=c)
+            tree.column(c, width=max(70, min(240, len(str(c)) * 11)), anchor="w")
+        for r in rows[:limit]:
+            tree.insert("", "end", values=[r.get(c) for c in columns])
+
+    def _refresh_database_tab(self):
+        st = self.store.stats()
+        spaces = ", ".join(f"{os.path.basename(p['source_folder'].rstrip('/')) or p['source_folder']}={p['count']}"
+                           for p in st["per_space"][:6]) or "none"
+        self.stats_label.config(text=(
+            f"Total documents: {st['total']}    |    with abstract: {st['with_abstract']}    "
+            f"with DOI: {st['with_doi']}    classified: {st['with_classification']}\n"
+            f"distinct years: {st['distinct_years']}    distinct publication types: {st['distinct_types']}\n"
+            f"storage spaces: {spaces}"))
+        self._load_db_table()
+
+    def _load_db_table(self):
+        rows = self.store.list_documents(self.db_search.get().strip() or None)
+        self._fill_tree(self.db_tree, list(COLUMNS), rows)
+        self.db_browse_status.config(text=f"{len(rows)} row(s)")
+
+    def _run_sql_query(self):
+        sql = self.sql_text.get("1.0", tk.END)
+        try:
+            cols, rows = self.store.run_select(sql)
+            self._fill_tree(self.sql_tree, cols, rows)
+            self._last_sql_result = (cols, rows)
+            self.sql_status.config(text=f"{len(rows)} row(s).")
+        except Exception as e:
+            self.sql_status.config(text=str(e))
+            messagebox.showerror("Query error", str(e))
+
+    def _export_sql_result(self):
+        cols, rows = self._last_sql_result
+        if not rows:
+            messagebox.showinfo("Nothing to export", "Run a query that returns rows first.")
+            return
+        self._export_rows(cols, rows, "query_result")
+
     # ============================================================= Overviews
     def _build_overviews_tab(self):
         tab = ttk.Frame(self.notebook)
@@ -349,17 +484,46 @@ class ReviewApp:
         ttk.Label(filt, text="Research area:").grid(row=1, column=2, sticky="w", padx=4)
         self.filter_ra = ttk.Entry(filt, width=20); self.filter_ra.grid(row=1, column=3, padx=4)
 
+        # Grouping + chart + templates + natural language
+        adv = ttk.LabelFrame(tab, text="Grouping, templates & natural language")
+        adv.pack(fill="x", padx=8, pady=4)
+        ttk.Label(adv, text="Group by:").grid(row=0, column=0, sticky="w", padx=4, pady=3)
+        self.group_by_var = tk.StringVar(value="(none)")
+        ttk.Combobox(adv, textvariable=self.group_by_var, width=22, state="readonly",
+                     values=["(none)"] + list(COLUMNS)).grid(row=0, column=1, padx=4, pady=3, sticky="w")
+        ttk.Label(adv, text="Chart:").grid(row=0, column=2, sticky="w", padx=4)
+        self.chart_type_var = tk.StringVar(value="bar")
+        ttk.Combobox(adv, textvariable=self.chart_type_var, width=8, state="readonly",
+                     values=["bar", "pie"]).grid(row=0, column=3, padx=4, sticky="w")
+
+        ttk.Label(adv, text="Template:").grid(row=1, column=0, sticky="w", padx=4, pady=3)
+        self.template_var = tk.StringVar()
+        self.template_combo = ttk.Combobox(adv, textvariable=self.template_var, width=22, state="readonly")
+        self.template_combo.grid(row=1, column=1, padx=4, pady=3, sticky="w")
+        ttk.Button(adv, text="Load", command=self._load_template).grid(row=1, column=2, padx=2)
+        ttk.Button(adv, text="Save…", command=self._save_template).grid(row=1, column=3, padx=2)
+        ttk.Button(adv, text="Delete", command=self._delete_template).grid(row=1, column=4, padx=2)
+
+        ttk.Label(adv, text="Describe:").grid(row=2, column=0, sticky="w", padx=4, pady=3)
+        self.nl_entry = ttk.Entry(adv, width=60)
+        self.nl_entry.grid(row=2, column=1, columnspan=3, padx=4, pady=3, sticky="w")
+        ttk.Button(adv, text="Build from description", command=self._build_from_description).grid(row=2, column=4, padx=2)
+
         btns = ttk.Frame(tab)
         btns.pack(fill="x", padx=8, pady=4)
         ttk.Button(btns, text="Preview", command=self._preview_overview).pack(side="left", padx=3)
+        ttk.Button(btns, text="Show chart", command=self._show_chart).pack(side="left", padx=3)
         ttk.Button(btns, text="Export Excel", command=lambda: self._export_overview("xlsx")).pack(side="left", padx=3)
         ttk.Button(btns, text="Export CSV", command=lambda: self._export_overview("csv")).pack(side="left", padx=3)
+        ttk.Button(btns, text="Export chart…", command=self._export_chart).pack(side="left", padx=3)
         self.overview_status = ttk.Label(btns, text="")
         self.overview_status.pack(side="right", padx=6)
 
-        # Preview table
-        prev = ttk.Frame(tab)
-        prev.pack(fill="both", expand=True, padx=8, pady=4)
+        # Preview table (left) + chart (right)
+        split = ttk.PanedWindow(tab, orient="horizontal")
+        split.pack(fill="both", expand=True, padx=8, pady=4)
+        prev = ttk.Frame(split)
+        split.add(prev, weight=3)
         self.overview_tree = ttk.Treeview(prev, show="headings")
         ovsb = ttk.Scrollbar(prev, orient="vertical", command=self.overview_tree.yview)
         ovhsb = ttk.Scrollbar(prev, orient="horizontal", command=self.overview_tree.xview)
@@ -367,6 +531,10 @@ class ReviewApp:
         ovsb.pack(side="right", fill="y")
         ovhsb.pack(side="bottom", fill="x")
         self.overview_tree.pack(side="left", fill="both", expand=True)
+        self.chart_frame = ttk.Frame(split)
+        split.add(self.chart_frame, weight=2)
+
+        self._reload_templates()
 
     def _selected_fields(self):
         return [c for c in COLUMNS if self._field_vars[c].get()] or ["uuid"]
@@ -383,45 +551,182 @@ class ReviewApp:
             f["research_area"] = self.filter_ra.get().strip()
         return f
 
-    def _preview_overview(self):
+    def _group_by(self):
+        g = self.group_by_var.get()
+        return g if g and g != "(none)" else None
+
+    def _overview_data(self):
+        """Return (columns, rows) for the current overview (grouped or flat)."""
+        group_by = self._group_by()
+        if group_by:
+            rows = self.store.grouped_overview(group_by, self._current_filters())
+            return [group_by, "count"], rows
         fields = self._selected_fields()
-        rows = self.store.build_overview(fields, self._current_filters())
-        self.overview_tree.delete(*self.overview_tree.get_children())
-        self.overview_tree["columns"] = fields
-        for c in fields:
-            self.overview_tree.heading(c, text=c)
-            self.overview_tree.column(c, width=max(80, min(240, len(c) * 12)), anchor="w")
-        for r in rows[:1000]:
-            self.overview_tree.insert("", "end", values=[r.get(c) for c in fields])
-        self.overview_status.config(text=f"{len(rows)} row(s)" + (" (showing first 1000)" if len(rows) > 1000 else ""))
-        self._last_overview = (fields, rows)
+        return fields, self.store.build_overview(fields, self._current_filters())
+
+    def _preview_overview(self):
+        cols, rows = self._overview_data()
+        self._fill_tree(self.overview_tree, cols, rows, limit=2000)
+        self._last_overview = (cols, rows)
+        self.overview_status.config(text=f"{len(rows)} row(s)" + (" (showing first 2000)" if len(rows) > 2000 else ""))
+        if self._group_by():
+            self._show_chart()
 
     def _export_overview(self, kind):
-        fields = self._selected_fields()
-        rows = self.store.build_overview(fields, self._current_filters())
+        cols, rows = self._overview_data()
         if not rows:
             messagebox.showinfo("Nothing to export", "The overview is empty.")
             return
+        self._export_rows(cols, rows, "overview", kind)
+
+    def _export_rows(self, cols, rows, default_name, kind="xlsx"):
         os.makedirs(ALR_overviews_folder, exist_ok=True)
-        default_ext = ".xlsx" if kind == "xlsx" else ".csv"
+        ext = ".xlsx" if kind == "xlsx" else ".csv"
         path = filedialog.asksaveasfilename(
-            title="Export overview", defaultextension=default_ext,
-            initialdir=str(ALR_overviews_folder), initialfile=f"overview{default_ext}",
+            title="Export", defaultextension=ext, initialdir=str(ALR_overviews_folder),
+            initialfile=f"{default_name}{ext}",
             filetypes=[("Excel files", "*.xlsx")] if kind == "xlsx" else [("CSV files", "*.csv")])
         if not path:
             return
         try:
-            if kind == "xlsx":
+            if kind == "xlsx" or path.lower().endswith(".xlsx"):
                 import pandas as pd
-                pd.DataFrame(rows, columns=fields).to_excel(path, index=False)
+                pd.DataFrame(rows, columns=cols).to_excel(path, index=False)
             else:
                 with open(path, "w", newline="", encoding="utf-8") as f:
-                    w = csv.DictWriter(f, fieldnames=fields, extrasaction="ignore")
+                    w = csv.DictWriter(f, fieldnames=cols, extrasaction="ignore")
                     w.writeheader()
                     w.writerows(rows)
             messagebox.showinfo("Exported", f"Exported {len(rows)} row(s) to:\n{path}")
         except Exception as e:
             messagebox.showerror("Export failed", str(e))
+
+    # -- charts -------------------------------------------------------------
+    def _show_chart(self):
+        group_by = self._group_by()
+        if not group_by:
+            messagebox.showinfo("Chart", "Choose a 'Group by' column to chart an overview.")
+            return
+        data = self.store.grouped_overview(group_by, self._current_filters())
+        if not data:
+            messagebox.showinfo("Chart", "No data to chart.")
+            return
+        data = data[:20]  # keep charts readable
+        labels = [str(r[group_by]) for r in data]
+        values = [r["count"] for r in data]
+        try:
+            from matplotlib.figure import Figure
+            from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+        except Exception as e:
+            messagebox.showerror("Chart", f"matplotlib is required for charts: {e}")
+            return
+        for w in self.chart_frame.winfo_children():
+            w.destroy()
+        fig = Figure(figsize=(4.0, 3.2), dpi=100)
+        ax = fig.add_subplot(111)
+        if self.chart_type_var.get() == "pie":
+            ax.pie(values, labels=labels, autopct="%1.0f%%", textprops={"fontsize": 7})
+        else:
+            ax.bar(range(len(values)), values, color="#378ADD")
+            ax.set_xticks(range(len(labels)))
+            ax.set_xticklabels(labels, rotation=40, ha="right", fontsize=7)
+            ax.set_ylabel("count", fontsize=8)
+        ax.set_title(f"documents by {group_by}", fontsize=9)
+        fig.tight_layout()
+        canvas = FigureCanvasTkAgg(fig, master=self.chart_frame)
+        canvas.draw()
+        canvas.get_tk_widget().pack(fill="both", expand=True)
+        self._chart_fig = fig
+
+    def _export_chart(self):
+        if not getattr(self, "_chart_fig", None):
+            messagebox.showinfo("Export chart", "Show a chart first.")
+            return
+        os.makedirs(ALR_overviews_folder, exist_ok=True)
+        path = filedialog.asksaveasfilename(
+            title="Export chart", defaultextension=".png", initialdir=str(ALR_overviews_folder),
+            initialfile="overview_chart.png", filetypes=[("PNG image", "*.png")])
+        if not path:
+            return
+        try:
+            self._chart_fig.savefig(path, dpi=150, bbox_inches="tight")
+            messagebox.showinfo("Exported", f"Chart saved to:\n{path}")
+        except Exception as e:
+            messagebox.showerror("Export chart", str(e))
+
+    # -- templates ----------------------------------------------------------
+    def _current_spec(self):
+        return {
+            "fields": self._selected_fields(),
+            "filters": self._current_filters(),
+            "group_by": self._group_by(),
+            "chart": self.chart_type_var.get(),
+        }
+
+    def _apply_spec(self, spec):
+        fields = set(spec.get("fields") or [])
+        for col, var in self._field_vars.items():
+            var.set(col in fields)
+        f = spec.get("filters") or {}
+        self.filter_source.set(f.get("source_folder", "") or "")
+        for entry, key in ((self.filter_year, "publication_year"),
+                           (self.filter_type, "publication_type"),
+                           (self.filter_ra, "research_area")):
+            entry.delete(0, tk.END)
+            entry.insert(0, str(f.get(key, "") or ""))
+        self.group_by_var.set(spec.get("group_by") or "(none)")
+        if spec.get("chart") in ("bar", "pie"):
+            self.chart_type_var.set(spec["chart"])
+
+    def _reload_templates(self):
+        names = self.store.list_templates()
+        self.template_combo["values"] = names
+        if names and not self.template_var.get():
+            self.template_var.set(names[0])
+
+    def _save_template(self):
+        from tkinter import simpledialog
+        name = simpledialog.askstring("Save template", "Template name:", parent=self.container)
+        if not name:
+            return
+        self.store.save_template(name, self._current_spec())
+        self.template_var.set(name)
+        self._reload_templates()
+        messagebox.showinfo("Template", f"Saved overview template '{name}'.")
+
+    def _load_template(self):
+        name = self.template_var.get()
+        if not name:
+            return
+        spec = self.store.get_template(name)
+        if spec:
+            self._apply_spec(spec)
+            self._preview_overview()
+
+    def _delete_template(self):
+        name = self.template_var.get()
+        if name and messagebox.askyesno("Delete template", f"Delete template '{name}'?"):
+            self.store.delete_template(name)
+            self.template_var.set("")
+            self._reload_templates()
+
+    # -- natural language ---------------------------------------------------
+    def _build_from_description(self):
+        text = self.nl_entry.get().strip()
+        if not text:
+            return
+        if not get_stored_api_key("BlaBla Door"):
+            messagebox.showwarning("API key required",
+                                   "Building an overview from a description uses the LLM and needs a "
+                                   "BlaBla Door API key. Set it in the main application (API Keys…) first.")
+            return
+        try:
+            spec = nl_to_overview_spec(text, list(COLUMNS))
+        except Exception as e:
+            messagebox.showerror("Natural language", f"Could not interpret the request:\n{e}")
+            return
+        self._apply_spec(spec)
+        self._preview_overview()
 
     # ================================================================ shared
     def _refresh_all(self):
@@ -429,6 +734,8 @@ class ReviewApp:
             self.review_view.refresh()
         if hasattr(self, "filter_source"):
             self.filter_source["values"] = [""] + self.store.list_source_folders()
+        if hasattr(self, "stats_label"):
+            self._refresh_database_tab()
 
 
 def open_review_app(master=None):

@@ -26,6 +26,9 @@ langchain-core==1.4.8
 # --- Literature search ---
 scholarly==1.7.11
 
+# --- Charts (Review-tool visual overviews) ---
+matplotlib==3.11.0
+
 # --- Text analysis / metrics ---
 nltk==3.9.4
 scikit-learn==1.9.0
