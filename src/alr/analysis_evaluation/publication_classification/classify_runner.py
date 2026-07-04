@@ -12,7 +12,7 @@ title (reusing :func:`title_classifier.classify_title`), writes the managed
 from __future__ import annotations
 
 
-def classify_space(manager, db_path=None, progress_callback=None) -> int:
+def classify_space(manager, db_path=None, progress_callback=None, should_cancel=None) -> int:
     """
     Classify each document in a storage space by title and persist the result.
 
@@ -21,6 +21,8 @@ def classify_space(manager, db_path=None, progress_callback=None) -> int:
     individual titles that fail fall back to an all-False result.
 
     ``progress_callback(done, total)`` is called after each document if given.
+    ``should_cancel`` is an optional callable checked before each document for
+    cooperative cancellation (partial results are saved).
     """
     import pandas as pd
     from alr.common.file_manager import DataAnalyzeManager
@@ -37,6 +39,9 @@ def classify_space(manager, db_path=None, progress_callback=None) -> int:
     updated = 0
     total = len(docs)
     for i, d in enumerate(docs, 1):
+        if should_cancel is not None and should_cancel():
+            print("Classification cancelled by user.")
+            break
         title = d.get("title")
         if title and str(title).strip() not in ("", "Title Not Found"):
             result = classify_title(title)  # {topic: bool}

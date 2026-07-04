@@ -34,22 +34,35 @@ DEFAULT_OVERVIEW_FIELDS = [
 
 
 class ProgressDialog:
-    """A small modal dialog with a status message and a progress bar."""
+    """A small modal dialog with a status message, progress bar and Cancel."""
 
-    def __init__(self, master, title="Working…"):
+    def __init__(self, master, title="Working…", on_cancel=None):
         self.top = tk.Toplevel(master)
         self.top.title(title)
-        self.top.geometry("440x130")
+        self.top.geometry("440x160")
         self.top.transient(master)
         self.top.grab_set()
         self.top.resizable(False, False)
-        self.top.protocol("WM_DELETE_WINDOW", lambda: None)  # can't close mid-task
+        # Closing the window acts as Cancel (if cancellable), else no-op.
+        self.top.protocol("WM_DELETE_WINDOW", (lambda: self._cancel()) if on_cancel else (lambda: None))
 
+        self._on_cancel = on_cancel
         self.label = ttk.Label(self.top, text="Starting…", wraplength=410, anchor="w", justify="left")
         self.label.pack(padx=16, pady=(18, 8), fill="x")
         self.bar = ttk.Progressbar(self.top, mode="indeterminate", length=406)
         self.bar.pack(padx=16, pady=8)
         self.bar.start(12)
+
+        if on_cancel:
+            self.cancel_btn = ttk.Button(self.top, text="Cancel", command=self._cancel)
+            self.cancel_btn.pack(pady=(4, 8))
+
+    def _cancel(self):
+        if self._on_cancel:
+            self._on_cancel()
+        self.label.config(text="Cancelling — finishing the current item…")
+        if hasattr(self, "cancel_btn"):
+            self.cancel_btn.config(state="disabled", text="Cancelling…")
 
     def apply(self, done=None, total=None, text=None):
         if text is not None:
@@ -158,14 +171,17 @@ class ReviewApp:
 
     def _run_threaded(self, work, title, result_word="processed"):
         """
-        Run ``work(progress)`` on a background thread with a modal progress
-        dialog. The worker only communicates through a thread-safe queue; all Tk
-        access happens on the main thread via a poller scheduled with ``after``
-        (calling Tk from a worker thread is unsafe). ``progress(done=?, total=?,
-        text=?)`` enqueues an update; ``work`` returns an int count. On completion
-        a result/error message is shown and the views are refreshed.
+        Run ``work(progress, should_cancel)`` on a background thread with a modal
+        progress dialog (with a Cancel button). The worker only communicates
+        through a thread-safe queue; all Tk access happens on the main thread via
+        a poller scheduled with ``after`` (calling Tk from a worker thread is
+        unsafe). ``progress(done=?, total=?, text=?)`` enqueues an update;
+        ``should_cancel()`` returns True once Cancel is pressed; ``work`` returns
+        an int count. On completion a result/cancel/error message is shown and
+        the views are refreshed.
         """
-        dlg = ProgressDialog(self.container, title)
+        cancel_event = threading.Event()
+        dlg = ProgressDialog(self.container, title, on_cancel=cancel_event.set)
         q = queue.Queue()
         outcome = {}
 
@@ -174,7 +190,7 @@ class ReviewApp:
 
         def worker():
             try:
-                q.put(("done", work(progress)))
+                q.put(("done", work(progress, cancel_event.is_set)))
             except Exception as e:  # noqa: BLE001 - surface any failure to the UI
                 q.put(("error", e))
 
@@ -182,6 +198,9 @@ class ReviewApp:
             dlg.close()
             if "error" in outcome:
                 messagebox.showerror(title, str(outcome["error"]))
+            elif cancel_event.is_set():
+                messagebox.showinfo(title, f"{title}: cancelled after {result_word} "
+                                           f"{outcome.get('n', 0)} document(s).")
             else:
                 messagebox.showinfo(title, f"{title}: {result_word} {outcome.get('n', 0)} document(s).")
             self._refresh_all()
@@ -212,7 +231,7 @@ class ReviewApp:
         if not s:
             return
 
-        def work(progress):
+        def work(progress, should_cancel):
             progress(text=f"Linking '{os.path.basename(s.path)}' into the database…")
             return sync_storage_to_sql(s.path, db_path=self.store.db_path)
 
@@ -222,10 +241,12 @@ class ReviewApp:
         if not self.spaces:
             return
 
-        def work(progress):
+        def work(progress, should_cancel):
             total = 0
             n = len(self.spaces)
             for i, sp in enumerate(self.spaces, 1):
+                if should_cancel():
+                    break
                 progress(done=i - 1, total=n, text=f"Linking '{os.path.basename(sp.path)}'  ({i}/{n})…")
                 total += sync_storage_to_sql(sp.path, db_path=self.store.db_path)
             progress(done=n, total=n)
@@ -239,10 +260,10 @@ class ReviewApp:
             return
         from alr.data_analysis.doi_metadata import enrich_space_with_doi
 
-        def work(progress):
+        def work(progress, should_cancel):
             progress(text=f"Extracting DOI / metadata from PDFs in '{os.path.basename(s.path)}'…\n"
                           "This looks up Crossref/arXiv and may take a while.")
-            return enrich_space_with_doi(s.path, db_path=self.store.db_path)
+            return enrich_space_with_doi(s.path, db_path=self.store.db_path, should_cancel=should_cancel)
 
         self._run_threaded(work, "Extract DOI/metadata", "updated")
 
@@ -257,10 +278,10 @@ class ReviewApp:
             return
         from alr.analysis_evaluation.publication_classification.classify_runner import classify_space
 
-        def work(progress):
+        def work(progress, should_cancel):
             progress(text=f"Classifying publications in '{os.path.basename(s.path)}'…")
             return classify_space(
-                s.path, db_path=self.store.db_path,
+                s.path, db_path=self.store.db_path, should_cancel=should_cancel,
                 progress_callback=lambda done, total: progress(
                     done=done, total=total, text=f"Classifying publications…  {done}/{total}"),
             )

@@ -386,12 +386,16 @@ class MetadataLogic:
 
         return base_data
 
-    def process_directory_to_excel(self, root_folder, output_excel):
+    def process_directory_to_excel(self, root_folder, output_excel, should_cancel=None):
         all_metadata = []
-        
+
         # --- PHASE 1: Initial Processing ---
         for dirpath, _, filenames in os.walk(root_folder):
             for filename in filenames:
+                if should_cancel is not None and should_cancel():
+                    print("DOI extraction cancelled by user.")
+                    self._save_to_excel(all_metadata, output_excel)
+                    return
                 if filename.lower().endswith(".pdf"):
                     file_path = os.path.join(dirpath, filename)
                     print(f"--- Processing: {filename} ---")
@@ -477,13 +481,14 @@ DOI_EXCEL_TO_DB = {
 }
 
 
-def enrich_space_with_doi(manager, db_path=None) -> int:
+def enrich_space_with_doi(manager, db_path=None, should_cancel=None) -> int:
     """
     Run DOI/metadata extraction over a storage space's PDFs, write the managed
     ``DOI_Metadata.xlsx``, and push the metadata into the SQLite store (matching
     by File_Name -> document filename). Returns the number of documents updated.
 
-    ``manager`` is a DataAnalyzeManager (or a folder path).
+    ``manager`` is a DataAnalyzeManager (or a folder path). ``should_cancel`` is
+    an optional callable checked between PDFs for cooperative cancellation.
     """
     from alr.common.file_manager import DataAnalyzeManager
     from alr.common.sql_store import AnalyzedDataStore, DB_PATH
@@ -495,7 +500,7 @@ def enrich_space_with_doi(manager, db_path=None) -> int:
     output_excel = manager.doi_metadata_excel
 
     meta_logic = MetadataLogic()
-    meta_logic.process_directory_to_excel(pdf_folder, output_excel)
+    meta_logic.process_directory_to_excel(pdf_folder, output_excel, should_cancel=should_cancel)
 
     if not os.path.exists(output_excel):
         return 0
