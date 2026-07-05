@@ -543,6 +543,8 @@ class AutomatedLiteratureUI(tk.Tk):
                    command=lambda: self._run_storage_pass("references")).pack(side="left", padx=4)
         ttk.Button(btn_row, text="Build Evaluation DBs",
                    command=lambda: self._run_storage_pass("evaluate")).pack(side="left", padx=4)
+        ttk.Button(btn_row, text="Build Master Excel DB",
+                   command=lambda: self._run_storage_pass("master_excel")).pack(side="left", padx=4)
 
         # --- Publication title classification (on-demand, single title) ---
         cls_frame = tk.LabelFrame(tab, text="Publication Title Classification")
@@ -600,6 +602,11 @@ class AutomatedLiteratureUI(tk.Tk):
                 from alr.analysis_evaluation.data_evaluator import generate_databases as generate_eval_databases
                 print("[Evaluate] Building analysis-evaluation databases...")
                 generate_eval_databases(clean_path)
+            elif mode == "master_excel":
+                from alr.rag_builders.master_excel_db_builder import build_master_excel_db
+                print("[Evaluate] Consolidating per-section data into the master Excel workbook...")
+                written, master_path = build_master_excel_db(clean_path)
+                print(f"[Evaluate] Master Excel workbook ({written} document(s)): {master_path}")
             print("[Evaluate] Pass finished.")
             messagebox.showinfo("Done", "Storage-space pass finished. See the console log for details.")
         except Exception as e:

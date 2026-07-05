@@ -249,30 +249,58 @@ def _save_single_section(UUID, key, content_value, ex_path, sheet_name, j_path, 
     except Exception as e:
         print(Fore.RED + f"Error saving {key} for {UUID}: {e}")
 
-if __name__ == "__main__":
-    storage_path="/remotedata/U/DLR+kata_du/ALR DATA/MBSE_MBSA_Specific_literature/Analyzed_results"
-    EXCEL_REGISTRY_PATH = "/remotedata/U/DLR+kata_du/ALR DATA/MBSE_MBSA_Specific_literature/Analyzed_results/Processed_file_registry.xlsx"
-    
-    # Initialize Managers
+def build_master_excel_db(storage_path, master_excel_path=None, progress_callback=None, should_cancel=None):
+    """
+    Consolidate the per-section analyzed data of a storage space into a single
+    master Excel workbook (one "Overview" sheet + one sheet per section).
+
+    ``storage_path`` is a DataAnalyzeManager storage folder. ``master_excel_path``
+    defaults to the managed ``Vec_DB_Manager.Abstract_Overview`` location. UUIDs are
+    read from the space's ``Processed_file_registry.xlsx``; each document's abstract
+    JSON is mapped across the section sheets via :func:`build_sections_master_map`.
+
+    ``progress_callback(done, total)`` is called after each document if given.
+    ``should_cancel`` is an optional callable checked before each document for
+    cooperative cancellation (partial results are preserved). Returns the number of
+    documents written to the master workbook and the path of that workbook.
+    """
     MF = DataAnalyzeManager(folder_path=storage_path)
-    VDB = Vec_DB_Manager(folder_path=storage_path) # Assuming initialization structure matches
-    
-    # Define your single master file destination path
-    # MASTER_EXCEL_FILE = os.path.join(storage_path , "20260629_Overview_Database.xlsx")
-    MASTER_EXCEL_FILE=VDB.Abstract_Overview
-    
-    # 1. Map sections tracking the single Excel file + specific sheets
-    sections_map = build_sections_master_map(VDB, MASTER_EXCEL_FILE)
-    
-    # 2. Extract logged UUIDs to process
-    recorded_uuids = extract_column(EXCEL_REGISTRY_PATH,"UUID")
-    # recorded_uuids = _load_recorded_abstracts(MF)
-    
-    # 3. Execution Loop
-    for uuid in recorded_uuids:
+    VDB = Vec_DB_Manager(folder_path=storage_path)
+
+    master_excel_path = Path(master_excel_path) if master_excel_path else Path(VDB.Abstract_Overview)
+
+    # Map sections onto the single master file + their specific sheets.
+    sections_map = build_sections_master_map(VDB, master_excel_path)
+
+    # UUIDs to process come from the processed-file registry.
+    if not Path(MF.excel_success).exists():
+        print(Fore.RED + f"⚠️ No processed-file registry found at {MF.excel_success}. Nothing to consolidate.")
+        return 0, master_excel_path
+
+    recorded_uuids = extract_column(MF.excel_success, "UUID")
+    total = len(recorded_uuids)
+    written = 0
+
+    for i, uuid in enumerate(recorded_uuids, 1):
+        if should_cancel is not None and should_cancel():
+            print(Fore.YELLOW + "Master Excel build cancelled by user.")
+            break
+
         MF.update_id_files(uuid)
         title, file_name = _fetch_metadata(MF, uuid)
         abstract_json = _load_abstract_json(MF, uuid)
-        
+
         if abstract_json:
             _sync_sections_master_for_uuid(uuid, title, file_name, abstract_json, sections_map)
+            written += 1
+
+        if progress_callback:
+            progress_callback(i, total)
+
+    print(Fore.GREEN + f"✅ Master Excel workbook updated with {written} document(s): {master_excel_path}")
+    return written, master_excel_path
+
+
+if __name__ == "__main__":
+    storage_path = "/remotedata/U/DLR+kata_du/ALR DATA/MBSE_MBSA_Specific_literature/Analyzed_results"
+    build_master_excel_db(storage_path)
