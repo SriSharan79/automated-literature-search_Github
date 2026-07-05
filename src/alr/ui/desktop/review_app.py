@@ -101,8 +101,9 @@ class ProgressDialog:
         if text is not None:
             self.label.config(text=text)
         if done is not None and total:
-            # Switch to a determinate bar once we know the item count.
-            if str(self.bar.cget("mode")) != "determinate":
+            # Switch to a determinate bar once we know the item count, and reset
+            # the maximum whenever the total changes (e.g. across phases).
+            if str(self.bar.cget("mode")) != "determinate" or int(self.bar.cget("maximum")) != int(total):
                 self.bar.stop()
                 self.bar.config(mode="determinate", maximum=total)
             self.bar.config(value=done)

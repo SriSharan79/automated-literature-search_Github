@@ -1,5 +1,7 @@
 import os
 import sys
+import queue
+import threading
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 from pathlib import Path
@@ -15,7 +17,7 @@ from alr.common.general_utils import Proccess_string_to_list
 from alr.common.llm_utils import list_available_models, set_selected_model, get_selected_model
 from alr.common.LLM_Config import get_stored_api_key, set_api_key, KEY_ENV_NAMES
 from alr.common.sql_store import sync_storage_to_sql
-from alr.ui.desktop.review_app import open_review_app
+from alr.ui.desktop.review_app import open_review_app, ProgressDialog
 from alr.ui.desktop.section_rewriter_view import JSONRestructurerUI, open_section_editor_window
 from alr.data_analysis.Pdf_File_processor import process_pdf_mode_file
 from alr.rag_builders.db_manager import generate_databases
@@ -24,10 +26,31 @@ from alr.ui.cli.Data_analysis_UI import analyse_pdf_input_path
 
 
 class CustomTerminalText(tk.Text):
-    """Custom Text widget to redirect stdout/stderr to the GUI window."""
+    """Custom Text widget to redirect stdout/stderr to the GUI window.
+
+    Thread-safe: ``write`` may be called from worker threads (background analysis
+    prints), so text is enqueued and inserted on the main thread by a poller.
+    """
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._write_queue = queue.Queue()
+        self._poll_write_queue()
+
     def write(self, string):
-        self.insert(tk.END, string)
-        self.see(tk.END)
+        # Called from any thread; marshal to the main thread via a queue.
+        self._write_queue.put(string)
+
+    def _poll_write_queue(self):
+        try:
+            while True:
+                self.insert(tk.END, self._write_queue.get_nowait())
+                self.see(tk.END)
+        except queue.Empty:
+            pass
+        except tk.TclError:
+            return  # widget destroyed
+        self.after(50, self._poll_write_queue)
+
     def flush(self):
         pass
 
@@ -415,48 +438,130 @@ class AutomatedLiteratureUI(tk.Tk):
             self.MF = DataAnalyzeManager()
 
         self.MF.update_llm_service(service)
+        MF = self.MF
+        skip_dupes = self.skip_dupes_var.get()
 
-        print("[Processing Strategy Active] Directing targets into analysis execution channels pipeline context framework maps...")
-        if result.kind == "pdf_file":
-            process_pdf_mode_file(result.input_path, self.MF.folder, 'a')
-        elif result.kind == "folder":
-            from alr.data_analysis.batch_dedup import batch_process_folder
-            skip_dupes = self.skip_dupes_var.get()
-            summary = batch_process_folder(result.input_path, self.MF, skip_duplicates=skip_dupes, mode='a')
-            if summary["skipped"]:
-                print(f"[Dedup] Skipped {len(summary['skipped'])} duplicate(s); logged to {self.MF.duplicate_log_excel}")
+        # The whole analysis + enrichment chain runs on a background thread with a
+        # progress dialog so the UI stays responsive and cancellable.
+        def work(progress, should_cancel):
+            from alr.data_analysis.batch_dedup import find_new_and_duplicate_pdfs
 
-        print("Analysis Execution Chain Log Sequence Finished.")
+            print("[Processing Strategy Active] Directing targets into analysis execution channels...")
+            processed = 0
+            if result.kind == "pdf_file":
+                progress(text=f"Analyzing {Path(result.input_path).name}…")
+                process_pdf_mode_file(result.input_path, MF.folder, 'a')
+                processed = 1
+            else:
+                if skip_dupes:
+                    progress(text="Scanning for duplicate titles…")
+                    to_process, skipped = find_new_and_duplicate_pdfs(
+                        result.input_path, MF, llm_service=service, should_cancel=should_cancel,
+                        progress_callback=lambda d, t: progress(done=d, total=t, text=f"Scanning duplicates {d}/{t}…"))
+                    if skipped:
+                        print(f"[Dedup] Skipped {len(skipped)} duplicate(s); logged to {MF.duplicate_log_excel}")
+                else:
+                    to_process = sorted(Path(result.input_path).rglob("*.pdf"))
+                total = len(to_process)
+                for i, pdf in enumerate(to_process, 1):
+                    if should_cancel():
+                        break
+                    progress(done=i, total=total, text=f"Analyzing {i}/{total}: {pdf.name}")
+                    process_pdf_mode_file(str(pdf), str(MF.folder), 'a')
+                    processed += 1
 
-        # Mirror the analyzed results into the central SQLite store for review.
-        try:
-            synced = sync_storage_to_sql(self.MF)
-            print(f"[Database Sync] {synced} document(s) written to the review database.")
-        except Exception as e:
-            print(f"[Database Sync] Skipped/failed: {e}")
+            print("Analysis Execution Chain Log Sequence Finished.")
 
-        # Automatic enrichment: DOI/metadata + publication classification.
-        # Non-fatal - failures here must not break the analysis run.
-        try:
-            from alr.data_analysis.doi_metadata import enrich_space_with_doi
-            enrich_space_with_doi(self.MF)
-        except Exception as e:
-            print(f"[DOI Enrichment] Skipped/failed: {e}")
-        try:
-            if self._ensure_api_key(service):
+            if should_cancel():
+                return processed
+
+            # Mirror results into the central SQLite store, then enrich. All non-fatal.
+            progress(text="Syncing to the review database…")
+            try:
+                synced = sync_storage_to_sql(MF)
+                print(f"[Database Sync] {synced} document(s) written to the review database.")
+            except Exception as e:
+                print(f"[Database Sync] Skipped/failed: {e}")
+
+            progress(text="Extracting DOI / metadata…")
+            try:
+                from alr.data_analysis.doi_metadata import enrich_space_with_doi
+                enrich_space_with_doi(MF, should_cancel=should_cancel)
+            except Exception as e:
+                print(f"[DOI Enrichment] Skipped/failed: {e}")
+
+            progress(text="Classifying publications…")
+            try:
                 from alr.analysis_evaluation.publication_classification.classify_runner import classify_space
-                classify_space(self.MF)
-        except Exception as e:
-            print(f"[Classification] Skipped/failed: {e}")
+                classify_space(MF, should_cancel=should_cancel)
+            except Exception as e:
+                print(f"[Classification] Skipped/failed: {e}")
 
-        # Identify bibliographic metadata by fuzzy-matching titles against all
-        # download-log workbooks under the main ALR folder. Non-fatal.
-        try:
-            from alr.common.download_log_enrich import enrich_from_download_logs
-            from alr.common.file_manager import ALR_main_folder
-            enrich_from_download_logs(ALR_main_folder)
-        except Exception as e:
-            print(f"[Download-log Enrichment] Skipped/failed: {e}")
+            progress(text="Matching metadata from download logs…")
+            try:
+                from alr.common.download_log_enrich import enrich_from_download_logs
+                from alr.common.file_manager import ALR_main_folder
+                enrich_from_download_logs(ALR_main_folder, should_cancel=should_cancel)
+            except Exception as e:
+                print(f"[Download-log Enrichment] Skipped/failed: {e}")
+
+            return processed
+
+        self._run_threaded(work, "Analyzing Literature", "analyzed")
+
+    def _run_threaded(self, work, title, result_word="processed"):
+        """
+        Run ``work(progress, should_cancel)`` on a background thread with a modal
+        progress dialog (with Cancel). The worker only touches a thread-safe queue;
+        all Tk access happens on the main thread via an ``after``-scheduled poller
+        (calling Tk from a worker thread is unsafe). ``progress(done=?, total=?,
+        text=?)`` enqueues an update; ``should_cancel()`` returns True once Cancel
+        is pressed; ``work`` returns an int count.
+        """
+        cancel_event = threading.Event()
+        dlg = ProgressDialog(self, title, on_cancel=cancel_event.set)
+        q = queue.Queue()
+        outcome = {}
+
+        def progress(**kw):
+            q.put(("progress", kw))
+
+        def worker():
+            try:
+                q.put(("done", work(progress, cancel_event.is_set)))
+            except Exception as e:  # noqa: BLE001 - surface any failure to the UI
+                q.put(("error", e))
+
+        def finish():
+            dlg.close()
+            if "error" in outcome:
+                messagebox.showerror(title, str(outcome["error"]))
+            elif cancel_event.is_set():
+                messagebox.showinfo(title, f"{title}: cancelled after {result_word} "
+                                           f"{outcome.get('n', 0)} document(s).")
+            else:
+                messagebox.showinfo(title, f"{title}: {result_word} {outcome.get('n', 0)} document(s).")
+
+        def poll():
+            try:
+                while True:
+                    kind, payload = q.get_nowait()
+                    if kind == "progress":
+                        dlg.apply(**payload)
+                    elif kind == "done":
+                        outcome["n"] = payload
+                        finish()
+                        return
+                    elif kind == "error":
+                        outcome["error"] = payload
+                        finish()
+                        return
+            except queue.Empty:
+                pass
+            self.after(80, poll)
+
+        threading.Thread(target=worker, daemon=True).start()
+        self.after(80, poll)
 
     # ==========================================
     # TAB 3: VISUALIZE & RAG QUERY
