@@ -608,6 +608,14 @@ class AutomatedLiteratureUI(tk.Tk):
             except Exception as e:
                 print(f"[Database Sync] Skipped/failed: {e}")
 
+            # Data evaluation (abstract-grounding of each section) -> Excel DBs + SQL.
+            progress(text="Evaluating analyzed data…")
+            try:
+                from alr.analysis_evaluation.data_evaluator import evaluate_space
+                evaluate_space(MF, should_cancel=should_cancel)
+            except Exception as e:
+                print(f"[Evaluation] Skipped/failed: {e}")
+
             if do_doi:
                 progress(text="Extracting DOI / metadata…")
                 try:
@@ -625,12 +633,19 @@ class AutomatedLiteratureUI(tk.Tk):
                     print(f"[Download-log Enrichment] Skipped/failed: {e}")
 
             if do_classify:
-                progress(text="Classifying publications…")
+                progress(text="Classifying publications (title)…")
                 try:
                     from alr.analysis_evaluation.publication_classification.classify_runner import classify_space
                     classify_space(MF, should_cancel=should_cancel)
                 except Exception as e:
                     print(f"[Classification] Skipped/failed: {e}")
+
+                progress(text="Classifying publications (abstract)…")
+                try:
+                    from alr.analysis_evaluation.publication_classification.classify_runner import classify_abstract_space
+                    classify_abstract_space(MF, should_cancel=should_cancel)
+                except Exception as e:
+                    print(f"[Abstract Classification] Skipped/failed: {e}")
 
             # Prune empty files/folders the manager pre-created but nothing wrote to.
             progress(text="Cleaning up empty files and folders…")
@@ -803,6 +818,8 @@ class AutomatedLiteratureUI(tk.Tk):
                    command=lambda: self._run_storage_pass("references")).pack(side="left", padx=4)
         ttk.Button(btn_row, text="Build Evaluation DBs",
                    command=lambda: self._run_storage_pass("evaluate")).pack(side="left", padx=4)
+        ttk.Button(btn_row, text="Classify Abstracts",
+                   command=lambda: self._run_storage_pass("classify_abstract")).pack(side="left", padx=4)
         ttk.Button(btn_row, text="Build Master Excel DB",
                    command=lambda: self._run_storage_pass("master_excel")).pack(side="left", padx=4)
         ttk.Button(btn_row, text="Enrich from Download Logs",
@@ -897,9 +914,20 @@ class AutomatedLiteratureUI(tk.Tk):
                 print("[Evaluate] Re-running reference extraction pass...")
                 process_references(DataAnalyzeManager(clean_path))
             elif mode == "evaluate":
+                from alr.common.sql_store import sync_storage_to_sql
                 from alr.analysis_evaluation.data_evaluator import generate_databases as generate_eval_databases
-                print("[Evaluate] Building analysis-evaluation databases...")
+                print("[Evaluate] Syncing storage to DB, then building analysis-evaluation databases...")
+                sync_storage_to_sql(DataAnalyzeManager(clean_path))
                 generate_eval_databases(clean_path)
+            elif mode == "classify_abstract":
+                if not self._ensure_api_key("B"):
+                    return
+                from alr.common.sql_store import sync_storage_to_sql
+                from alr.analysis_evaluation.publication_classification.classify_runner import classify_abstract_space
+                print("[Evaluate] Syncing storage to DB, then classifying abstracts...")
+                sync_storage_to_sql(DataAnalyzeManager(clean_path))
+                n = classify_abstract_space(clean_path)
+                print(f"[Evaluate] Abstract classification updated {n} document(s).")
             elif mode == "master_excel":
                 from alr.rag_builders.master_excel_db_builder import build_master_excel_db
                 print("[Evaluate] Consolidating per-section data into the master Excel workbook...")

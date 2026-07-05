@@ -46,10 +46,13 @@ LIST_SECTIONS = {"Results", "Research Areas", "Key Concepts"}
 ABSTRACT_TEXT_KEY = "Abstract Text identified:"
 
 # Enrichment columns populated by DOI/metadata extraction, publication
-# classification, and download-log bibliographic data.
+# classification, abstract classification, data evaluation, and download-log
+# bibliographic data. These are populated *after* the plain registry sync, so
+# they use COALESCE-preserve on re-sync (see upsert_document) to avoid being wiped.
 ENRICHMENT_COLUMNS = [
     "doi_link", "publisher", "container", "publication_year",
     "authors", "first_author", "publication_type", "classification",
+    "abstract_classification", "evaluation_json", "evaluation_score",
     "link", "pub_name",
 ]
 

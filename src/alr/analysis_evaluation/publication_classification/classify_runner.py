@@ -58,6 +58,54 @@ def classify_space(manager, db_path=None, progress_callback=None, should_cancel=
     return updated
 
 
+def classify_abstract_space(manager, db_path=None, progress_callback=None, should_cancel=None) -> int:
+    """
+    Classify each document in a storage space by its **identified abstract text**
+    (reusing :func:`title_classifier.classify_abstract`) and persist the result in
+    the SQLite store's ``abstract_classification`` column, plus a managed
+    ``Abstract_Classification.xlsx`` workbook.
+
+    Independent of title classification: it reads the ``abstract_text`` column that
+    the storage sync populated from each document's abstract JSON. Returns the
+    number of documents classified. Requires a Blablador API key.
+
+    ``progress_callback(done, total)`` is called after each document if given, and
+    ``should_cancel`` is checked before each document for cooperative cancellation.
+    """
+    import pandas as pd
+    from alr.common.file_manager import DataAnalyzeManager
+    from alr.common.sql_store import AnalyzedDataStore, DB_PATH
+    from alr.analysis_evaluation.publication_classification.title_classifier import classify_abstract
+
+    if not isinstance(manager, DataAnalyzeManager):
+        manager = DataAnalyzeManager(manager)
+
+    store = AnalyzedDataStore(db_path or DB_PATH)
+    docs = [d for d in store.list_documents() if d.get("source_folder") == str(manager.folder)]
+
+    rows = []
+    updated = 0
+    total = len(docs)
+    for i, d in enumerate(docs, 1):
+        if should_cancel is not None and should_cancel():
+            print("Abstract classification cancelled by user.")
+            break
+        abstract_text = d.get("abstract_text")
+        if abstract_text and str(abstract_text).strip():
+            result = classify_abstract(abstract_text)  # {topic: bool}
+            true_topics = [t for t, v in (result or {}).items() if v]
+            store.update_document(d["uuid"], {"abstract_classification": ", ".join(true_topics)})
+            rows.append({"filename": d.get("filename"), "title": d.get("title"), **(result or {})})
+            updated += 1
+        if progress_callback:
+            progress_callback(i, total)
+
+    if rows:
+        pd.DataFrame(rows).to_excel(manager.abstract_classification_excel, index=False)
+    print(f"Abstract classification updated {updated} document(s).")
+    return updated
+
+
 def question_score_space(manager, source="registry", download_log=None, output_excel=None):
     """
     Run the question-scored publication classification for a storage space.

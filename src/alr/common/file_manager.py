@@ -193,6 +193,8 @@ class DataAnalyzeManager:
         self.classification_subfolder = self.folder / "Publication_Classification_Files"
         self.classification_subfolder.mkdir(exist_ok=True)
         self.classification_excel = os.path.join(self.classification_subfolder, "Publication_Classification.xlsx")
+        # Abstract-based classification (uses the identified abstract text).
+        self.abstract_classification_excel = os.path.join(self.classification_subfolder, "Abstract_Classification.xlsx")
         # Question-scored classification (multi-sheet, on-demand) output.
         self.question_classification_excel = os.path.join(self.classification_subfolder, "Question_Scored_Classification.xlsx")
 

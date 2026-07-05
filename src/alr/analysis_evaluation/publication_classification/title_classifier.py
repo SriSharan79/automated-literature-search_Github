@@ -187,6 +187,34 @@ def classify_title(title):
         ]}
 
 
+TAXONOMY_TOPICS = [
+    "Systems Engineering", "Safety Engineering", "Model based system Engineering",
+    "Model based safety assessments", "Requirements Engineering", "Risk Assessment",
+    "Aircraft Certification", "Aircraft System Development", "Hazard analysis",
+    "Artificial Intelligence", "Large Language Models",
+]
+
+
+def classify_abstract(abstract_text):
+    """
+    Classify a publication against the same taxonomy as :func:`classify_title`,
+    but using the identified abstract text (from the abstract analyzer) instead of
+    the title. Returns ``{topic: bool}`` for every taxonomy topic; on failure it
+    falls back to an all-False result. Requires a Blablador API key.
+    """
+    Prompt = f"""Abstract of the publication to be analyzed:
+                - {abstract_text}
+            """
+    # Small delay to stay under the Blablador rate limit.
+    time.sleep(1.5)
+    try:
+        response = blabla_ask_llm_test(Prompt, system_prompt_sysE)
+        return json.loads(response)
+    except Exception as e:
+        print(f"Error processing abstract: {e}")
+        return {topic: False for topic in TAXONOMY_TOPICS}
+
+
 if __name__ == "__main__":
     source_file='/remotedata/U/DLR+kata_du/ALR DATA/Only_MBSA/Title_Assessment.xlsx'
     df = pd.read_excel(source_file)

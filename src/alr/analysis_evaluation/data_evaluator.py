@@ -133,13 +133,19 @@ def _update_master_overview(storage_dir, sheet_name, uuid, title, filename, text
 
 
 def _sync_sections_for_uuid(UUID, title, file_name, json_data, sections, storage_path):
-    """Iterates through layout mappings to transform and evaluate section lists or strings."""
+    """
+    Iterates through layout mappings to transform and evaluate section lists or
+    strings. Returns a stats dict ``{section_key: {"true": t, "false": f}}`` that
+    records, per section, how many extracted items were grounded in (a subset of)
+    the abstract text.
+    """
+    stats = {}
     for key, (ex_path, _) in sections.items():
         content_value = json_data.get(key, "Not Found")
         abstract_text = json_data.get("Abstract Text identified:", "Not Found")
 
         if isinstance(content_value, list):
-            _save_list_section(
+            t, f = _save_list_section(
                 UUID=UUID,
                 key=key,
                 content_list=content_value,
@@ -150,7 +156,7 @@ def _sync_sections_for_uuid(UUID, title, file_name, json_data, sections, storage
                 storage_path=storage_path
             )
         else:
-            _save_single_section(
+            t, f = _save_single_section(
                 UUID=UUID,
                 key=key,
                 content_value=content_value,
@@ -159,15 +165,17 @@ def _sync_sections_for_uuid(UUID, title, file_name, json_data, sections, storage
                 file_name=file_name,
                 abs_txt=abstract_text,
                 storage_path=storage_path
-            )  
+            )
+        stats[key] = {"true": t, "false": f}
+    return stats
 
 
 def _save_list_section(UUID, key, content_list, ex_path, title, file_name, abs_txt, storage_path):
-    """Flattens lists horizontally using alternation layouts and uploads aggregate statistics."""
-    # Prevent execution processing if already successfully evaluated
-    if _is_duplicate_in_sheet(Path(ex_path), key, str(UUID)):
-        return
-
+    """
+    Flattens lists horizontally using alternation layouts and uploads aggregate
+    statistics. Always computes the true/false subset counts (returned for SQL),
+    but only writes the Excel sheet when this UUID has not already been evaluated.
+    """
     entry = {
         "UUID": str(UUID),
         "Title": title,
@@ -181,7 +189,7 @@ def _save_list_section(UUID, key, content_list, ex_path, title, file_name, abs_t
     for idx, item in enumerate(content_list):
         content_str = str(item)
         is_subset = content_str.lower() in str(abs_txt).lower() if abs_txt != "Not Found" else False
-        
+
         if is_subset:
             true_count += 1
         else:
@@ -195,23 +203,25 @@ def _save_list_section(UUID, key, content_list, ex_path, title, file_name, abs_t
 
         bullet_lines.append(f"- {content_str}")
 
-    # Write the flattened row format into the sectional file
-    _write_section_sheet_flat(Path(ex_path), key, entry)
+    # Skip the Excel write if already evaluated, but still return the counts.
+    if not _is_duplicate_in_sheet(Path(ex_path), key, str(UUID)):
+        _write_section_sheet_flat(Path(ex_path), key, entry)
+        aggregate_bullets = "\n ".join(bullet_lines)
+        _update_master_overview(storage_path, key, UUID, title, file_name, aggregate_bullets, true_count, false_count, entry)
+        print(Fore.GREEN + f"✅ Synced flat list '{key}' ({len(content_list)} items) for UUID: {UUID}")
 
-    # Compile structured details to overview tracker
-    aggregate_bullets = "\n ".join(bullet_lines)
-    _update_master_overview(storage_path, key, UUID, title, file_name, aggregate_bullets, true_count, false_count, entry)
-    print(Fore.GREEN + f"✅ Synced flat list '{key}' ({len(content_list)} items) for UUID: {UUID}")
+    return true_count, false_count
 
 
 def _save_single_section(UUID, key, content_value, ex_path, title, file_name, abs_txt, storage_path):
-    """Saves single text objects cleanly mapping their matching criteria directly."""
-    if _is_duplicate_in_sheet(Path(ex_path), key, str(UUID)):
-        return
-
+    """
+    Saves single text objects cleanly mapping their matching criteria directly.
+    Always computes the true/false subset counts (returned for SQL), but only
+    writes the Excel sheet when this UUID has not already been evaluated.
+    """
     content_str = str(content_value)
     is_subset = content_str.lower() in str(abs_txt).lower() if abs_txt != "Not Found" else False
-    
+
     true_count = 1 if is_subset else 0
     false_count = 0 if is_subset else 1
 
@@ -222,39 +232,110 @@ def _save_single_section(UUID, key, content_value, ex_path, title, file_name, ab
         "Content": content_str,
         "Is_Subset": is_subset
     }
-    
-    _write_section_sheet_flat(Path(ex_path), key, entry)
-    # Save overview text and append sectional layout data onto a unique sheet inside Master_Overview.xlsx
-    _update_master_overview(storage_path, key, UUID, title, file_name, content_str, true_count, false_count, entry)
-    print(Fore.GREEN + f"✅ Synced single_section '{key}' for UUID: {UUID}")
+
+    if not _is_duplicate_in_sheet(Path(ex_path), key, str(UUID)):
+        _write_section_sheet_flat(Path(ex_path), key, entry)
+        # Save overview text and append sectional layout data onto a unique sheet inside Master_Overview.xlsx
+        _update_master_overview(storage_path, key, UUID, title, file_name, content_str, true_count, false_count, entry)
+        print(Fore.GREEN + f"✅ Synced single_section '{key}' for UUID: {UUID}")
+
+    return true_count, false_count
 
 
-def generate_databases(Storage_path):
-    MF = DataAnalyzeManager(Storage_path)
-    VDB = Vec_DB_Manager(Storage_path)
+def _eval_score(stats):
+    """Overall subset-coverage from per-section stats: (percent, total_true, total_false)."""
+    total_true = sum(int(v.get("true", 0)) for v in stats.values())
+    total_false = sum(int(v.get("false", 0)) for v in stats.values())
+    total = total_true + total_false
+    percent = round(100.0 * total_true / total, 1) if total else None
+    return percent, total_true, total_false
+
+
+def _push_eval_to_sql(uuid, stats, db_path=None):
+    """
+    Write the evaluation summary (per-section subset counts + overall score) into
+    the SQLite document row, if that row exists. Returns True on update.
+    """
+    import json as _json
+    from alr.common.sql_store import AnalyzedDataStore, DB_PATH
+
+    store = AnalyzedDataStore(db_path or DB_PATH)
+    if not store.get_document(uuid):
+        return False
+    percent, _t, _f = _eval_score(stats)
+    store.update_document(uuid, {
+        "evaluation_json": _json.dumps(stats),
+        "evaluation_score": "" if percent is None else str(percent),
+    })
+    return True
+
+
+def evaluate_document(storage_path, uuid, db_path=None, push_sql=True):
+    """
+    Evaluate one analyzed document (by ``uuid``): write its per-section evaluation
+    Excel sheets and, when ``push_sql`` is set, mirror the summary into the SQLite
+    store (``evaluation_json`` / ``evaluation_score``) so overviews can use it.
+
+    Returns the per-section stats dict, or ``None`` if the abstract JSON is missing.
+    Safe to call repeatedly: the Excel writes are idempotent per UUID.
+    """
+    MF = storage_path if isinstance(storage_path, DataAnalyzeManager) else DataAnalyzeManager(storage_path)
+    VDB = Vec_DB_Manager(MF.folder)
+    sections = build_sections_eval_map(VDB)
+
+    MF.update_id_files(uuid)
+    title, file_name = _fetch_metadata(MF, uuid)
+    json_data = _load_abstract_json(MF, uuid)
+    if not json_data:
+        return None
+
+    stats = _sync_sections_for_uuid(
+        UUID=uuid, title=title, file_name=file_name,
+        json_data=json_data, sections=sections, storage_path=str(MF.folder),
+    )
+    if push_sql:
+        try:
+            _push_eval_to_sql(uuid, stats, db_path)
+        except Exception as e:
+            print(Fore.YELLOW + f"⚠️ Could not push evaluation to SQL for {uuid}: {e}")
+    return stats
+
+
+def evaluate_space(storage_path, db_path=None, progress_callback=None, should_cancel=None) -> int:
+    """
+    Evaluate every analyzed document in a storage space (build the evaluation Excel
+    DBs and sync the summary into SQLite). Returns the number of documents evaluated.
+
+    ``progress_callback(done, total)`` is called after each document if given, and
+    ``should_cancel`` is checked before each for cooperative cancellation.
+    """
+    MF = storage_path if isinstance(storage_path, DataAnalyzeManager) else DataAnalyzeManager(storage_path)
 
     recorded_abstracts = _load_recorded_abstracts(MF)
     if not recorded_abstracts:
-        return
+        return 0
 
-    sections = build_sections_eval_map(VDB)
+    count = 0
+    total = len(recorded_abstracts)
+    for i, uuid in enumerate(recorded_abstracts, 1):
+        if should_cancel is not None and should_cancel():
+            print("Evaluation cancelled by user.")
+            break
+        try:
+            evaluate_document(MF, uuid, db_path=db_path, push_sql=True)
+            count += 1
+        except Exception as e:
+            print(Fore.YELLOW + f"⚠️ Evaluation failed for {uuid}: {e}")
+        if progress_callback:
+            progress_callback(i, total)
 
-    for UUID in recorded_abstracts:
-        MF.update_id_files(UUID)
+    print(Fore.GREEN + f"✅ Evaluated {count} document(s); results synced to SQL.")
+    return count
 
-        title, file_name = _fetch_metadata(MF, UUID)
-        json_data = _load_abstract_json(MF, UUID)
-        if not json_data:
-            continue
 
-        _sync_sections_for_uuid(
-            UUID=UUID,
-            title=title,
-            file_name=file_name,
-            json_data=json_data,
-            sections=sections,
-            storage_path=Storage_path
-        ) 
+def generate_databases(Storage_path):
+    """Back-compatible entry point: evaluate the whole space (Excel DBs + SQL sync)."""
+    return evaluate_space(Storage_path)
 
 
 def generate_combined_databases(Source_path, Storage_path):

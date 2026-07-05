@@ -713,6 +713,14 @@ def process_pdf_mode_file(file, storage_path="", mode=None, components=None, doc
         if "abstract" in selected:
             logger.info(f"📝 Processing Abstract for {file_path.name}...")
             result = process_pdf_abstract(file_path, storage_path)
+            # Run data evaluation immediately after abstract analysis of this PDF.
+            if result == 'P':
+                try:
+                    from alr.analysis_evaluation.data_evaluator import evaluate_document
+                    evaluate_document(str(MF.folder), UUID, push_sql=True)
+                    logger.info(f"🧪 Data evaluation completed for {file_path.name}.")
+                except Exception as e:
+                    logger.warning(f"⚠️ Data evaluation skipped for {file_path.name}: {e}")
         if "intro" in selected:
             logger.info(f"📝 Processing Introduction for {file_path.name}...")
             result = process_pdf_intro(file_path, storage_path)
