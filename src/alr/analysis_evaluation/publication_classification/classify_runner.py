@@ -56,3 +56,56 @@ def classify_space(manager, db_path=None, progress_callback=None, should_cancel=
         pd.DataFrame(rows).to_excel(manager.classification_excel, index=False)
     print(f"Classification updated {updated} document(s).")
     return updated
+
+
+def question_score_space(manager, source="registry", download_log=None, output_excel=None):
+    """
+    Run the question-scored publication classification for a storage space.
+
+    This is an **on-demand** operation only (never part of the automatic analysis
+    flow). Each title/publication name is scored against the full question set,
+    producing a multi-sheet workbook (a Summary sheet plus one sheet per section
+    with per-question True/False and a score).
+
+    ``manager`` is a DataAnalyzeManager (or a folder path). ``source`` selects the
+    input:
+
+    * ``"registry"``     -> the ``title`` column of ``Processed_file_registry.xlsx``.
+    * ``"download_log"`` -> the ``Publication Name`` column of the download-log
+      Excel given by ``download_log``.
+
+    Output defaults to the managed ``question_classification_excel`` path inside
+    the space. Returns the output workbook path (or ``None`` on failure).
+    Requires a Blablador API key.
+    """
+    import importlib
+    from pathlib import Path
+    from alr.common.file_manager import DataAnalyzeManager
+
+    # The module filename contains an apostrophe, so it must be imported by name.
+    q_logic = importlib.import_module(
+        "alr.analysis_evaluation.publication_classification.Classification_logic_with_Q's"
+    )
+
+    if not isinstance(manager, DataAnalyzeManager):
+        manager = DataAnalyzeManager(manager)
+
+    if source == "download_log":
+        if not download_log or not Path(download_log).exists():
+            print("No valid download-log Excel provided for question scoring.")
+            return None
+        file_path = str(download_log)
+        column_name = "Publication Name"
+    else:  # registry
+        if not Path(manager.excel_success).exists():
+            print("No processed-file registry found; nothing to score.")
+            return None
+        file_path = str(manager.excel_success)
+        column_name = "title"
+
+    output_excel = str(output_excel or manager.question_classification_excel)
+    print(f"Question-scored classification: '{column_name}' from {file_path} -> {output_excel}")
+    q_logic.classify_excel_data_to_sheets(
+        file_path=file_path, column_name=column_name, output_file_path=output_excel
+    )
+    return output_excel

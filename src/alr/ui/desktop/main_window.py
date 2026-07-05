@@ -556,6 +556,31 @@ class AutomatedLiteratureUI(tk.Tk):
         self.classify_title_entry.pack(side="left", padx=5, fill="x", expand=True)
         ttk.Button(crow, text="Classify Title", command=self._classify_title_action).pack(side="left", padx=5)
 
+        # --- Question-scored classification (on-demand, multi-sheet) ---
+        qcls_frame = tk.LabelFrame(tab, text="Question-Scored Classification (on demand)")
+        qcls_frame.pack(fill="x", padx=10, pady=5)
+
+        qrow = ttk.Frame(qcls_frame)
+        qrow.pack(fill="x", padx=5, pady=(8, 2))
+        ttk.Label(qrow, text="Source:").pack(side="left", padx=5)
+        self.qscore_source_var = ttk.Combobox(
+            qrow,
+            values=["Registry title", "Download log (Publication Name)"],
+            width=32, state="readonly",
+        )
+        self.qscore_source_var.set("Registry title")
+        self.qscore_source_var.pack(side="left", padx=5)
+        ttk.Button(qrow, text="Run Question-Scored Classification",
+                   command=self._question_score_action).pack(side="left", padx=8)
+
+        qrow2 = ttk.Frame(qcls_frame)
+        qrow2.pack(fill="x", padx=5, pady=(0, 8))
+        ttk.Label(qrow2, text="Download log (.xlsx):").pack(side="left", padx=5)
+        self.qscore_log_entry = ttk.Entry(qrow2, width=50)
+        self.qscore_log_entry.pack(side="left", padx=5)
+        ttk.Button(qrow2, text="Browse...", command=lambda: self._browse_file(self.qscore_log_entry)).pack(side="left", padx=2)
+        ttk.Label(qcls_frame, text="(Uses the 'Storage folder' above for registry source and managed output; scores each title against the full question set.)").pack(anchor="w", padx=8, pady=(0, 6))
+
         # --- Text comparison metrics ---
         met_frame = tk.LabelFrame(tab, text="Text Comparison Metrics (lexical overlap + edit distance)")
         met_frame.pack(fill="both", expand=True, padx=10, pady=5)
@@ -634,6 +659,37 @@ class AutomatedLiteratureUI(tk.Tk):
         except Exception as e:
             print(f"[Classify] Failed: {e}")
             messagebox.showerror("Error", f"Classification failed: {e}")
+
+    def _question_score_action(self):
+        use_log = self.qscore_source_var.get().startswith("Download log")
+        if use_log:
+            download_log = self.qscore_log_entry.get().strip()
+            if not download_log or not Path(download_log).is_file():
+                messagebox.showerror("Error", "Please select a valid download-log .xlsx file.")
+                return
+            source, folder = "download_log", None
+        else:
+            folder = self.eval_storage_entry.get().strip()
+            if not folder or not Path(folder).is_dir():
+                messagebox.showerror("Error", "Please select a valid analyzed storage folder (above) for the registry source.")
+                return
+            source, download_log = "registry", None
+
+        if not self._ensure_api_key("B"):
+            return
+        try:
+            from alr.analysis_evaluation.publication_classification.classify_runner import question_score_space
+            print("[Question Scoring] Running question-scored classification (this can take a while)...")
+            manager = DataAnalyzeManager(clean_folder_path(folder)) if folder else DataAnalyzeManager()
+            out = question_score_space(manager, source=source, download_log=download_log)
+            if out:
+                print(f"[Question Scoring] Workbook written: {out}")
+                messagebox.showinfo("Done", f"Question-scored classification saved to:\n{out}")
+            else:
+                messagebox.showwarning("Nothing produced", "No workbook was produced. See the console log.")
+        except Exception as e:
+            print(f"[Question Scoring] Failed: {e}")
+            messagebox.showerror("Error", f"Question-scored classification failed: {e}")
 
     def _compute_metrics_action(self):
         ref = self.metric_ref_text.get("1.0", tk.END).strip()
