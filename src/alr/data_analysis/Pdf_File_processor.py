@@ -608,12 +608,32 @@ def process_pdf_file(file, storage_path=""):
     else:
         logger.error(f"❌ Initial PDF sectioning failed for {file_path.name}")
         
-def process_pdf_mode_file(file, storage_path="", mode=None):
+def _resolve_components(mode, components):
+    """
+    Resolve which per-document components to run. Sectioning (incl. tables/images)
+    is always ensured separately; this controls abstract/intro/references.
+
+    ``components`` (an iterable of 'abstract'/'intro'/'references'), when given,
+    takes precedence over ``mode`` so callers can pick exactly what to extract.
+    """
+    if components is not None:
+        return {c for c in components if c in ("abstract", "intro", "references")}
+    if mode == 'a':
+        return {"abstract", "intro"}
+    if mode == 'r':
+        return {"references"}
+    return {"abstract", "intro", "references"}  # mode is None -> full
+
+
+def process_pdf_mode_file(file, storage_path="", mode=None, components=None):
     """
     Orchestrates the PDF processing.
-    mode='a': Only attempts Abstract extraction.
+    mode='a': Only attempts Abstract (+ Introduction) extraction.
     mode='r': Only attempts Reference extraction.
-    mode=None: Runs the full pipeline (Sectioning -> Abstract -> References).
+    mode=None: Runs the full pipeline (Sectioning -> Abstract -> Introduction -> References).
+
+    ``components`` optionally overrides ``mode`` with an explicit selection among
+    ``{'abstract', 'intro', 'references'}``; sectioning is always ensured first.
     """
     file_path = Path(file)
     
@@ -659,22 +679,24 @@ def process_pdf_mode_file(file, storage_path="", mode=None):
         logger.info(f"--- Started dedicated file log for UUID: {In_UUID} ---")
 
     try:
-        # --- STEP 3: MODE-BASED EXECUTION ---
+        # --- STEP 3: COMPONENT-BASED EXECUTION ---
         result = 'P'
         UUID = get_corresponding_value(excel_success, "filename", file_path.name, "UUID")
-        
-        # Mode 'a' or Full Pipeline
-        if mode == 'a' or mode is None:
+        selected = _resolve_components(mode, components)
+
+        if "abstract" in selected:
             logger.info(f"📝 Processing Abstract for {file_path.name}...")
             result = process_pdf_abstract(file_path, storage_path)
+        if "intro" in selected:
+            logger.info(f"📝 Processing Introduction for {file_path.name}...")
             result = process_pdf_intro(file_path, storage_path)
-            logger.info(f"🏁 Abstract & Introduction Extraction finished ")  
-        
-        # Mode 'r' or Full Pipeline
-        if mode == 'r' or mode is None:
+        if "abstract" in selected or "intro" in selected:
+            logger.info(f"🏁 Abstract & Introduction Extraction finished ")
+
+        if "references" in selected:
             logger.info(f"📚 Processing References for {file_path.name}...")
             result = process_pdf_references(file_path, storage_path)
-            logger.info(f"🏁 References Extraction finished ") 
+            logger.info(f"🏁 References Extraction finished ")
 
         # Final Timestamp Update
         elapsed = time.time() - start_time

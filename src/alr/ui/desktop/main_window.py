@@ -392,6 +392,26 @@ class AutomatedLiteratureUI(tk.Tk):
                    command=lambda: self._choose_model_action(self.llm_choice_an.get())
                    ).pack(side="left", padx=5)
 
+        # Components to extract (Sections incl. tables/images is required)
+        comp_frame = tk.LabelFrame(tab, text="Components to Extract")
+        comp_frame.pack(fill="x", padx=10, pady=(5, 0))
+        self.comp_vars = {
+            "sections": tk.BooleanVar(value=True),
+            "abstract": tk.BooleanVar(value=True),
+            "intro": tk.BooleanVar(value=True),
+            "references": tk.BooleanVar(value=False),
+            "doi": tk.BooleanVar(value=True),
+            "classification": tk.BooleanVar(value=True),
+        }
+        # Sections (incl. tables/images) is a required prerequisite -> checked + disabled.
+        ttk.Checkbutton(comp_frame, text="Sections (incl. tables/images) — required",
+                        variable=self.comp_vars["sections"], state="disabled").grid(row=0, column=0, sticky="w", padx=6, pady=3)
+        ttk.Checkbutton(comp_frame, text="Abstract", variable=self.comp_vars["abstract"]).grid(row=0, column=1, sticky="w", padx=6, pady=3)
+        ttk.Checkbutton(comp_frame, text="Introduction", variable=self.comp_vars["intro"]).grid(row=0, column=2, sticky="w", padx=6, pady=3)
+        ttk.Checkbutton(comp_frame, text="References", variable=self.comp_vars["references"]).grid(row=1, column=0, sticky="w", padx=6, pady=3)
+        ttk.Checkbutton(comp_frame, text="DOI / metadata", variable=self.comp_vars["doi"]).grid(row=1, column=1, sticky="w", padx=6, pady=3)
+        ttk.Checkbutton(comp_frame, text="Classification", variable=self.comp_vars["classification"]).grid(row=1, column=2, sticky="w", padx=6, pady=3)
+
         # Batch options
         batch_frame = ttk.Frame(tab)
         batch_frame.pack(fill="x", padx=10, pady=(0, 5))
@@ -441,6 +461,15 @@ class AutomatedLiteratureUI(tk.Tk):
         MF = self.MF
         skip_dupes = self.skip_dupes_var.get()
 
+        # Which components the user chose to extract. Sections (incl. tables/images)
+        # is always run as the prerequisite; the rest are optional.
+        components = {c for c in ("abstract", "intro", "references") if self.comp_vars[c].get()}
+        do_doi = self.comp_vars["doi"].get()
+        do_classify = self.comp_vars["classification"].get()
+        print(f"[Selection] Components: sections (required)"
+              + "".join(f", {c}" for c in ("abstract", "intro", "references") if c in components)
+              + (", doi/metadata" if do_doi else "") + (", classification" if do_classify else ""))
+
         # The whole analysis + enrichment chain runs on a background thread with a
         # progress dialog so the UI stays responsive and cancellable.
         def work(progress, should_cancel):
@@ -450,7 +479,7 @@ class AutomatedLiteratureUI(tk.Tk):
             processed = 0
             if result.kind == "pdf_file":
                 progress(text=f"Analyzing {Path(result.input_path).name}…")
-                process_pdf_mode_file(result.input_path, MF.folder, 'a')
+                process_pdf_mode_file(result.input_path, MF.folder, components=components)
                 processed = 1
             else:
                 if skip_dupes:
@@ -467,7 +496,7 @@ class AutomatedLiteratureUI(tk.Tk):
                     if should_cancel():
                         break
                     progress(done=i, total=total, text=f"Analyzing {i}/{total}: {pdf.name}")
-                    process_pdf_mode_file(str(pdf), str(MF.folder), 'a')
+                    process_pdf_mode_file(str(pdf), str(MF.folder), components=components)
                     processed += 1
 
             print("Analysis Execution Chain Log Sequence Finished.")
@@ -483,27 +512,29 @@ class AutomatedLiteratureUI(tk.Tk):
             except Exception as e:
                 print(f"[Database Sync] Skipped/failed: {e}")
 
-            progress(text="Extracting DOI / metadata…")
-            try:
-                from alr.data_analysis.doi_metadata import enrich_space_with_doi
-                enrich_space_with_doi(MF, should_cancel=should_cancel)
-            except Exception as e:
-                print(f"[DOI Enrichment] Skipped/failed: {e}")
+            if do_doi:
+                progress(text="Extracting DOI / metadata…")
+                try:
+                    from alr.data_analysis.doi_metadata import enrich_space_with_doi
+                    enrich_space_with_doi(MF, should_cancel=should_cancel)
+                except Exception as e:
+                    print(f"[DOI Enrichment] Skipped/failed: {e}")
 
-            progress(text="Classifying publications…")
-            try:
-                from alr.analysis_evaluation.publication_classification.classify_runner import classify_space
-                classify_space(MF, should_cancel=should_cancel)
-            except Exception as e:
-                print(f"[Classification] Skipped/failed: {e}")
+                progress(text="Matching metadata from download logs…")
+                try:
+                    from alr.common.download_log_enrich import enrich_from_download_logs
+                    from alr.common.file_manager import ALR_main_folder
+                    enrich_from_download_logs(ALR_main_folder, should_cancel=should_cancel)
+                except Exception as e:
+                    print(f"[Download-log Enrichment] Skipped/failed: {e}")
 
-            progress(text="Matching metadata from download logs…")
-            try:
-                from alr.common.download_log_enrich import enrich_from_download_logs
-                from alr.common.file_manager import ALR_main_folder
-                enrich_from_download_logs(ALR_main_folder, should_cancel=should_cancel)
-            except Exception as e:
-                print(f"[Download-log Enrichment] Skipped/failed: {e}")
+            if do_classify:
+                progress(text="Classifying publications…")
+                try:
+                    from alr.analysis_evaluation.publication_classification.classify_runner import classify_space
+                    classify_space(MF, should_cancel=should_cancel)
+                except Exception as e:
+                    print(f"[Classification] Skipped/failed: {e}")
 
             return processed
 
