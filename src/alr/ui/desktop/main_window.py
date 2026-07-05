@@ -18,7 +18,6 @@ from alr.common.sql_store import sync_storage_to_sql
 from alr.ui.desktop.review_app import open_review_app
 from alr.ui.desktop.section_rewriter_view import JSONRestructurerUI, open_section_editor_window
 from alr.data_analysis.Pdf_File_processor import process_pdf_mode_file
-from alr.data_analysis.Folder_Data_Analyzer import process_folder
 from alr.rag_builders.db_manager import generate_databases
 from alr.rag_builders.query_executor import generate_query_report
 from alr.ui.cli.Data_analysis_UI import analyse_pdf_input_path
@@ -370,6 +369,14 @@ class AutomatedLiteratureUI(tk.Tk):
                    command=lambda: self._choose_model_action(self.llm_choice_an.get())
                    ).pack(side="left", padx=5)
 
+        # Batch options
+        batch_frame = ttk.Frame(tab)
+        batch_frame.pack(fill="x", padx=10, pady=(0, 5))
+        self.skip_dupes_var = tk.BooleanVar(value=True)
+        ttk.Checkbutton(batch_frame,
+                        text="Skip duplicate titles (fuzzy match against already-analyzed documents)",
+                        variable=self.skip_dupes_var).pack(side="left", padx=5)
+
         # Process Execute
         btn_run_analysis = ttk.Button(tab, text="Execute Document Extraction & Analysis", command=self._run_analysis_action)
         btn_run_analysis.pack(pady=20, ipadx=10, ipady=5)
@@ -413,7 +420,11 @@ class AutomatedLiteratureUI(tk.Tk):
         if result.kind == "pdf_file":
             process_pdf_mode_file(result.input_path, self.MF.folder, 'a')
         elif result.kind == "folder":
-            process_folder(result.input_path, self.MF.folder)
+            from alr.data_analysis.batch_dedup import batch_process_folder
+            skip_dupes = self.skip_dupes_var.get()
+            summary = batch_process_folder(result.input_path, self.MF, skip_duplicates=skip_dupes, mode='a')
+            if summary["skipped"]:
+                print(f"[Dedup] Skipped {len(summary['skipped'])} duplicate(s); logged to {self.MF.duplicate_log_excel}")
 
         print("Analysis Execution Chain Log Sequence Finished.")
 
@@ -437,6 +448,15 @@ class AutomatedLiteratureUI(tk.Tk):
                 classify_space(self.MF)
         except Exception as e:
             print(f"[Classification] Skipped/failed: {e}")
+
+        # Identify bibliographic metadata by fuzzy-matching titles against all
+        # download-log workbooks under the main ALR folder. Non-fatal.
+        try:
+            from alr.common.download_log_enrich import enrich_from_download_logs
+            from alr.common.file_manager import ALR_main_folder
+            enrich_from_download_logs(ALR_main_folder)
+        except Exception as e:
+            print(f"[Download-log Enrichment] Skipped/failed: {e}")
 
     # ==========================================
     # TAB 3: VISUALIZE & RAG QUERY
@@ -545,6 +565,8 @@ class AutomatedLiteratureUI(tk.Tk):
                    command=lambda: self._run_storage_pass("evaluate")).pack(side="left", padx=4)
         ttk.Button(btn_row, text="Build Master Excel DB",
                    command=lambda: self._run_storage_pass("master_excel")).pack(side="left", padx=4)
+        ttk.Button(btn_row, text="Enrich from Download Logs",
+                   command=lambda: self._run_storage_pass("download_logs")).pack(side="left", padx=4)
 
         # --- Publication title classification (on-demand, single title) ---
         cls_frame = tk.LabelFrame(tab, text="Publication Title Classification")
@@ -605,12 +627,23 @@ class AutomatedLiteratureUI(tk.Tk):
 
     def _run_storage_pass(self, mode):
         folder = self.eval_storage_entry.get().strip()
-        if not folder or not Path(folder).is_dir():
+        # Download-log enrichment scans a root for *_download_log files; the
+        # storage folder is optional (defaults to the main ALR folder).
+        if mode != "download_logs" and (not folder or not Path(folder).is_dir()):
             messagebox.showerror("Error", "Please select a valid analyzed storage folder first.")
             return
 
-        clean_path = clean_folder_path(folder)
+        clean_path = clean_folder_path(folder) if folder and Path(folder).is_dir() else None
         try:
+            if mode == "download_logs":
+                from alr.common.download_log_enrich import enrich_from_download_logs
+                from alr.common.file_manager import ALR_main_folder
+                root = clean_path or ALR_main_folder
+                print(f"[Evaluate] Enriching metadata from download logs under: {root}")
+                n = enrich_from_download_logs(root)
+                print(f"[Evaluate] Download-log enrichment updated {n} document(s).")
+                messagebox.showinfo("Done", f"Download-log enrichment updated {n} document(s). See the console log.")
+                return
             if mode == "abstract":
                 if not self._ensure_api_key("B") and not self._ensure_api_key("O"):
                     return

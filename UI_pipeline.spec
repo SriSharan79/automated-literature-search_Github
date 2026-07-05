@@ -54,6 +54,7 @@ for mod in [
     "langchain_core",
     "sklearn",
     "scholarly",
+    "rapidfuzz",
     "nltk",
     "rouge_score",
     "jiwer",

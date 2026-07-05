@@ -196,6 +196,12 @@ class DataAnalyzeManager:
         # Question-scored classification (multi-sheet, on-demand) output.
         self.question_classification_excel = os.path.join(self.classification_subfolder, "Question_Scored_Classification.xlsx")
 
+        # Batch de-duplication skip log (PDFs skipped before analysis because a
+        # fuzzy-matching title was already analyzed).
+        self.batch_dedup_subfolder = self.folder / "Batch_Dedup_Files"
+        self.batch_dedup_subfolder.mkdir(exist_ok=True)
+        self.duplicate_log_excel = os.path.join(self.batch_dedup_subfolder, "Skipped_Duplicates.xlsx")
+
         # Placeholders for ID-specific paths
         self.raw_sec_json_path = None
         self.raw_chunks_json_path = None

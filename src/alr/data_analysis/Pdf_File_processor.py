@@ -153,6 +153,16 @@ def _init_manager(storage_path: str):
     return MF, pdf_dest_root, failed_dest_root, excel_success, excel_failed
 
 
+def _get_page_count(file_path):
+    """Return the PDF page count, or None if the file cannot be parsed."""
+    try:
+        with open(file_path, "rb") as f:
+            return len(PyPDF2.PdfReader(f).pages)
+    except Exception as e:
+        logger.warning(f"⚠️ Could not read page count for {Path(file_path).name}: {e}")
+        return None
+
+
 def _load_registry(excel_success):
     processed_files = set()
     processed_titles = set()
@@ -226,13 +236,14 @@ def _is_skipped(file_path, current_title, processed_files, processed_titles, llm
         return True
     return False
 
-def _register_success(new_success, uniq_id, file_path, current_title, formatted_time,completed_steps):
+def _register_success(new_success, uniq_id, file_path, current_title, formatted_time,completed_steps, pages=None):
     new_success.append({
         'UUID': uniq_id,
         'timestamp': dt.now().strftime('%Y-%m-%d %H:%M:%S'),
         'time_taken': formatted_time,
         'filename': file_path.name,
         'title': current_title,
+        'pages': pages,  # Number of pages in the source PDF
         'relative_path': file_path,
         'sectioning': completed_steps['sectioning'],  # Individual key for sectioning
         'references': completed_steps['references'],  # Individual key for references
@@ -269,7 +280,8 @@ def process_pdf_sections(file, storage_path=""):
     processed_files, processed_titles, processed_ids = _load_registry(excel_success)
     chunking_status = False
     new_success, new_failed = [], []
-    
+    num_pages = _get_page_count(file_path)
+
     start_time = time.time()
 
     try:
@@ -292,8 +304,8 @@ def process_pdf_sections(file, storage_path=""):
             sec_time = get_corresponding_value(MF.raw_section_excel_log_path, "UUID", uniq_id, "Sectioning Time")
             formatted_time = add_hh_mm_ss(chunk_time, sec_time)
             completed_steps["sectioning"] = 'Passed'
-            _register_success(new_success, uniq_id, file_path, current_title, formatted_time, completed_steps)
-            save_logs(new_success, excel_success, [], None)  
+            _register_success(new_success, uniq_id, file_path, current_title, formatted_time, completed_steps, pages=num_pages)
+            save_logs(new_success, excel_success, [], None)
             return 'P'
 
         # --- STEP C: Run Docling Process (Modularized) ---
@@ -349,9 +361,9 @@ def process_pdf_sections(file, storage_path=""):
             formatted_time = time.strftime("%H:%M:%S", time.gmtime(elapsed))       
 
             completed_steps["sectioning"] = 'Passed'
-            _register_success(new_success, uniq_id, file_path, current_title, formatted_time, completed_steps)
-            save_logs(new_success, excel_success, [], None)  
-            return 'P'                   
+            _register_success(new_success, uniq_id, file_path, current_title, formatted_time, completed_steps, pages=num_pages)
+            save_logs(new_success, excel_success, [], None)
+            return 'P'
 
     except Exception as e:
         _register_failure(new_failed, file_path, str(e), failed_dest_root)
@@ -612,22 +624,12 @@ def process_pdf_mode_file(file, storage_path="", mode=None):
         _recheck_title_(excel_success,file_path,llm_service)    
 
     new_failed = []
-    logger.info(f"\n🚀 Processing: {file_path.name} ")  
-    print(f"\n🚀 Processing: {file_path.name} ")    
-    with open(file_path, "rb") as file:
-        reader = PyPDF2.PdfReader(file)
-        num_pages = len(reader.pages)
-        
-    n = 50 # Default number of pages to compare
-        
-    if num_pages > n:
-        logger.warning(f"⏭️ Skipping {file_path.name} because it has {num_pages} pages (more than {n}).")   
-        Msg=f" Reason: {file_path.name} with {num_pages} pages takes longer duration and this tool is not capable for such documents." 
-        logger.error(Msg)
-        _register_failure(new_failed, file_path, Msg, failed_dest_root)
-        save_logs([], None, new_failed, excel_failed)
-        return 'F'
-    
+    logger.info(f"\n🚀 Processing: {file_path.name} ")
+    print(f"\n🚀 Processing: {file_path.name} ")
+    num_pages = _get_page_count(file_path)
+    if num_pages is not None:
+        logger.info(f"📄 {file_path.name} has {num_pages} page(s).")
+
     start_time = time.time()
 
     # --- STEP 1: PREREQUISITE VALIDATION ---
