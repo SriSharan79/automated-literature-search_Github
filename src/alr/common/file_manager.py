@@ -201,6 +201,10 @@ class DataAnalyzeManager:
         self.batch_dedup_subfolder = self.folder / "Batch_Dedup_Files"
         self.batch_dedup_subfolder.mkdir(exist_ok=True)
         self.duplicate_log_excel = os.path.join(self.batch_dedup_subfolder, "Skipped_Duplicates.xlsx")
+        # Persistent record of every PDF already scanned for duplication (with its
+        # extracted title + decision), so later batches skip re-scanning them and
+        # only title-extract genuinely new files.
+        self.dedup_scan_log_excel = os.path.join(self.batch_dedup_subfolder, "Dedup_Scan_Log.xlsx")
 
         # Placeholders for ID-specific paths
         self.raw_sec_json_path = None

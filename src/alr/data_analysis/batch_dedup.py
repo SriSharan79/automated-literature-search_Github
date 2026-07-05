@@ -17,6 +17,7 @@ cheap.
 from __future__ import annotations
 
 import re
+from datetime import datetime
 from pathlib import Path
 
 import pandas as pd
@@ -43,6 +44,43 @@ def _is_usable_title(title: str) -> bool:
 
 # UI component name -> registry status column.
 _COMPONENT_COLUMN = {"abstract": "abstract", "intro": "Introduction", "references": "references"}
+
+
+def _load_scan_log(scan_log_path):
+    """
+    Load the persistent dedup scan log into ``{filename: row-dict}``.
+
+    Each row records a PDF that was already checked for duplication in a previous
+    batch, with its extracted title and the decision that was made
+    (``new`` or ``duplicate``). Returns an empty dict if the log is absent/unreadable.
+    """
+    scanned = {}
+    if Path(scan_log_path).exists():
+        try:
+            df = pd.read_excel(scan_log_path)
+            if "filename" in df.columns:
+                for _, r in df.iterrows():
+                    fname = r.get("filename")
+                    if fname is None or str(fname) == "nan":
+                        continue
+                    scanned[str(fname)] = r.to_dict()
+        except Exception as e:
+            print(f"⚠️ Could not read dedup scan log ({e}); rescanning all files.")
+    return scanned
+
+
+def _save_scan_log(scan_log_path, scanned_map, new_rows):
+    """Merge freshly scanned rows into the persistent scan log (latest wins) and write it."""
+    if not new_rows:
+        return
+    merged = dict(scanned_map)
+    for row in new_rows:
+        merged[str(row["filename"])] = row
+    try:
+        pd.DataFrame(list(merged.values())).to_excel(scan_log_path, index=False)
+        print(f"🧾 Dedup scan log updated: {len(new_rows)} new entr(ies); {len(merged)} tracked in total.")
+    except Exception as e:
+        print(f"⚠️ Could not write dedup scan log: {e}")
 
 
 def _components_complete(status_map, components) -> bool:
@@ -85,10 +123,14 @@ def find_new_and_duplicate_pdfs(
     components. Returns ``(to_process, skipped)`` where ``to_process`` is a list of
     ``Path`` and ``skipped`` is a list of dicts describing each skip.
 
-    ``components`` is the optional set of requested per-document steps (subset of
-    {'abstract','intro','references'}); ``None`` keeps the legacy behaviour of
-    skipping any already-analyzed filename. ``progress_callback(done, total)`` is
-    called after each PDF if given, and ``should_cancel`` is checked before each.
+    A persistent dedup scan log (``manager.dedup_scan_log_excel``) records every
+    file already checked for duplication together with its decision, so subsequent
+    batches skip re-scanning them (no repeated title extraction) and only the
+    genuinely new files are examined. ``components`` is the optional set of
+    requested per-document steps (subset of {'abstract','intro','references'});
+    ``None`` keeps the legacy behaviour of skipping any already-analyzed filename.
+    ``progress_callback(done, total)`` is called after each PDF if given, and
+    ``should_cancel`` is checked before each.
     """
     from rapidfuzz import fuzz, process as rf_process
     from alr.common.file_manager import DataAnalyzeManager
@@ -118,6 +160,18 @@ def find_new_and_duplicate_pdfs(
         except Exception as e:
             print(f"⚠️ Could not read registry for dedup ({e}); treating all files as new.")
 
+    # Files already scanned for duplication in previous batches (persistent log).
+    scanned_map = _load_scan_log(manager.dedup_scan_log_excel)
+    new_scan_rows = []  # rows to append to the scan log this run
+
+    def _record(pdf, title, decision, matched_against="", matched_value="", score=""):
+        new_scan_rows.append({
+            "filename": pdf.name, "path": str(pdf), "title": str(title or ""),
+            "decision": decision, "matched_against": matched_against,
+            "matched_value": str(matched_value), "score": score,
+            "scanned_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        })
+
     pdfs = sorted(Path(source_folder).rglob("*.pdf"))
     total = len(pdfs)
     to_process, skipped = [], []
@@ -142,6 +196,28 @@ def find_new_and_duplicate_pdfs(
                 progress_callback(i, total)
             continue
 
+        # Already scanned for duplication in a previous batch: reuse that decision
+        # without re-extracting the title. (Registry files were handled above.)
+        prior = scanned_map.get(pdf.name)
+        if prior is not None:
+            decision = str(prior.get("decision", "")).strip().lower()
+            prior_title = prior.get("title", "")
+            if decision == "duplicate":
+                skipped.append({"filename": pdf.name, "path": str(pdf), "title": str(prior_title),
+                                "matched_against": str(prior.get("matched_against", "prior scan")),
+                                "matched_value": str(prior.get("matched_value", "")),
+                                "score": prior.get("score", "")})
+                print(f"⏭️ Already scanned (duplicate) — skipping {pdf.name}.")
+            else:
+                # Previously seen as new but not yet analyzed -> process it.
+                to_process.append(pdf)
+                if _is_usable_title(prior_title):
+                    batch_titles[_normalize_title(prior_title)] = pdf.name
+                print(f"⏭️ Already scanned (new) — queueing {pdf.name} for processing.")
+            if progress_callback:
+                progress_callback(i, total)
+            continue
+
         try:
             title = get_title_in_the_file(pdf, llm_service)
         except Exception as e:
@@ -162,17 +238,23 @@ def find_new_and_duplicate_pdfs(
 
         if matched:
             source_label, matched_value, score = matched
+            score = round(float(score), 1)
             skipped.append({"filename": pdf.name, "path": str(pdf), "title": str(title),
                             "matched_against": source_label, "matched_value": str(matched_value),
-                            "score": round(float(score), 1)})
+                            "score": score})
+            _record(pdf, title, "duplicate", source_label, matched_value, score)
             print(f"⏩ Skipping duplicate: {pdf.name} (title ~ '{matched_value}' in {source_label}, {score:.0f}%)")
         else:
             to_process.append(pdf)
             if _is_usable_title(title):
                 batch_titles[norm] = pdf.name
+            _record(pdf, title, "new")
 
         if progress_callback:
             progress_callback(i, total)
+
+    # Persist this run's scan decisions so future batches skip these files.
+    _save_scan_log(manager.dedup_scan_log_excel, scanned_map, new_scan_rows)
 
     if skipped:
         try:
