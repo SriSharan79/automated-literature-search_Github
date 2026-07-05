@@ -249,7 +249,9 @@ def extract_meta_data_from_doi( file_path):
         "doc_type": get_val(raw_data, 'doc_type', "N/A"),
         "tags": get_val(raw_data, 'tags', []),
         "publisher": publisher_val,
-        "abstract": get_val(raw_data, 'abstract', "")
+        "abstract": get_val(raw_data, 'abstract', ""),
+        # Where the metadata came from: "DOI", "arXiv", or "AI" (no lookup hit).
+        "source": source_label,
     }
 
     # print(f'final base_data dictionary: \n {base_data} \n')
@@ -314,9 +316,18 @@ def get_title_metadata(file_path):
         return "No Metadata Title"
 
 def get_title_in_the_file(file_path,llm_service):
+        base_data=extract_meta_data_from_doi(file_path)
+
+        # If a DOI / arXiv lookup returned an authoritative title, trust it and
+        # skip the (slower, costlier) LLM disambiguation call entirely.
+        doi_title = str(base_data.get("title", "")).strip()
+        if base_data.get("source") in ("DOI", "arXiv") and doi_title and doi_title != "Title Not Found":
+            print(Fore.BLUE + f"Title Identified (via {base_data['source']}): " + doi_title + Style.RESET_ALL)
+            return doi_title
+
+        # Otherwise fall back to reconciling the candidate title strings via the LLM.
         meta_title = get_title_metadata(file_path)
         Font_title = get_title_by_font_size(file_path)
-        base_data=extract_meta_data_from_doi(file_path)
 
         Prompt = f"""Title Strings:
                     - {meta_title}
@@ -333,7 +344,7 @@ def get_title_in_the_file(file_path,llm_service):
         # # log response
         # print(Fore.BLUE + "LLM RESPONSE:" + Style.RESET_ALL)
         # print(Fore.BLUE + str(LLM_Choosen) + Style.RESET_ALL)
-        
+
         print(Fore.BLUE +'Title Identified: '+str(LLM_Choosen) + Style.RESET_ALL)
 
         return LLM_Choosen
