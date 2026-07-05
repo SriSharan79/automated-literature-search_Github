@@ -76,7 +76,7 @@ class AutomatedLiteratureUI(tk.Tk):
         print(f"Welcome, {self.username}! Application Initialized.")
 
     def _create_widgets(self):
-        # Top bar: greeting + global actions
+        # Top bar: greeting + global actions (fixed height at the top).
         top_bar = tk.Frame(self)
         top_bar.pack(fill="x", pady=10)
         greeting_lbl = tk.Label(top_bar, text=f"Hello, {self.username}! Automated Literature Review Support Tool", font=("Arial", 12, "bold"))
@@ -84,9 +84,15 @@ class AutomatedLiteratureUI(tk.Tk):
         ttk.Button(top_bar, text="API Keys...", command=self._manage_api_keys_action).pack(side="right", padx=10)
         ttk.Button(top_bar, text="Open Review Tool", command=lambda: open_review_app(self)).pack(side="right", padx=4)
 
-        # Tab Control (Notebook)
-        self.notebook = ttk.Notebook(self)
-        self.notebook.pack(expand=True, fill="both", padx=10, pady=5)
+        # Body holds the notebook and the console. They are placed with fixed
+        # height fractions so the console always occupies ~40% of the body height
+        # (notebook 60% / console 40%), regardless of how tall the tab content is.
+        body = tk.Frame(self)
+        body.pack(fill="both", expand=True)
+
+        # Tab Control (Notebook) -> top 60%.
+        self.notebook = ttk.Notebook(body)
+        self.notebook.place(relx=0, rely=0, relwidth=1, relheight=0.6)
 
         # Build individual Tabs
         self._build_collect_tab()
@@ -95,14 +101,14 @@ class AutomatedLiteratureUI(tk.Tk):
         self._build_section_editor_tab()
         self._build_evaluate_tab()
 
-        # Integrated Console Terminal Output Box at Bottom
-        terminal_frame = tk.LabelFrame(self, text="Console Output Log")
-        terminal_frame.pack(fill="both", expand=True, padx=10, pady=10)
+        # Integrated Console Terminal Output Box -> bottom 40%.
+        terminal_frame = tk.LabelFrame(body, text="Console Output Log")
+        terminal_frame.place(relx=0, rely=0.6, relwidth=1, relheight=0.4)
 
         self.terminal_output = CustomTerminalText(terminal_frame, wrap="word", background="black", foreground="white", font=("Courier New", 10))
         scrollbar = ttk.Scrollbar(terminal_frame, command=self.terminal_output.yview)
         self.terminal_output.configure(yscrollcommand=scrollbar.set)
-        
+
         scrollbar.pack(side="right", fill="y")
         self.terminal_output.pack(side="left", fill="both", expand=True)
 
