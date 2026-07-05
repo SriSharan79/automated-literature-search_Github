@@ -560,6 +560,7 @@ class AutomatedLiteratureUI(tk.Tk):
             print("[Processing Strategy Active] Directing targets into analysis execution channels...")
             processed = 0
             if result.kind == "pdf_file":
+                # Single PDF: keep the isolated subprocess-with-timeout extraction.
                 progress(text=f"Analyzing {Path(result.input_path).name}…")
                 process_pdf_mode_file(result.input_path, MF.folder, components=components)
                 processed = 1
@@ -574,12 +575,24 @@ class AutomatedLiteratureUI(tk.Tk):
                         print(f"[Dedup] Skipped {len(skipped)} duplicate(s); logged to {MF.duplicate_log_excel}")
                 else:
                     to_process = sorted(Path(result.input_path).rglob("*.pdf"))
+
+                # Batch: load the Docling model pipeline once and reuse it for all PDFs.
+                doc_converter = None
+                if to_process and not should_cancel():
+                    progress(text="Loading Docling model (once for the batch)…")
+                    try:
+                        from alr.data_analysis.Table_image_extractor import get_shared_doc_converter
+                        doc_converter = get_shared_doc_converter()
+                    except Exception as e:
+                        print(f"[Docling] Shared converter unavailable; falling back to per-file: {e}")
+
                 total = len(to_process)
                 for i, pdf in enumerate(to_process, 1):
                     if should_cancel():
                         break
                     progress(done=i, total=total, text=f"Analyzing {i}/{total}: {pdf.name}")
-                    process_pdf_mode_file(str(pdf), str(MF.folder), components=components)
+                    process_pdf_mode_file(str(pdf), str(MF.folder), components=components,
+                                          doc_converter=doc_converter)
                     processed += 1
 
             print("Analysis Execution Chain Log Sequence Finished.")

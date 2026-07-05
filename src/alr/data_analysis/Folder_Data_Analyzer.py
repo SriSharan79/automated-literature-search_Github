@@ -121,9 +121,21 @@ def process_references(MF):
 def process_folder(source_path, storage_path, n=25):
     # 1. Setup Paths
     source_root = Path(source_path)
-    
+
+    pdf_files = list(source_root.rglob("*.pdf"))
+
+    # Batch run: load the Docling model pipeline once and reuse it for every PDF
+    # instead of re-initialising it per file.
+    doc_converter = None
+    if pdf_files:
+        try:
+            from alr.data_analysis.Table_image_extractor import get_shared_doc_converter
+            doc_converter = get_shared_doc_converter()
+        except Exception as e:
+            print(f"⚠️ Shared Docling converter unavailable; falling back to per-file extraction: {e}")
+
     # rglob("*.pdf") finds all PDFs in all subfolders
-    for file_path in source_root.rglob("*.pdf"):        
+    for file_path in pdf_files:
         print(f"\n🔍 Checking: {file_path.name}")
         # Check the number of pages in the PDF
         with open(file_path, "rb") as file:
@@ -135,8 +147,8 @@ def process_folder(source_path, storage_path, n=25):
             continue
 
         # Process the PDF if it's within the page limit
-        process_pdf_mode_file(file_path, storage_path,'a')
-        
+        process_pdf_mode_file(file_path, storage_path, 'a', doc_converter=doc_converter)
+
 
     print("\n🎉 Synchronization and Processing Complete.")
 

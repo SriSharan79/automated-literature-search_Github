@@ -199,7 +199,7 @@ def _decide_skip_paths(Main_Folder, pdf_name):
     return section_exists, ref_exists, True
 
 
-def _extract_and_chunk(MF,logger, file_path, start_time):
+def _extract_and_chunk(MF,logger, file_path, start_time, doc_converter=None):
     CHUNKS_CACHE_FILE = MF.raw_chunks_json_path
     
     chunks_data = []   
@@ -238,11 +238,16 @@ def _extract_and_chunk(MF,logger, file_path, start_time):
         logger.info("Cache miss. Initializing DoclingExtractor for pipeline extraction.")
         
         try:
-            # Initialize DoclingExtractor using storage paths from MF configuration
+            # Initialize DoclingExtractor using storage paths from MF configuration.
+            # A shared converter (batch mode) is reused when supplied so the Docling
+            # model pipeline is not rebuilt for every PDF.
+            if doc_converter is not None:
+                logger.info("Reusing shared Docling converter for this file.")
             extractor = DoclingExtractor(
                 input_path=file_path,
                 tables_output_path=MF.tables_storage_path,
-                images_output_path=MF.image_storage_path
+                images_output_path=MF.image_storage_path,
+                doc_converter=doc_converter,
             )
             
             # Convert file exactly ONCE using the Extractor's pipeline configuration 

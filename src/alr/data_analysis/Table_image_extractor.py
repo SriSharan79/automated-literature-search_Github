@@ -22,6 +22,64 @@ logger = logging.getLogger(__name__)
 
 _IS_TTY = sys.stdout.isatty()
 
+
+def build_doc_converter(enable_ocr: bool = True, image_resolution_scale: float = 1.0):
+    """
+    Build a Docling ``DocumentConverter`` with the project's pipeline options.
+
+    This is the expensive step (it wires up the layout/OCR model pipelines), so
+    for batch processing the resulting converter should be built once and reused
+    across many PDFs via :func:`get_shared_doc_converter`.
+    """
+    from docling.datamodel.pipeline_options import PdfPipelineOptions
+    from docling.document_converter import DocumentConverter, PdfFormatOption
+    from docling.datamodel.base_models import InputFormat
+
+    pipeline_options = PdfPipelineOptions()
+    pipeline_options.do_ocr = enable_ocr
+    pipeline_options.images_scale = image_resolution_scale
+    pipeline_options.generate_page_images = False
+    pipeline_options.generate_picture_images = True
+
+    # Use RapidOCR (ONNX Runtime backend) as the OCR engine. Unlike the EasyOCR
+    # default it is lightweight and bundles cleanly into a standalone build; its
+    # models are fetched on first use. Fall back to the default engine if
+    # RapidOCR is unavailable.
+    if enable_ocr:
+        try:
+            from docling.datamodel.pipeline_options import RapidOcrOptions
+            pipeline_options.ocr_options = RapidOcrOptions(lang=["english"])
+        except Exception as e:
+            logger.warning(f"RapidOCR unavailable, using default OCR engine: {e}")
+
+    return DocumentConverter(
+        format_options={
+            InputFormat.PDF: PdfFormatOption(pipeline_options=pipeline_options)
+        }
+    )
+
+
+# Process-wide cache of a shared converter, keyed by its pipeline options so a
+# change of options rebuilds it. Reused across a whole batch run.
+_shared_converter = None
+_shared_converter_key = None
+
+
+def get_shared_doc_converter(enable_ocr: bool = True, image_resolution_scale: float = 1.0):
+    """
+    Return a cached ``DocumentConverter``, building it on first use.
+
+    Use this for batch analysis so the Docling model pipeline is loaded only once
+    and reused for every PDF, instead of being re-initialised per file.
+    """
+    global _shared_converter, _shared_converter_key
+    key = (bool(enable_ocr), float(image_resolution_scale))
+    if _shared_converter is None or _shared_converter_key != key:
+        logger.info("Building shared Docling converter (loaded once, reused for the batch).")
+        _shared_converter = build_doc_converter(enable_ocr, image_resolution_scale)
+        _shared_converter_key = key
+    return _shared_converter
+
 def bbox_to_dict(bbox) -> Optional[Dict]:
     """
     Convert Docling BoundingBox to JSON-serializable dict.
@@ -66,6 +124,7 @@ class DoclingExtractor:
         images_output_path: str,
         enable_ocr: bool = None,
         image_resolution_scale: float = None,
+        doc_converter=None,
     ):
         self.input_path = Path(input_path)
         self.tables_output_path = Path(tables_output_path)
@@ -76,32 +135,9 @@ class DoclingExtractor:
         _ocr = enable_ocr if enable_ocr is not None else True
         _scale = image_resolution_scale if image_resolution_scale is not None else 1.0
 
-        from docling.datamodel.pipeline_options import PdfPipelineOptions
-        from docling.document_converter import DocumentConverter, PdfFormatOption
-        from docling.datamodel.base_models import InputFormat
-
-        pipeline_options = PdfPipelineOptions()
-        pipeline_options.do_ocr = _ocr
-        pipeline_options.images_scale = _scale
-        pipeline_options.generate_page_images = False
-        pipeline_options.generate_picture_images = True
-
-        # Use RapidOCR (ONNX Runtime backend) as the OCR engine. Unlike the
-        # EasyOCR default it is lightweight and bundles cleanly into a standalone
-        # build; its models are fetched on first use. Fall back to the default
-        # engine if RapidOCR is unavailable.
-        if _ocr:
-            try:
-                from docling.datamodel.pipeline_options import RapidOcrOptions
-                pipeline_options.ocr_options = RapidOcrOptions(lang=["english"])
-            except Exception as e:
-                logger.warning(f"RapidOCR unavailable, using default OCR engine: {e}")
-
-        self.doc_converter = DocumentConverter(
-            format_options={
-                InputFormat.PDF: PdfFormatOption(pipeline_options=pipeline_options)
-            }
-        )
+        # Reuse a pre-built (shared) converter when provided; otherwise build a
+        # dedicated one for this extractor (single-file / standalone use).
+        self.doc_converter = doc_converter if doc_converter is not None else build_doc_converter(_ocr, _scale)
 
     def extract_all(self) -> Dict:
         """

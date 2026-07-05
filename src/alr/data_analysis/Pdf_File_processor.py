@@ -105,8 +105,24 @@ def _run_extraction_with_timeout(file_path, start_time,MF, timeout=120):
         p.terminate()
         p.join()
         raise TimeoutError(f"Docling process timed out after {timeout}s")
-    
+
     raise ValueError("Extraction failed to return data within the time limit.")
+
+
+def _extract_chunks(file_path, start_time, MF, doc_converter=None, timeout=300):
+    """
+    Run Docling extraction and return a :class:`ChunkingResult`.
+
+    When ``doc_converter`` is supplied (batch mode) the extraction runs in-process
+    and reuses that shared converter, so the model pipeline is loaded only once
+    for the whole batch. Otherwise it falls back to the isolated subprocess with a
+    hard timeout (the safe single-file path).
+    """
+    if doc_converter is not None:
+        d, c, et, tt = _extract_and_chunk(MF, logger, file_path=file_path,
+                                          start_time=start_time, doc_converter=doc_converter)
+        return ChunkingResult(doc=d, chunks=c, end_time=et, time_taken=tt)
+    return _run_extraction_with_timeout(file_path, start_time, MF, timeout=timeout)
 
 
 # --- Helper functions (modular) ---
@@ -270,7 +286,7 @@ def _register_failure(new_failed, file_path, error_Msg, failed_dest_root):
 
 # --- Main function (same logic + same prints) ---
 
-def process_pdf_sections(file, storage_path=""):
+def process_pdf_sections(file, storage_path="", doc_converter=None):
 
     completed_steps = {"sectioning": 'Failed', "references": 'Failed', "abstract": 'Failed', "Introduction": 'Failed'}
     file_path = Path(file)    
@@ -298,7 +314,7 @@ def process_pdf_sections(file, storage_path=""):
 
         if section_exists:
             if not Path(MF.raw_chunks_json_path).exists():
-                _run_extraction_with_timeout(file_path, start_time,MF,timeout=300)
+                _extract_chunks(file_path, start_time, MF, doc_converter=doc_converter, timeout=300)
 
             chunk_time = get_corresponding_value(MF.raw_section_excel_log_path, "UUID", uniq_id, "Chunking Time")
             sec_time = get_corresponding_value(MF.raw_section_excel_log_path, "UUID", uniq_id, "Sectioning Time")
@@ -311,7 +327,7 @@ def process_pdf_sections(file, storage_path=""):
         # --- STEP C: Run Docling Process (Modularized) ---
         try:
             logger.info(f"\n[DEBUG] Running Extraction for: {pdf_name}")
-            result_data = _run_extraction_with_timeout(file_path, start_time,MF,timeout=300)
+            result_data = _extract_chunks(file_path, start_time, MF, doc_converter=doc_converter, timeout=300)
 
             if isinstance(result_data, Exception):
                 raise result_data
@@ -625,7 +641,7 @@ def _resolve_components(mode, components):
     return {"abstract", "intro", "references"}  # mode is None -> full
 
 
-def process_pdf_mode_file(file, storage_path="", mode=None, components=None):
+def process_pdf_mode_file(file, storage_path="", mode=None, components=None, doc_converter=None):
     """
     Orchestrates the PDF processing.
     mode='a': Only attempts Abstract (+ Introduction) extraction.
@@ -634,6 +650,10 @@ def process_pdf_mode_file(file, storage_path="", mode=None, components=None):
 
     ``components`` optionally overrides ``mode`` with an explicit selection among
     ``{'abstract', 'intro', 'references'}``; sectioning is always ensured first.
+
+    ``doc_converter`` optionally supplies a pre-built (shared) Docling converter so
+    batch runs load the model pipeline once and reuse it; when omitted the
+    sectioning step uses the isolated subprocess-with-timeout extraction path.
     """
     file_path = Path(file)
     
@@ -667,8 +687,8 @@ def process_pdf_mode_file(file, storage_path="", mode=None, components=None):
     if not already_sectioned:
         logger.info(f"📦 Extracting & sectioning: {file_path.name}")
         if not Path(MF.raw_chunks_json_path).exists():
-            _run_extraction_with_timeout(file_path, start_time, MF, timeout=300)
-        sec_result = process_pdf_sections(file_path, storage_path)
+            _extract_chunks(file_path, start_time, MF, doc_converter=doc_converter, timeout=300)
+        sec_result = process_pdf_sections(file_path, storage_path, doc_converter=doc_converter)
         if sec_result != 'P':
             logger.error("❌ Data Extraction failed. Cannot proceed.")
             return 'F'

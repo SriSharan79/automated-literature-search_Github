@@ -219,12 +219,24 @@ def batch_process_folder(
         skipped = []
 
     print(f"\n📦 Batch: {len(to_process)} file(s) to process, {len(skipped)} skipped as duplicates.")
+
+    # Load the Docling model pipeline once and reuse it for every PDF in the batch
+    # (single-file callers keep the isolated subprocess-with-timeout path instead).
+    doc_converter = None
+    if to_process:
+        try:
+            from alr.data_analysis.Table_image_extractor import get_shared_doc_converter
+            doc_converter = get_shared_doc_converter()
+        except Exception as e:
+            print(f"⚠️ Shared Docling converter unavailable; falling back to per-file extraction: {e}")
+
     processed = 0
     for pdf in to_process:
         if should_cancel is not None and should_cancel():
             print("Batch processing cancelled by user.")
             break
-        process_pdf_mode_file(str(pdf), str(manager.folder), mode=mode, components=components)
+        process_pdf_mode_file(str(pdf), str(manager.folder), mode=mode, components=components,
+                              doc_converter=doc_converter)
         processed += 1
 
     # Remove empty files/folders the manager pre-created but nothing wrote to.
