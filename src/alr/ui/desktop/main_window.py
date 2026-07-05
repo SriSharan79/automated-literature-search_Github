@@ -1,4 +1,5 @@
 import os
+import re
 import sys
 import queue
 import threading
@@ -30,20 +31,95 @@ class CustomTerminalText(tk.Text):
 
     Thread-safe: ``write`` may be called from worker threads (background analysis
     prints), so text is enqueued and inserted on the main thread by a poller.
+
+    ANSI-aware: the backend uses ``colorama`` (``Fore.*`` / ``Style.*``), which
+    emits raw ANSI SGR escape codes. These are parsed here and rendered as Tk
+    text tags so the console shows the same colour coding as a real terminal.
     """
+
+    # ANSI SGR escape sequence, e.g. "\x1b[34m" or "\x1b[1;44m".
+    _ANSI_RE = re.compile(r"\x1b\[([0-9;]*)m")
+
+    # SGR colour code -> readable colour on a black background.
+    _FG = {
+        30: "#7f7f7f", 31: "#ff5555", 32: "#55dd55", 33: "#e5e510",
+        34: "#5c9dff", 35: "#ff6eff", 36: "#55dddd", 37: "#e6e6e6",
+        90: "#a0a0a0", 91: "#ff8888", 92: "#88ff88", 93: "#ffff88",
+        94: "#88bbff", 95: "#ff9cff", 96: "#88ffff", 97: "#ffffff",
+    }
+    _BG = {
+        40: "#000000", 41: "#7a0000", 42: "#007a00", 43: "#7a7a00",
+        44: "#00337a", 45: "#7a007a", 46: "#007a7a", 47: "#c0c0c0",
+    }
+
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self._write_queue = queue.Queue()
+        self._configure_ansi_tags()
+        # Currently active foreground/background/bright state carried across writes.
+        self._fg_tag = None
+        self._bg_tag = None
+        self._bright = False
         self._poll_write_queue()
+
+    def _configure_ansi_tags(self):
+        for code, colour in self._FG.items():
+            self.tag_configure(f"fg{code}", foreground=colour)
+        for code, colour in self._BG.items():
+            self.tag_configure(f"bg{code}", background=colour)
+        self.tag_configure("bright", font=("Courier New", 10, "bold"))
 
     def write(self, string):
         # Called from any thread; marshal to the main thread via a queue.
         self._write_queue.put(string)
 
+    def _active_tags(self):
+        tags = []
+        if self._fg_tag:
+            tags.append(self._fg_tag)
+        if self._bg_tag:
+            tags.append(self._bg_tag)
+        if self._bright:
+            tags.append("bright")
+        return tuple(tags)
+
+    def _apply_sgr(self, params):
+        """Update the active colour state from one SGR escape's parameters."""
+        codes = [int(p) if p else 0 for p in params.split(";")] if params else [0]
+        for c in codes:
+            if c == 0:                     # reset all
+                self._fg_tag = self._bg_tag = None
+                self._bright = False
+            elif c == 1:                   # bright / bold
+                self._bright = True
+            elif c == 22:                  # normal intensity
+                self._bright = False
+            elif c == 39:                  # default foreground
+                self._fg_tag = None
+            elif c == 49:                  # default background
+                self._bg_tag = None
+            elif c in self._FG:
+                # Promote a standard colour to its bright variant when bold is set.
+                resolved = c + 60 if self._bright and 30 <= c <= 37 else c
+                self._fg_tag = f"fg{resolved if resolved in self._FG else c}"
+            elif c in self._BG:
+                self._bg_tag = f"bg{c}"
+
+    def _insert_ansi(self, text):
+        """Insert ``text``, converting ANSI SGR codes into Tk tag styling."""
+        idx = 0
+        for m in self._ANSI_RE.finditer(text):
+            if m.start() > idx:
+                self.insert(tk.END, text[idx:m.start()], self._active_tags())
+            self._apply_sgr(m.group(1))
+            idx = m.end()
+        if idx < len(text):
+            self.insert(tk.END, text[idx:], self._active_tags())
+
     def _poll_write_queue(self):
         try:
             while True:
-                self.insert(tk.END, self._write_queue.get_nowait())
+                self._insert_ansi(self._write_queue.get_nowait())
                 self.see(tk.END)
         except queue.Empty:
             pass
