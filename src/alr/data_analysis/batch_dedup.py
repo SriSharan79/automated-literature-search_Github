@@ -227,4 +227,11 @@ def batch_process_folder(
         process_pdf_mode_file(str(pdf), str(manager.folder), mode=mode, components=components)
         processed += 1
 
+    # Remove empty files/folders the manager pre-created but nothing wrote to.
+    try:
+        from alr.common.artifact_cleanup import prune_empty_artifacts
+        prune_empty_artifacts(manager.folder, should_cancel=should_cancel)
+    except Exception as e:
+        print(f"⚠️ Cleanup skipped: {e}")
+
     return {"processed": processed, "skipped": skipped, "to_process": len(to_process)}

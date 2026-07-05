@@ -537,6 +537,14 @@ class AutomatedLiteratureUI(tk.Tk):
                 except Exception as e:
                     print(f"[Classification] Skipped/failed: {e}")
 
+            # Prune empty files/folders the manager pre-created but nothing wrote to.
+            progress(text="Cleaning up empty files and folders…")
+            try:
+                from alr.common.artifact_cleanup import prune_empty_artifacts
+                prune_empty_artifacts(MF.folder)
+            except Exception as e:
+                print(f"[Cleanup] Skipped/failed: {e}")
+
             return processed
 
         self._run_threaded(work, "Analyzing Literature", "analyzed")
