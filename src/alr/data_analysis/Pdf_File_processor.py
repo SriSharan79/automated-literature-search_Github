@@ -655,23 +655,29 @@ def process_pdf_mode_file(file, storage_path="", mode=None, components=None):
     # --- STEP 1: PREREQUISITE VALIDATION ---
     # Every individual mode REQUIRES a UUID and Section JSON to exist
     In_UUID = get_corresponding_value(excel_success, "filename", file_path.name, "UUID")
-    
+
     # Pre-declare file logger handler tracker variable context
     f_handler = None
     MF.update_id_files(In_UUID)
-    
-    if not Path(MF.raw_chunks_json_path).exists():
-        _run_extraction_with_timeout(file_path, start_time,MF,timeout=300)
-    # If the user wants an individual run but sectioning isn't done, we must run it first
-    if not In_UUID or not Path(MF.raw_sec_json_path).exists():
-        logger.info(f"📦 Extracting Text from the file.")
+
+    # Only extract + section when the file has not already been sectioned. The raw
+    # chunks JSON is just an intermediate for sectioning, so if the section JSON
+    # already exists we must NOT re-run the (expensive) Docling extraction.
+    already_sectioned = bool(In_UUID) and Path(MF.raw_sec_json_path).exists()
+    if not already_sectioned:
+        logger.info(f"📦 Extracting & sectioning: {file_path.name}")
+        if not Path(MF.raw_chunks_json_path).exists():
+            _run_extraction_with_timeout(file_path, start_time, MF, timeout=300)
         sec_result = process_pdf_sections(file_path, storage_path)
         if sec_result != 'P':
             logger.error("❌ Data Extraction failed. Cannot proceed.")
             return 'F'
-        # Re-fetch new valid entry ID mapping context variables post-processing execution
+        # Re-fetch valid entry ID + repoint the manager's per-file paths to it.
         In_UUID = get_corresponding_value(excel_success, "filename", file_path.name, "UUID")
-    
+        MF.update_id_files(In_UUID)
+    else:
+        logger.info(f"⏩ Already sectioned; reusing existing sections for {file_path.name} (UUID: {In_UUID}).")
+
     # --- STEP 2: ATTACH FILE-SPECIFIC LOGGER ---
 
     if hasattr(MF, 'file_usage_log_path') and MF.file_usage_log_path:
