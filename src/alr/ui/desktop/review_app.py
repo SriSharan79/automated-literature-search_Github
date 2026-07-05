@@ -29,7 +29,8 @@ from alr.ui.desktop.review_view import ReviewDataView, open_path
 # Sensible default columns to show pre-checked in the overview builder.
 DEFAULT_OVERVIEW_FIELDS = [
     "title", "filename", "publication_year", "publication_type",
-    "classification", "first_author", "doi_link", "research_areas", "source_folder",
+    "classification", "abstract_classification", "first_author", "doi_link",
+    "research_areas", "source_folder",
 ]
 
 
@@ -47,11 +48,12 @@ def nl_to_overview_spec(description, fields):
         "You convert a user's request into a JSON spec for an overview over a table of "
         "analyzed research publications. Respond with ONLY a JSON object of the form "
         '{"fields": ["col", ...], "group_by": "col or null", '
-        '"filters": {"publication_year": "", "publication_type": "", "research_area": "", "source_folder": ""}}. '
+        '"filters": {"publication_year": "", "publication_type": "", "research_area": "", "source_folder": "", "topic": ""}}. '
         f"Valid columns are: {', '.join(fields)}. "
         "Use group_by (a single column) when the user asks for a count/summary/distribution; "
-        "otherwise set it to null and choose relevant fields. Leave a filter empty if not requested. "
-        "Do not invent columns."
+        "otherwise set it to null and choose relevant fields. The 'topic' filter matches a "
+        "classification topic (e.g. 'Large Language Models') against the title/abstract tags. "
+        "Leave a filter empty if not requested. Do not invent columns."
     )
     resp = llm_call(description, sys_prompt, "b")
     match = re.search(r"\{.*\}", resp or "", re.DOTALL)
@@ -62,7 +64,7 @@ def nl_to_overview_spec(description, fields):
     gb = spec.get("group_by")
     spec["group_by"] = gb if gb in valid else None
     spec["filters"] = {k: v for k, v in (spec.get("filters") or {}).items()
-                       if k in ("publication_year", "publication_type", "research_area", "source_folder") and v}
+                       if k in ("publication_year", "publication_type", "research_area", "source_folder", "topic") and v}
     return spec
 
 
@@ -484,6 +486,9 @@ class ReviewApp:
         self.filter_type = ttk.Entry(filt, width=24); self.filter_type.grid(row=1, column=1, sticky="w", padx=4)
         ttk.Label(filt, text="Research area:").grid(row=1, column=2, sticky="w", padx=4)
         self.filter_ra = ttk.Entry(filt, width=20); self.filter_ra.grid(row=1, column=3, padx=4)
+        ttk.Label(filt, text="Classification topic:").grid(row=2, column=0, sticky="w", padx=4, pady=3)
+        self.filter_topic = ttk.Entry(filt, width=24); self.filter_topic.grid(row=2, column=1, sticky="w", padx=4)
+        ttk.Label(filt, text="(matches title or abstract tags)").grid(row=2, column=2, columnspan=2, sticky="w", padx=4)
 
         # Grouping + chart + templates + natural language
         adv = ttk.LabelFrame(tab, text="Grouping, templates & natural language")
@@ -509,6 +514,16 @@ class ReviewApp:
         self.nl_entry = ttk.Entry(adv, width=60)
         self.nl_entry.grid(row=2, column=1, columnspan=3, padx=4, pady=3, sticky="w")
         ttk.Button(adv, text="Build from description", command=self._build_from_description).grid(row=2, column=4, padx=2)
+
+        # Per-topic counts (splits the comma-joined classification tags).
+        topic_row = ttk.Frame(adv)
+        topic_row.grid(row=3, column=0, columnspan=5, sticky="w", padx=4, pady=(2, 3))
+        ttk.Label(topic_row, text="Topic counts from:").pack(side="left")
+        self.topic_col_var = tk.StringVar(value="Title classification")
+        ttk.Combobox(topic_row, textvariable=self.topic_col_var, width=22, state="readonly",
+                     values=["Title classification", "Abstract classification"]).pack(side="left", padx=4)
+        ttk.Button(topic_row, text="Show topic counts", command=self._show_topic_counts).pack(side="left", padx=4)
+        ttk.Label(topic_row, text="(one row/bar per topic; honours filters above)").pack(side="left", padx=4)
 
         btns = ttk.Frame(tab)
         btns.pack(fill="x", padx=8, pady=4)
@@ -550,6 +565,8 @@ class ReviewApp:
             f["publication_type"] = self.filter_type.get().strip()
         if self.filter_ra.get().strip():
             f["research_area"] = self.filter_ra.get().strip()
+        if self.filter_topic.get().strip():
+            f["topic"] = self.filter_topic.get().strip()
         return f
 
     def _group_by(self):
@@ -603,18 +620,8 @@ class ReviewApp:
             messagebox.showerror("Export failed", str(e))
 
     # -- charts -------------------------------------------------------------
-    def _show_chart(self):
-        group_by = self._group_by()
-        if not group_by:
-            messagebox.showinfo("Chart", "Choose a 'Group by' column to chart an overview.")
-            return
-        data = self.store.grouped_overview(group_by, self._current_filters())
-        if not data:
-            messagebox.showinfo("Chart", "No data to chart.")
-            return
-        data = data[:20]  # keep charts readable
-        labels = [str(r[group_by]) for r in data]
-        values = [r["count"] for r in data]
+    def _render_chart(self, labels, values, title):
+        """Draw a bar/pie chart of ``labels``/``values`` into the chart frame."""
         try:
             from matplotlib.figure import Figure
             from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
@@ -632,12 +639,42 @@ class ReviewApp:
             ax.set_xticks(range(len(labels)))
             ax.set_xticklabels(labels, rotation=40, ha="right", fontsize=7)
             ax.set_ylabel("count", fontsize=8)
-        ax.set_title(f"documents by {group_by}", fontsize=9)
+        ax.set_title(title, fontsize=9)
         fig.tight_layout()
         canvas = FigureCanvasTkAgg(fig, master=self.chart_frame)
         canvas.draw()
         canvas.get_tk_widget().pack(fill="both", expand=True)
         self._chart_fig = fig
+
+    def _show_chart(self):
+        group_by = self._group_by()
+        if not group_by:
+            messagebox.showinfo("Chart", "Choose a 'Group by' column to chart an overview.")
+            return
+        data = self.store.grouped_overview(group_by, self._current_filters())
+        if not data:
+            messagebox.showinfo("Chart", "No data to chart.")
+            return
+        data = data[:20]  # keep charts readable
+        labels = [str(r[group_by]) for r in data]
+        values = [r["count"] for r in data]
+        self._render_chart(labels, values, f"documents by {group_by}")
+
+    def _show_topic_counts(self):
+        """Per-topic overview: split the classification tags and count per topic."""
+        column = "classification" if self.topic_col_var.get().startswith("Title") else "abstract_classification"
+        data = self.store.topic_counts(column, self._current_filters())
+        cols = ["topic", "count"]
+        self._fill_tree(self.overview_tree, cols, data, limit=2000)
+        self._last_overview = (cols, data)
+        label = "title" if column == "classification" else "abstract"
+        self.overview_status.config(text=f"{len(data)} topic(s) from {label} classification")
+        if not data:
+            messagebox.showinfo("Topic counts", "No classification tags found. Run classification first.")
+            return
+        top = data[:20]
+        self._render_chart([r["topic"] for r in top], [r["count"] for r in top],
+                           f"documents per {label} topic")
 
     def _export_chart(self):
         if not getattr(self, "_chart_fig", None):
@@ -672,7 +709,8 @@ class ReviewApp:
         self.filter_source.set(f.get("source_folder", "") or "")
         for entry, key in ((self.filter_year, "publication_year"),
                            (self.filter_type, "publication_type"),
-                           (self.filter_ra, "research_area")):
+                           (self.filter_ra, "research_area"),
+                           (self.filter_topic, "topic")):
             entry.delete(0, tk.END)
             entry.insert(0, str(f.get(key, "") or ""))
         self.group_by_var.set(spec.get("group_by") or "(none)")

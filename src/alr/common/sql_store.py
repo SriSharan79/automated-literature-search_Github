@@ -200,7 +200,42 @@ class AnalyzedDataStore:
         if (filters or {}).get("research_area"):
             where.append("LOWER(research_areas) LIKE ?")
             params.append(f"%{filters['research_area'].lower()}%")
+        # Classification topic: substring match across either classification column
+        # (title-based or abstract-based tags), both comma-joined topic lists.
+        if (filters or {}).get("topic"):
+            like = f"%{filters['topic'].lower()}%"
+            where.append("(LOWER(classification) LIKE ? OR LOWER(abstract_classification) LIKE ?)")
+            params.extend([like, like])
         return (" AND ".join(where), params)
+
+    def topic_counts(self, column: str = "classification", filters: dict = None) -> list:
+        """
+        Count documents per *individual* classification topic by splitting the
+        comma-joined ``classification`` / ``abstract_classification`` column.
+
+        Unlike :meth:`grouped_overview` (which groups by the whole tag string),
+        this yields one row per topic. Returns ``[{"topic": t, "count": n}, …]``
+        ordered by count desc, honouring the same filters as the other overviews.
+        """
+        if column not in ("classification", "abstract_classification"):
+            raise ValueError(f"topic_counts only supports classification columns, not {column!r}")
+        from collections import Counter
+
+        where, params = self._filter_clause(filters or {})
+        sql = f"SELECT {column} AS val FROM documents"
+        if where:
+            sql += " WHERE " + where
+        counter = Counter()
+        with self._connect() as conn:
+            for row in conn.execute(sql, params).fetchall():
+                val = row[0]
+                if not val:
+                    continue
+                for topic in str(val).split(","):
+                    t = topic.strip()
+                    if t:
+                        counter[t] += 1
+        return [{"topic": t, "count": c} for t, c in counter.most_common()]
 
     def build_overview(self, fields: list = None, filters: dict = None) -> list:
         """
