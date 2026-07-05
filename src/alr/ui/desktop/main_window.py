@@ -485,7 +485,8 @@ class AutomatedLiteratureUI(tk.Tk):
                 if skip_dupes:
                     progress(text="Scanning for duplicate titles…")
                     to_process, skipped = find_new_and_duplicate_pdfs(
-                        result.input_path, MF, llm_service=service, should_cancel=should_cancel,
+                        result.input_path, MF, llm_service=service, components=components,
+                        should_cancel=should_cancel,
                         progress_callback=lambda d, t: progress(done=d, total=t, text=f"Scanning duplicates {d}/{t}…"))
                     if skipped:
                         print(f"[Dedup] Skipped {len(skipped)} duplicate(s); logged to {MF.duplicate_log_excel}")

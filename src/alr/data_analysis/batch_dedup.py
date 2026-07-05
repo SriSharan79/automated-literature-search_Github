@@ -41,11 +41,35 @@ def _is_usable_title(title: str) -> bool:
     return True
 
 
+# UI component name -> registry status column.
+_COMPONENT_COLUMN = {"abstract": "abstract", "intro": "Introduction", "references": "references"}
+
+
+def _components_complete(status_map, components) -> bool:
+    """
+    True if every requested component is already marked 'Passed' for a document.
+
+    ``components`` is a subset of {'abstract','intro','references'} (sectioning is
+    implicit for any registry entry). ``None`` means "no per-component request",
+    so any already-analyzed file counts as complete (legacy skip-if-known).
+    """
+    if components is None:
+        return True
+    for c in components:
+        col = _COMPONENT_COLUMN.get(c)
+        if col is None:
+            continue
+        if str(status_map.get(col, "")).strip().lower() != "passed":
+            return False
+    return True
+
+
 def find_new_and_duplicate_pdfs(
     source_folder,
     storage_path=None,
     threshold: int = 88,
     llm_service: str = "o",
+    components=None,
     progress_callback=None,
     should_cancel=None,
 ):
@@ -55,12 +79,16 @@ def find_new_and_duplicate_pdfs(
 
     A candidate PDF is a duplicate when its extracted title fuzzy-matches (ratio
     >= ``threshold``) either a title already in the registry (previously analyzed)
-    or a title accepted earlier in this same batch, or when its filename already
-    exists in the registry. Returns ``(to_process, skipped)`` where ``to_process``
-    is a list of ``Path`` and ``skipped`` is a list of dicts describing each skip.
+    or a title accepted earlier in this same batch. A file whose *filename* already
+    exists in the registry is skipped only when every requested ``components`` step
+    is already complete for it; otherwise it is re-processed to add the missing
+    components. Returns ``(to_process, skipped)`` where ``to_process`` is a list of
+    ``Path`` and ``skipped`` is a list of dicts describing each skip.
 
-    ``progress_callback(done, total)`` is called after each PDF if given, and
-    ``should_cancel`` is an optional callable checked before each PDF.
+    ``components`` is the optional set of requested per-document steps (subset of
+    {'abstract','intro','references'}); ``None`` keeps the legacy behaviour of
+    skipping any already-analyzed filename. ``progress_callback(done, total)`` is
+    called after each PDF if given, and ``should_cancel`` is checked before each.
     """
     from rapidfuzz import fuzz, process as rf_process
     from alr.common.file_manager import DataAnalyzeManager
@@ -70,14 +98,19 @@ def find_new_and_duplicate_pdfs(
     if llm_service is None:
         llm_service = manager.llm_service or "o"
 
-    # Titles/filenames already analyzed (from the registry).
+    # Titles/filenames already analyzed (from the registry), with per-component status.
     known_titles = {}   # normalized title -> original title
-    known_files = set()
+    known_files = {}    # filename -> {registry status column: value}
+    status_cols = [c for c in _COMPONENT_COLUMN.values()]
     if Path(manager.excel_success).exists():
         try:
             df = pd.read_excel(manager.excel_success)
             if "filename" in df.columns:
-                known_files = {str(f) for f in df["filename"].dropna().tolist()}
+                for _, r in df.iterrows():
+                    fname = r.get("filename")
+                    if fname is None or str(fname) == "nan":
+                        continue
+                    known_files[str(fname)] = {col: r.get(col) for col in status_cols if col in df.columns}
             if "title" in df.columns:
                 for t in df["title"].dropna().tolist():
                     if _is_usable_title(t):
@@ -95,11 +128,16 @@ def find_new_and_duplicate_pdfs(
             print("Duplicate scan cancelled by user.")
             break
 
-        # Filename already analyzed -> skip immediately (no title extraction cost).
+        # Same filename already in the registry: skip only if the requested
+        # components are already complete; otherwise re-process to add them.
         if pdf.name in known_files:
-            skipped.append({"filename": pdf.name, "path": str(pdf), "title": "",
-                            "matched_against": "registry (same filename)",
-                            "matched_value": pdf.name, "score": 100})
+            if _components_complete(known_files[pdf.name], components):
+                skipped.append({"filename": pdf.name, "path": str(pdf), "title": "",
+                                "matched_against": "registry (same filename, components complete)",
+                                "matched_value": pdf.name, "score": 100})
+            else:
+                to_process.append(pdf)
+                print(f"↻ Re-processing {pdf.name}: adding missing requested component(s).")
             if progress_callback:
                 progress_callback(i, total)
             continue
@@ -152,15 +190,18 @@ def batch_process_folder(
     skip_duplicates: bool = True,
     threshold: int = 88,
     mode: str = "a",
+    components=None,
     llm_service: str = None,
     progress_callback=None,
     should_cancel=None,
 ):
     """
     Process every PDF under ``source_path`` with no page limit, optionally skipping
-    fuzzy-title duplicates first. Returns a summary dict with counts and the list of
-    skipped duplicates. Files are processed via
-    :func:`Pdf_File_processor.process_pdf_mode_file`.
+    duplicates first. When ``components`` is given (subset of
+    {'abstract','intro','references'}), already-analyzed files are only skipped if
+    those components are already complete, and each file runs just those steps.
+    Returns a summary dict with counts and the list of skipped duplicates. Files are
+    processed via :func:`Pdf_File_processor.process_pdf_mode_file`.
     """
     from alr.common.file_manager import DataAnalyzeManager
     from alr.data_analysis.Pdf_File_processor import process_pdf_mode_file
@@ -170,7 +211,7 @@ def batch_process_folder(
 
     if skip_duplicates:
         to_process, skipped = find_new_and_duplicate_pdfs(
-            source_path, manager, threshold=threshold, llm_service=svc,
+            source_path, manager, threshold=threshold, llm_service=svc, components=components,
             progress_callback=progress_callback, should_cancel=should_cancel,
         )
     else:
@@ -183,7 +224,7 @@ def batch_process_folder(
         if should_cancel is not None and should_cancel():
             print("Batch processing cancelled by user.")
             break
-        process_pdf_mode_file(str(pdf), str(manager.folder), mode)
+        process_pdf_mode_file(str(pdf), str(manager.folder), mode=mode, components=components)
         processed += 1
 
     return {"processed": processed, "skipped": skipped, "to_process": len(to_process)}
