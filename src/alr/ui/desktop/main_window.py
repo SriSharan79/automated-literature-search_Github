@@ -71,6 +71,7 @@ class AutomatedLiteratureUI(tk.Tk):
         self._build_analyze_tab()
         self._build_visualize_tab()
         self._build_section_editor_tab()
+        self._build_evaluate_tab()
 
         # Integrated Console Terminal Output Box at Bottom
         terminal_frame = tk.LabelFrame(self, text="Console Output Log")
@@ -464,6 +465,18 @@ class AutomatedLiteratureUI(tk.Tk):
         self.query_entry = ttk.Entry(query_frame, width=80)
         self.query_entry.pack(fill="x", padx=5, pady=5)
 
+        # Query scope: all sections vs. Research-Area / Key-Concept sections only.
+        scope_frame = ttk.Frame(v_frame)
+        scope_frame.pack(fill="x", padx=5, pady=(0, 5))
+        ttk.Label(scope_frame, text="Query scope:").pack(side="left", padx=5)
+        self.query_scope_var = ttk.Combobox(
+            scope_frame,
+            values=["All sections", "Research-Area & Key-Concept only"],
+            width=32, state="readonly",
+        )
+        self.query_scope_var.set("All sections")
+        self.query_scope_var.pack(side="left", padx=5)
+
         btn_run_query = ttk.Button(v_frame, text="Generate DB Framework & Query Report", command=self._run_visualization_query_action)
         btn_run_query.pack(pady=20, ipadx=10, ipady=5)
 
@@ -477,9 +490,15 @@ class AutomatedLiteratureUI(tk.Tk):
 
         print("\n[RAG Database Architecture Step] Synchronizing local vector storage mapping structures...")
         generate_databases(storage_choice)
-        
+
+        ra_kc_only = self.query_scope_var.get().startswith("Research-Area")
         print(f"[Query Pipeline Dispatch] Running query text profiling execution match targeting expression: '{query_text}'")
-        generate_query_report([query_text], storage_choice)
+        if ra_kc_only:
+            from alr.rag_builders.query_executor import generate_query_report_RA_KC
+            print("[Query Scope] Restricting to Research-Area & Key-Concept sections.")
+            generate_query_report_RA_KC([query_text], storage_choice)
+        else:
+            generate_query_report([query_text], storage_choice)
         print("Query Generation Suite Logging Executed successfully.")
 
     # ==========================================
@@ -497,6 +516,156 @@ class AutomatedLiteratureUI(tk.Tk):
         container = ttk.Frame(tab)
         container.pack(fill="both", expand=True)
         self.section_editor = JSONRestructurerUI(container)
+
+    # ==========================================
+    # TAB 5: EVALUATE & ENRICH
+    # ==========================================
+    def _build_evaluate_tab(self):
+        tab = ttk.Frame(self.notebook)
+        self.notebook.add(tab, text="5. Evaluate & Enrich")
+
+        # --- Storage-space re-run passes & evaluation DBs ---
+        pass_frame = tk.LabelFrame(tab, text="Storage-Space Passes (on an already-analyzed folder)")
+        pass_frame.pack(fill="x", padx=10, pady=(10, 5))
+
+        row = ttk.Frame(pass_frame)
+        row.pack(fill="x", padx=5, pady=8)
+        ttk.Label(row, text="Storage folder:").pack(side="left", padx=5)
+        self.eval_storage_entry = ttk.Entry(row, width=55)
+        self.eval_storage_entry.pack(side="left", padx=5)
+        ttk.Button(row, text="Browse...", command=lambda: self._browse_folder(self.eval_storage_entry)).pack(side="left", padx=2)
+
+        btn_row = ttk.Frame(pass_frame)
+        btn_row.pack(fill="x", padx=5, pady=(0, 8))
+        ttk.Button(btn_row, text="Re-run Abstract Analysis",
+                   command=lambda: self._run_storage_pass("abstract")).pack(side="left", padx=4)
+        ttk.Button(btn_row, text="Re-run Reference Extraction",
+                   command=lambda: self._run_storage_pass("references")).pack(side="left", padx=4)
+        ttk.Button(btn_row, text="Build Evaluation DBs",
+                   command=lambda: self._run_storage_pass("evaluate")).pack(side="left", padx=4)
+
+        # --- Publication title classification (on-demand, single title) ---
+        cls_frame = tk.LabelFrame(tab, text="Publication Title Classification")
+        cls_frame.pack(fill="x", padx=10, pady=5)
+        crow = ttk.Frame(cls_frame)
+        crow.pack(fill="x", padx=5, pady=8)
+        ttk.Label(crow, text="Title:").pack(side="left", padx=5)
+        self.classify_title_entry = ttk.Entry(crow, width=70)
+        self.classify_title_entry.pack(side="left", padx=5, fill="x", expand=True)
+        ttk.Button(crow, text="Classify Title", command=self._classify_title_action).pack(side="left", padx=5)
+
+        # --- Text comparison metrics ---
+        met_frame = tk.LabelFrame(tab, text="Text Comparison Metrics (lexical overlap + edit distance)")
+        met_frame.pack(fill="both", expand=True, padx=10, pady=5)
+
+        grid = ttk.Frame(met_frame)
+        grid.pack(fill="both", expand=True, padx=5, pady=5)
+        grid.columnconfigure(0, weight=1)
+        grid.columnconfigure(1, weight=1)
+
+        ttk.Label(grid, text="Reference text:").grid(row=0, column=0, sticky="w")
+        ttk.Label(grid, text="Candidate text:").grid(row=0, column=1, sticky="w")
+        self.metric_ref_text = tk.Text(grid, height=6, wrap="word")
+        self.metric_ref_text.grid(row=1, column=0, sticky="nsew", padx=(0, 4), pady=2)
+        self.metric_cand_text = tk.Text(grid, height=6, wrap="word")
+        self.metric_cand_text.grid(row=1, column=1, sticky="nsew", padx=(4, 0), pady=2)
+        grid.rowconfigure(1, weight=1)
+
+        ttk.Button(met_frame, text="Compute Metrics", command=self._compute_metrics_action).pack(pady=6)
+
+        self.metric_result_text = tk.Text(met_frame, height=8, wrap="word", state="disabled")
+        self.metric_result_text.pack(fill="both", expand=True, padx=5, pady=(0, 5))
+
+    def _run_storage_pass(self, mode):
+        folder = self.eval_storage_entry.get().strip()
+        if not folder or not Path(folder).is_dir():
+            messagebox.showerror("Error", "Please select a valid analyzed storage folder first.")
+            return
+
+        clean_path = clean_folder_path(folder)
+        try:
+            if mode == "abstract":
+                if not self._ensure_api_key("B") and not self._ensure_api_key("O"):
+                    return
+                from alr.data_analysis.Folder_Data_Analyzer import process_abstract
+                print("[Evaluate] Re-running abstract analysis pass...")
+                process_abstract(DataAnalyzeManager(clean_path))
+            elif mode == "references":
+                if not self._ensure_api_key("B") and not self._ensure_api_key("O"):
+                    return
+                from alr.data_analysis.Folder_Data_Analyzer import process_references
+                print("[Evaluate] Re-running reference extraction pass...")
+                process_references(DataAnalyzeManager(clean_path))
+            elif mode == "evaluate":
+                from alr.analysis_evaluation.data_evaluator import generate_databases as generate_eval_databases
+                print("[Evaluate] Building analysis-evaluation databases...")
+                generate_eval_databases(clean_path)
+            print("[Evaluate] Pass finished.")
+            messagebox.showinfo("Done", "Storage-space pass finished. See the console log for details.")
+        except Exception as e:
+            print(f"[Evaluate] Failed: {e}")
+            messagebox.showerror("Error", f"Pass failed: {e}")
+
+    def _classify_title_action(self):
+        title = self.classify_title_entry.get().strip()
+        if not title:
+            messagebox.showerror("Error", "Please enter a publication title to classify.")
+            return
+        if not self._ensure_api_key("B"):
+            return
+        try:
+            from alr.analysis_evaluation.publication_classification.title_classifier import classify_title
+            print(f"[Classify] Classifying title: {title!r}")
+            result = classify_title(title) or {}
+            matched = [topic for topic, hit in result.items() if hit]
+            if matched:
+                messagebox.showinfo("Classification result",
+                                    "Matched topics:\n\n- " + "\n- ".join(matched))
+            else:
+                messagebox.showinfo("Classification result", "No topics matched this title.")
+            print(f"[Classify] Result: {result}")
+        except Exception as e:
+            print(f"[Classify] Failed: {e}")
+            messagebox.showerror("Error", f"Classification failed: {e}")
+
+    def _compute_metrics_action(self):
+        ref = self.metric_ref_text.get("1.0", tk.END).strip()
+        cand = self.metric_cand_text.get("1.0", tk.END).strip()
+        if not ref or not cand:
+            messagebox.showerror("Error", "Please provide both a reference and a candidate text.")
+            return
+        try:
+            import importlib
+            lexical = importlib.import_module("alr.analysis_evaluation.Lexical_Overlap_Metrics")
+            distance = importlib.import_module("alr.analysis_evaluation.Distance_w_Structural _Alignment")
+
+            jaccard = lexical.calculate_jaccard_similarity(ref, cand)
+            rouge = lexical.calculate_rouge_scores(ref, cand)
+            bleu = lexical.calculate_bleu_score(ref, cand)
+            edit = distance.calculate_edit_distance_metrics(ref, cand)
+
+            lines = [
+                f"Jaccard similarity : {jaccard:.4f}",
+                f"ROUGE-1 (F1)       : {rouge['ROUGE-1']:.4f}",
+                f"ROUGE-2 (F1)       : {rouge['ROUGE-2']:.4f}",
+                f"ROUGE-L (F1)       : {rouge['ROUGE-L']:.4f}",
+                f"BLEU               : {bleu:.4f}",
+                f"Levenshtein dist   : {edit['character_level']['levenshtein_distance']}",
+                f"Levenshtein ratio  : {edit['character_level']['similarity_ratio']:.4f}",
+                f"Word Error Rate    : {edit['word_level']['word_error_rate']:.4f}",
+                f"  substitutions={edit['word_level']['substitutions']}"
+                f"  insertions={edit['word_level']['insertions']}"
+                f"  deletions={edit['word_level']['deletions']}",
+            ]
+            text = "\n".join(lines)
+            self.metric_result_text.configure(state="normal")
+            self.metric_result_text.delete("1.0", tk.END)
+            self.metric_result_text.insert("1.0", text)
+            self.metric_result_text.configure(state="disabled")
+            print("[Metrics]\n" + text)
+        except Exception as e:
+            print(f"[Metrics] Failed: {e}")
+            messagebox.showerror("Error", f"Metric computation failed: {e}")
 
     # ==========================================
     # API KEY MANAGEMENT
