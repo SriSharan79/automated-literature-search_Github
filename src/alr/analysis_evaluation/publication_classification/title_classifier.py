@@ -183,6 +183,11 @@ def classify_title(title, service=None):
     time.sleep(1.5)
     try:
         response = llm_call(Prompt, system_prompt_sysE, service) if service else llm_call(Prompt, system_prompt_sysE)
+        
+        print(Fore.CYAN + "\n--- RAW LLM RESPONSE START ---" + Style.RESET_ALL)
+        print(Fore.CYAN + response + Style.RESET_ALL)
+        print(Fore.CYAN + "--- RAW LLM RESPONSE END ---\n" + Style.RESET_ALL)
+        
         # Parse the string response into a dictionary
         return json.loads(response)
     except Exception as e:
@@ -221,6 +226,11 @@ def classify_abstract(abstract_text, service=None):
     time.sleep(1.5)
     try:
         response = llm_call(Prompt, system_prompt_sysE, service) if service else llm_call(Prompt, system_prompt_sysE)
+        
+        print(Fore.CYAN + "\n--- RAW LLM RESPONSE START ---" + Style.RESET_ALL)
+        print(Fore.CYAN + response + Style.RESET_ALL)
+        print(Fore.CYAN + "--- RAW LLM RESPONSE END ---\n" + Style.RESET_ALL)
+        
         return json.loads(response)
     except Exception as e:
         print(f"Error processing abstract: {e}")
