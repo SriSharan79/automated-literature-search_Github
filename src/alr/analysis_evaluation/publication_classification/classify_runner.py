@@ -12,7 +12,48 @@ title (reusing :func:`title_classifier.classify_title`), writes the managed
 from __future__ import annotations
 
 
-def classify_space(manager, db_path=None, progress_callback=None, should_cancel=None) -> int:
+def _load_existing_classification(excel_path):
+    """
+    If ``excel_path`` already exists and has rows, return
+    ``(existing_rows, existing_filenames)`` -- a list-of-dict copy of the
+    current rows (for re-saving/merging) and the set of filenames already
+    present. Returns ``([], set())`` if the file doesn't exist, is empty, or
+    can't be read.
+    """
+    import pandas as pd
+    from pathlib import Path
+
+    if not Path(excel_path).exists():
+        return [], set()
+    try:
+        df = pd.read_excel(excel_path)
+    except Exception:
+        return [], set()
+    if df.empty:
+        return [], set()
+    filenames = set(df.get("filename", pd.Series(dtype=str)).dropna().astype(str))
+    return df.to_dict("records"), filenames
+
+
+def has_existing_classification(manager, kind="title") -> int:
+    """
+    Return how many documents already have classification data saved in the
+    managed workbook -- ``Publication_Classification.xlsx`` for
+    ``kind="title"``, or ``Abstract_Classification.xlsx`` for
+    ``kind="abstract"``. 0 means there's nothing saved yet (no need to prompt
+    about overwriting vs. continuing).
+    """
+    from alr.common.file_manager import DataAnalyzeManager
+
+    if not isinstance(manager, DataAnalyzeManager):
+        manager = DataAnalyzeManager(manager)
+
+    excel_path = manager.classification_excel if kind == "title" else manager.abstract_classification_excel
+    _, existing_filenames = _load_existing_classification(excel_path)
+    return len(existing_filenames)
+
+
+def classify_space(manager, db_path=None, progress_callback=None, should_cancel=None, overwrite=True) -> int:
     """
     Classify each document in a storage space by title and persist the result.
 
@@ -23,6 +64,15 @@ def classify_space(manager, db_path=None, progress_callback=None, should_cancel=
     ``progress_callback(done, total)`` is called after each document if given.
     ``should_cancel`` is an optional callable checked before each document for
     cooperative cancellation (partial results are saved).
+
+    If ``Publication_Classification.xlsx`` already has rows for this space:
+
+    * ``overwrite=True`` (default) reclassifies every matching document and
+      replaces the workbook from scratch.
+    * ``overwrite=False`` skips documents whose filename is already present in
+      the workbook and only classifies the remaining ones, merging the new
+      rows into the existing data. Use :func:`has_existing_classification` to
+      check beforehand and let the user choose.
     """
     import pandas as pd
     from alr.common.file_manager import DataAnalyzeManager
@@ -35,7 +85,10 @@ def classify_space(manager, db_path=None, progress_callback=None, should_cancel=
     store = AnalyzedDataStore(db_path or DB_PATH)
     docs = [d for d in store.list_documents() if d.get("source_folder") == str(manager.folder)]
 
-    rows = []
+    rows, existing_filenames = ([], set()) if overwrite else _load_existing_classification(manager.classification_excel)
+    if existing_filenames:
+        docs = [d for d in docs if str(d.get("filename")) not in existing_filenames]
+
     updated = 0
     total = len(docs)
     for i, d in enumerate(docs, 1):
@@ -58,7 +111,7 @@ def classify_space(manager, db_path=None, progress_callback=None, should_cancel=
     return updated
 
 
-def classify_abstract_space(manager, db_path=None, progress_callback=None, should_cancel=None) -> int:
+def classify_abstract_space(manager, db_path=None, progress_callback=None, should_cancel=None, overwrite=True) -> int:
     """
     Classify each document in a storage space by its **identified abstract text**
     (reusing :func:`title_classifier.classify_abstract`) and persist the result in
@@ -71,6 +124,15 @@ def classify_abstract_space(manager, db_path=None, progress_callback=None, shoul
 
     ``progress_callback(done, total)`` is called after each document if given, and
     ``should_cancel`` is checked before each document for cooperative cancellation.
+
+    If ``Abstract_Classification.xlsx`` already has rows for this space:
+
+    * ``overwrite=True`` (default) reclassifies every matching document and
+      replaces the workbook from scratch.
+    * ``overwrite=False`` skips documents whose filename is already present in
+      the workbook and only classifies the remaining ones, merging the new
+      rows into the existing data. Use :func:`has_existing_classification`
+      (``kind="abstract"``) to check beforehand and let the user choose.
     """
     import pandas as pd
     from alr.common.file_manager import DataAnalyzeManager
@@ -83,7 +145,10 @@ def classify_abstract_space(manager, db_path=None, progress_callback=None, shoul
     store = AnalyzedDataStore(db_path or DB_PATH)
     docs = [d for d in store.list_documents() if d.get("source_folder") == str(manager.folder)]
 
-    rows = []
+    rows, existing_filenames = ([], set()) if overwrite else _load_existing_classification(manager.abstract_classification_excel)
+    if existing_filenames:
+        docs = [d for d in docs if str(d.get("filename")) not in existing_filenames]
+
     updated = 0
     total = len(docs)
     for i, d in enumerate(docs, 1):

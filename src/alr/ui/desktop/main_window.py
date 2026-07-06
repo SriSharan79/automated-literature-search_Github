@@ -951,6 +951,26 @@ class AutomatedLiteratureUI(tk.Tk):
 
         clean_path = clean_folder_path(folder) if folder and Path(folder).is_dir() else None
 
+        # If a classification workbook already has data for this space, ask
+        # whether to rewrite everything or only classify what's left.
+        overwrite = True
+        if mode in ("classify_title", "classify_abstract"):
+            from alr.analysis_evaluation.publication_classification.classify_runner import has_existing_classification
+            kind = "title" if mode == "classify_title" else "abstract"
+            label = "title" if mode == "classify_title" else "abstract"
+            existing_n = has_existing_classification(clean_path, kind=kind) if clean_path else 0
+            if existing_n:
+                choice = messagebox.askyesnocancel(
+                    "Existing classification found",
+                    f"{existing_n} document(s) already have {label} classification data saved "
+                    "for this storage space.\n\n"
+                    "Yes = rewrite all data from scratch\n"
+                    "No = keep the existing data and classify only the remaining document(s)\n"
+                    "Cancel = abort")
+                if choice is None:
+                    return
+                overwrite = bool(choice)
+
         titles = {
             "download_logs": "Enrich from Download Logs",
             "abstract": "Re-run Abstract Analysis",
@@ -1008,7 +1028,7 @@ class AutomatedLiteratureUI(tk.Tk):
                 sync_storage_to_sql(DataAnalyzeManager(clean_path))
                 progress(text="Classifying titles…")
                 n = classify_space(
-                    clean_path, should_cancel=should_cancel,
+                    clean_path, should_cancel=should_cancel, overwrite=overwrite,
                     progress_callback=lambda d, t: progress(done=d, total=t, text=f"Classifying titles {d}/{t}…"))
                 print(f"[Evaluate] Title classification updated {n} document(s).")
                 return n
@@ -1021,7 +1041,7 @@ class AutomatedLiteratureUI(tk.Tk):
                 sync_storage_to_sql(DataAnalyzeManager(clean_path))
                 progress(text="Classifying abstracts…")
                 n = classify_abstract_space(
-                    clean_path, should_cancel=should_cancel,
+                    clean_path, should_cancel=should_cancel, overwrite=overwrite,
                     progress_callback=lambda d, t: progress(done=d, total=t, text=f"Classifying abstracts {d}/{t}…"))
                 print(f"[Evaluate] Abstract classification updated {n} document(s).")
                 return n

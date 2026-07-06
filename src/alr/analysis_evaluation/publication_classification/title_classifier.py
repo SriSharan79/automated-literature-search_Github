@@ -1,6 +1,6 @@
 
 from alr.common.file_manager import DataAnalyzeManager, Vec_DB_Manager
-from alr.common.llm_utils import *
+from alr.common.llm_utils import llm_call
 
 from colorama import Fore, Style, init
 import pandas as pd
@@ -89,83 +89,83 @@ The JSON must follow this exact structure, covering all specified dimensions:
   "Tools/Tech - Large Language Models": boolean
 }
 """
-def blabla_ask_llm_test(
-    prompt: str,
-    sys_prompt: str,
-    temperature: float = 0.3,
-    max_tokens: int = 8192,
-    blablador_key: str = None
-) -> str:
-    """Query Blablador LLM with dynamic model selection and a 20 req/min rate limit."""
+# def blabla_ask_llm_test(
+#     prompt: str,
+#     sys_prompt: str,
+#     temperature: float = 0.3,
+#     max_tokens: int = 8192,
+#     blablador_key: str = None
+# ) -> str:
+#     """Query Blablador LLM with dynamic model selection and a 20 req/min rate limit."""
     
-    time.sleep(1.5)
+#     time.sleep(1.5)
     
-    # --- RATE LIMITER LOGIC ---
-    current_time = time.time()
+#     # --- RATE LIMITER LOGIC ---
+#     current_time = time.time()
     
-    # If we have already hit our 20 request capacity, check the oldest request
-    if len(REQUEST_TIMES) == 10:
-        oldest_request_time = REQUEST_TIMES[0]
-        elapsed_since_oldest = current_time - oldest_request_time
+#     # If we have already hit our 20 request capacity, check the oldest request
+#     if len(REQUEST_TIMES) == 10:
+#         oldest_request_time = REQUEST_TIMES[0]
+#         elapsed_since_oldest = current_time - oldest_request_time
         
-        # If the oldest request happened less than 60 seconds ago, we must wait
-        if elapsed_since_oldest < 60:
-            sleep_time = 60 - elapsed_since_oldest
-            print(Fore.YELLOW + f"⚠️ Rate limit approaching. Sleeping for {sleep_time:.2f} seconds..." + Style.RESET_ALL)
-            time.sleep(sleep_time)
+#         # If the oldest request happened less than 60 seconds ago, we must wait
+#         if elapsed_since_oldest < 60:
+#             sleep_time = 60 - elapsed_since_oldest
+#             print(Fore.YELLOW + f"⚠️ Rate limit approaching. Sleeping for {sleep_time:.2f} seconds..." + Style.RESET_ALL)
+#             time.sleep(sleep_time)
             
-    # Record the current timestamp for this request execution
-    REQUEST_TIMES.append(time.time())
-    # --------------------------
+#     # Record the current timestamp for this request execution
+#     REQUEST_TIMES.append(time.time())
+#     # --------------------------
 
-    start_time = time.time()
+#     start_time = time.time()
     
-    # Dynamically select best model
-    model = "15 - Apertus-8B-Instruct-2509 - A new swiss model from September 2025"
-    print(f"🤖 Using model: {model}")
+#     # Dynamically select best model
+#     model = "15 - Apertus-8B-Instruct-2509 - A new swiss model from September 2025"
+#     print(f"🤖 Using model: {model}")
 
-    print(Fore.GREEN + f" Prompt : \n {prompt}"+ Style.RESET_ALL)
+#     print(Fore.GREEN + f" Prompt : \n {prompt}"+ Style.RESET_ALL)
     
-    messages = [
-        {'role': 'system', 'content': sys_prompt},
-        {'role': 'user', 'content': prompt}
-    ]
+#     messages = [
+#         {'role': 'system', 'content': sys_prompt},
+#         {'role': 'user', 'content': prompt}
+#     ]
     
-    payload = {
-        "model": model,
-        "messages": messages,
-        "temperature": temperature,
-        "max_tokens": max_tokens,
-    }
+#     payload = {
+#         "model": model,
+#         "messages": messages,
+#         "temperature": temperature,
+#         "max_tokens": max_tokens,
+#     }
 
-    headers = {"Content-Type": "application/json"}    
-    BlaBla_API_Key = check_api_key('BlaBla Door')
-    key = blablador_key or BlaBla_API_Key
-    if key:
-        headers["Authorization"] = f"Bearer {key}"
+#     headers = {"Content-Type": "application/json"}    
+#     BlaBla_API_Key = check_api_key('BlaBla Door')
+#     key = blablador_key or BlaBla_API_Key
+#     if key:
+#         headers["Authorization"] = f"Bearer {key}"
 
-    url = f"{BLABLADOR_BASE_URL}/chat/completions"
-    resp = requests.post(url, headers=headers, json=payload)
-    resp.raise_for_status()
+#     url = f"{BLABLADOR_BASE_URL}/chat/completions"
+#     resp = requests.post(url, headers=headers, json=payload)
+#     resp.raise_for_status()
 
-    result = resp.json()
-    try:
-        content = result["choices"][0]["message"]["content"]
+#     result = resp.json()
+#     try:
+#         content = result["choices"][0]["message"]["content"]
 
-        if content is None:
-            raise ValueError("Empty content received from Blablador")
+#         if content is None:
+#             raise ValueError("Empty content received from Blablador")
 
-        # Clean the content
-        content = content.replace("```json", "").replace("```", "").strip()
+#         # Clean the content
+#         content = content.replace("```json", "").replace("```", "").strip()
             
-        print(Fore.CYAN + "\n--- RAW LLM RESPONSE START ---" + Style.RESET_ALL)
-        print(Fore.CYAN + content + Style.RESET_ALL)
-        print(Fore.CYAN + "--- RAW LLM RESPONSE END ---\n" + Style.RESET_ALL)
-        return content 
+#         print(Fore.CYAN + "\n--- RAW LLM RESPONSE START ---" + Style.RESET_ALL)
+#         print(Fore.CYAN + content + Style.RESET_ALL)
+#         print(Fore.CYAN + "--- RAW LLM RESPONSE END ---\n" + Style.RESET_ALL)
+#         return content 
         
-    except (KeyError, IndexError, ValueError) as exc:
-        print(f"❌ Blablador failed. Full response: {result}")
-        raise ValueError(f"Unexpected response format from Blablador: {exc}") from exc
+#     except (KeyError, IndexError, ValueError) as exc:
+#         print(f"❌ Blablador failed. Full response: {result}")
+#         raise ValueError(f"Unexpected response format from Blablador: {exc}") from exc
 
 def classify_title(title):
     Prompt = f"""Title of publication to be analyzed:
@@ -174,7 +174,7 @@ def classify_title(title):
             # Add a delay here (e.g., 1.5 seconds) to stay under rate limits
     time.sleep(1.5)
     try:
-        response = blabla_ask_llm_test(Prompt,system_prompt_sysE)
+        response = llm_call(Prompt,system_prompt_sysE)
         # Parse the string response into a dictionary
         return json.loads(response)
     except Exception as e:
@@ -208,7 +208,7 @@ def classify_abstract(abstract_text):
     # Small delay to stay under the Blablador rate limit.
     time.sleep(1.5)
     try:
-        response = blabla_ask_llm_test(Prompt, system_prompt_sysE)
+        response = llm_call(Prompt, system_prompt_sysE)
         return json.loads(response)
     except Exception as e:
         print(f"Error processing abstract: {e}")
