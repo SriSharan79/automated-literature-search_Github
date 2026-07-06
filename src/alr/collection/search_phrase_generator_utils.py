@@ -110,6 +110,7 @@ def scrape_scholar_data(search_query, Num_Results, Total_keywords):
     MAX_RESULTS = Num_Results
     
     for i, pub in enumerate(search_results):
+        time.sleep(10)
         if i >= MAX_RESULTS:
             print(f"\nStopped after processing {MAX_RESULTS} results.")
             break
