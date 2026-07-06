@@ -270,15 +270,52 @@ def _push_eval_to_sql(uuid, stats, db_path=None):
     return True
 
 
-def evaluate_document(storage_path, uuid, db_path=None, push_sql=True):
+def _existing_evaluation(uuid, db_path=None):
+    """
+    Return the stored per-section stats for ``uuid`` if this document has already
+    been evaluated (SQL ``evaluation_score`` present), else ``None``. Used by
+    ``mode="copy"`` to reuse a prior evaluation instead of recomputing.
+    """
+    import json as _json
+    from alr.common.sql_store import AnalyzedDataStore, DB_PATH
+
+    try:
+        store = AnalyzedDataStore(db_path or DB_PATH)
+        row = store.get_document(uuid)
+    except Exception:
+        return None
+    if not row:
+        return None
+    score = row.get("evaluation_score")
+    if score is None or str(score).strip() in ("", "nan"):
+        return None
+    raw = row.get("evaluation_json")
+    if raw:
+        try:
+            return _json.loads(raw)
+        except (ValueError, TypeError):
+            pass
+    return {}  # score present but no detail: still counts as "already evaluated"
+
+
+def evaluate_document(storage_path, uuid, db_path=None, push_sql=True, mode="generate"):
     """
     Evaluate one analyzed document (by ``uuid``): write its per-section evaluation
     Excel sheets and, when ``push_sql`` is set, mirror the summary into the SQLite
     store (``evaluation_json`` / ``evaluation_score``) so overviews can use it.
 
+    ``mode="copy"`` reuses a prior evaluation when one already exists in SQL
+    (skips recomputation); ``mode="generate"`` (default) always recomputes.
+
     Returns the per-section stats dict, or ``None`` if the abstract JSON is missing.
     Safe to call repeatedly: the Excel writes are idempotent per UUID.
     """
+    if mode == "copy":
+        prior = _existing_evaluation(uuid, db_path)
+        if prior is not None:
+            print(Fore.YELLOW + f"⏭️ Reusing existing evaluation for {uuid} (copy mode).")
+            return prior
+
     MF = storage_path if isinstance(storage_path, DataAnalyzeManager) else DataAnalyzeManager(storage_path)
     VDB = Vec_DB_Manager(MF.folder)
     sections = build_sections_eval_map(VDB)
@@ -301,13 +338,15 @@ def evaluate_document(storage_path, uuid, db_path=None, push_sql=True):
     return stats
 
 
-def evaluate_space(storage_path, db_path=None, progress_callback=None, should_cancel=None) -> int:
+def evaluate_space(storage_path, db_path=None, progress_callback=None, should_cancel=None, mode="generate") -> int:
     """
     Evaluate every analyzed document in a storage space (build the evaluation Excel
     DBs and sync the summary into SQLite). Returns the number of documents evaluated.
 
-    ``progress_callback(done, total)`` is called after each document if given, and
-    ``should_cancel`` is checked before each for cooperative cancellation.
+    ``mode="copy"`` reuses prior evaluations already recorded in SQL (skips
+    recompute); ``mode="generate"`` (default) recomputes. ``progress_callback(done,
+    total)`` is called after each document if given, and ``should_cancel`` is
+    checked before each for cooperative cancellation.
     """
     MF = storage_path if isinstance(storage_path, DataAnalyzeManager) else DataAnalyzeManager(storage_path)
 
@@ -322,7 +361,7 @@ def evaluate_space(storage_path, db_path=None, progress_callback=None, should_ca
             print("Evaluation cancelled by user.")
             break
         try:
-            evaluate_document(MF, uuid, db_path=db_path, push_sql=True)
+            evaluate_document(MF, uuid, db_path=db_path, push_sql=True, mode=mode)
             count += 1
         except Exception as e:
             print(Fore.YELLOW + f"⚠️ Evaluation failed for {uuid}: {e}")

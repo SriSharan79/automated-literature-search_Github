@@ -461,3 +461,48 @@ def sync_storage_to_sql(manager_or_folder, db_path=DB_PATH) -> int:
 
     print(f"Synced {synced} document(s) into {store.db_path}")
     return synced
+
+
+def sync_one_document(manager_or_folder, filename, db_path=DB_PATH) -> bool:
+    """
+    Sync a single document (matched by ``filename``) from a storage space's
+    registry into the SQLite store. Used by the per-document batch pipeline to
+    copy analysis results into SQL immediately after a file is processed --
+    without re-reading/re-upserting the whole registry each iteration.
+
+    Returns True if a matching registry row was found and upserted. Enrichment
+    columns already in SQL are preserved (COALESCE) because the registry-only
+    record does not supply them.
+    """
+    import pandas as pd
+
+    if isinstance(manager_or_folder, DataAnalyzeManager):
+        manager = manager_or_folder
+    else:
+        manager = DataAnalyzeManager(manager_or_folder)
+
+    registry = manager.excel_success
+    if not os.path.exists(registry):
+        return False
+
+    try:
+        df = pd.read_excel(registry)
+    except Exception as e:
+        print(f"Could not read registry {registry}: {e}")
+        return False
+
+    if "filename" not in df.columns:
+        return False
+
+    target = str(filename).strip()
+    match = df[df["filename"].astype(str).str.strip() == target]
+    if match.empty:
+        return False
+
+    store = AnalyzedDataStore(db_path)
+    # Newest matching row wins if a filename somehow appears more than once.
+    row_dict = match.iloc[-1].to_dict()
+    if not str(row_dict.get("UUID") or "").strip():
+        return False
+    store.upsert_document(_record_from_registry_row(row_dict, manager))
+    return True

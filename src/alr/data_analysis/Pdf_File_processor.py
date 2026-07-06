@@ -641,7 +641,7 @@ def _resolve_components(mode, components):
     return {"abstract", "intro", "references"}  # mode is None -> full
 
 
-def process_pdf_mode_file(file, storage_path="", mode=None, components=None, doc_converter=None):
+def process_pdf_mode_file(file, storage_path="", mode=None, components=None, doc_converter=None, eval_mode="generate"):
     """
     Orchestrates the PDF processing.
     mode='a': Only attempts Abstract (+ Introduction) extraction.
@@ -654,6 +654,10 @@ def process_pdf_mode_file(file, storage_path="", mode=None, components=None, doc
     ``doc_converter`` optionally supplies a pre-built (shared) Docling converter so
     batch runs load the model pipeline once and reuse it; when omitted the
     sectioning step uses the isolated subprocess-with-timeout extraction path.
+
+    ``eval_mode`` (``"generate"``/``"copy"``) is forwarded to the per-document data
+    evaluation that runs right after abstract analysis: ``"copy"`` reuses a prior
+    evaluation when one already exists, ``"generate"`` recomputes.
     """
     file_path = Path(file)
     
@@ -717,7 +721,7 @@ def process_pdf_mode_file(file, storage_path="", mode=None, components=None, doc
             if result == 'P':
                 try:
                     from alr.analysis_evaluation.data_evaluator import evaluate_document
-                    evaluate_document(str(MF.folder), UUID, push_sql=True)
+                    evaluate_document(str(MF.folder), UUID, push_sql=True, mode=eval_mode)
                     logger.info(f"🧪 Data evaluation completed for {file_path.name}.")
                 except Exception as e:
                     logger.warning(f"⚠️ Data evaluation skipped for {file_path.name}: {e}")

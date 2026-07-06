@@ -53,132 +53,204 @@ def has_existing_classification(manager, kind="title") -> int:
     return len(existing_filenames)
 
 
-def classify_space(manager, db_path=None, progress_callback=None, should_cancel=None, overwrite=True, service=None) -> int:
+# Per-kind wiring: which managed workbook, dated-file marker, SQL column, source
+# text field and classifier function each classification kind uses.
+def _kind_config(manager, kind):
+    from alr.analysis_evaluation.publication_classification.title_classifier import (
+        classify_title, classify_abstract,
+    )
+    if kind == "abstract":
+        return {
+            "excel_path": manager.abstract_classification_excel,
+            "name_contains": "Abstract_Classification",
+            "sql_col": "abstract_classification",
+            "text_field": "abstract_text",
+            "classify_fn": classify_abstract,
+        }
+    return {
+        "excel_path": manager.classification_excel,
+        "name_contains": "Title_Classification",
+        "sql_col": "classification",
+        "text_field": "title",
+        "classify_fn": classify_title,
+    }
+
+
+def _text_is_valid(kind, text):
+    if text is None:
+        return False
+    text = str(text).strip()
+    if not text:
+        return False
+    if kind == "title" and text == "Title Not Found":
+        return False
+    return True
+
+
+def _append_classification_row(excel_path, row):
     """
-    Classify each document in a storage space by title and persist the result.
+    Merge one classification row into the (dated) workbook, keyed by ``filename``:
+    replace an existing row for that file, otherwise append. Writing per-row keeps
+    today's dated file accumulating as documents are processed one at a time, and
+    leaves prior dated files untouched.
+    """
+    import pandas as pd
+    from pathlib import Path
 
-    ``manager`` is a DataAnalyzeManager (or a folder path). Returns the number of
-    documents classified. Requires an API key for the chosen ``service``;
-    individual titles that fail fall back to an all-False result.
+    existing = []
+    if Path(excel_path).exists():
+        try:
+            existing = pd.read_excel(excel_path).to_dict("records")
+        except Exception:
+            existing = []
+    fname = str(row.get("filename"))
+    merged = [r for r in existing if str(r.get("filename")) != fname]
+    merged.append(row)
+    pd.DataFrame(merged).to_excel(excel_path, index=False)
 
-    ``service`` selects which configured LLM engine/model to use ('O' = DLR
-    Ollama, 'B' = Blablador -- same codes and session-selected model as the
-    "LLM Processing Service Engine" picker in the main window). If omitted,
-    ``classify_title`` falls back to its own default engine/model.
 
-    ``progress_callback(done, total)`` is called after each document if given.
-    ``should_cancel`` is an optional callable checked before each document for
+def copy_classification_from_previous(manager, filename, title, kind="title", db_path=None, uuid=None):
+    """
+    Reuse a prior dated classification result for one document instead of calling
+    the LLM. Looks up the newest ``*_{kind}_Classification.xlsx`` row for
+    ``filename``; if found, copies it into **today's** dated workbook and pushes
+    the summary into SQL. Returns the copied row dict, or ``None`` if no prior
+    result exists (caller should then classify it fresh).
+    """
+    from alr.common.file_manager import DataAnalyzeManager
+    from alr.common.sql_store import AnalyzedDataStore, DB_PATH
+    from alr.common.analysis_precheck import latest_dated_row
+    from alr.analysis_evaluation.publication_classification.title_classifier import TAXONOMY_TOPICS
+
+    if not isinstance(manager, DataAnalyzeManager):
+        manager = DataAnalyzeManager(manager)
+    cfg = _kind_config(manager, kind)
+
+    _, prev = latest_dated_row(manager.classification_subfolder, cfg["name_contains"], "filename", filename)
+    if not prev:
+        return None
+
+    result = {t: bool(prev.get(t)) for t in TAXONOMY_TOPICS if t in prev}
+    true_topics = [t for t, v in result.items() if v]
+
+    if uuid:
+        store = AnalyzedDataStore(db_path or DB_PATH)
+        store.update_document(uuid, {cfg["sql_col"]: ", ".join(true_topics)})
+
+    out_row = {"filename": filename, "title": title, **result}
+    _append_classification_row(cfg["excel_path"], out_row)
+    return out_row
+
+
+def classify_document(manager, doc, kind="title", db_path=None, service=None, mode="generate", store=None) -> bool:
+    """
+    Classify a single document (``doc`` is a SQLite row dict with ``uuid`` /
+    ``filename`` / ``title`` / ``abstract_text``) and persist the result.
+
+    ``mode="copy"`` first tries :func:`copy_classification_from_previous` and only
+    calls the LLM when no prior dated result exists. ``mode="generate"`` always
+    LLM-classifies. Either way the result is written to today's dated workbook and
+    the SQL summary column. Returns True if something was written.
+    """
+    from alr.common.file_manager import DataAnalyzeManager
+    from alr.common.sql_store import AnalyzedDataStore, DB_PATH
+
+    if not isinstance(manager, DataAnalyzeManager):
+        manager = DataAnalyzeManager(manager)
+    cfg = _kind_config(manager, kind)
+    filename = doc.get("filename")
+    title = doc.get("title")
+    uuid = doc.get("uuid")
+
+    if mode == "copy":
+        copied = copy_classification_from_previous(manager, filename, title, kind, db_path=db_path, uuid=uuid)
+        if copied is not None:
+            return True  # reused a prior result; no LLM call
+
+    text = doc.get(cfg["text_field"])
+    if not _text_is_valid(kind, text):
+        return False
+
+    result = cfg["classify_fn"](text, service=service) or {}  # {topic: bool}
+    true_topics = [t for t, v in result.items() if v]
+
+    store = store or AnalyzedDataStore(db_path or DB_PATH)
+    if uuid:
+        store.update_document(uuid, {cfg["sql_col"]: ", ".join(true_topics)})
+    _append_classification_row(cfg["excel_path"], {"filename": filename, "title": title, **result})
+    return True
+
+
+def _run_classification(manager, kind, db_path=None, progress_callback=None,
+                        should_cancel=None, overwrite=True, service=None, mode=None) -> int:
+    from alr.common.file_manager import DataAnalyzeManager
+    from alr.common.sql_store import AnalyzedDataStore, DB_PATH
+
+    if not isinstance(manager, DataAnalyzeManager):
+        manager = DataAnalyzeManager(manager)
+    cfg = _kind_config(manager, kind)
+
+    store = AnalyzedDataStore(db_path or DB_PATH)
+    docs = [d for d in store.list_documents() if d.get("source_folder") == str(manager.folder)]
+
+    # When not overwriting, skip documents already present in today's workbook
+    # (used by the Tab-5 "continue" option). Copy mode reuses prior data instead
+    # of the LLM, so it is safe to visit every document.
+    if not overwrite and (mode or "generate") != "copy":
+        _, existing_filenames = _load_existing_classification(cfg["excel_path"])
+        if existing_filenames:
+            docs = [d for d in docs if str(d.get("filename")) not in existing_filenames]
+
+    updated = 0
+    total = len(docs)
+    for i, d in enumerate(docs, 1):
+        if should_cancel is not None and should_cancel():
+            print(f"{kind.title()} classification cancelled by user.")
+            break
+        if classify_document(manager, d, kind=kind, db_path=db_path, service=service,
+                             mode=mode or "generate", store=store):
+            updated += 1
+        if progress_callback:
+            progress_callback(i, total)
+
+    print(f"{kind.title()} classification updated {updated} document(s).")
+    return updated
+
+
+def classify_space(manager, db_path=None, progress_callback=None, should_cancel=None,
+                   overwrite=True, service=None, mode=None) -> int:
+    """
+    Classify each document in a storage space by title and persist the result
+    (SQLite ``classification`` column + managed dated ``Title_Classification.xlsx``).
+
+    ``manager`` is a DataAnalyzeManager (or folder path). Returns the number of
+    documents classified. Requires an API key for the chosen ``service`` ('O' =
+    DLR Ollama, 'B' = Blablador).
+
+    ``mode`` controls reuse: ``"copy"`` copies each document's newest prior dated
+    classification (no LLM) and only classifies genuinely-new documents;
+    ``"generate"`` (or ``None``) always LLM-classifies. ``overwrite=False`` (only
+    meaningful with generate) skips documents already present in today's workbook.
+    ``progress_callback(done, total)`` / ``should_cancel`` support progress and
     cooperative cancellation (partial results are saved).
-
-    If ``Publication_Classification.xlsx`` already has rows for this space:
-
-    * ``overwrite=True`` (default) reclassifies every matching document and
-      replaces the workbook from scratch.
-    * ``overwrite=False`` skips documents whose filename is already present in
-      the workbook and only classifies the remaining ones, merging the new
-      rows into the existing data. Use :func:`has_existing_classification` to
-      check beforehand and let the user choose.
     """
-    import pandas as pd
-    from alr.common.file_manager import DataAnalyzeManager
-    from alr.common.sql_store import AnalyzedDataStore, DB_PATH
-    from alr.analysis_evaluation.publication_classification.title_classifier import classify_title
-
-    if not isinstance(manager, DataAnalyzeManager):
-        manager = DataAnalyzeManager(manager)
-
-    store = AnalyzedDataStore(db_path or DB_PATH)
-    docs = [d for d in store.list_documents() if d.get("source_folder") == str(manager.folder)]
-
-    rows, existing_filenames = ([], set()) if overwrite else _load_existing_classification(manager.classification_excel)
-    if existing_filenames:
-        docs = [d for d in docs if str(d.get("filename")) not in existing_filenames]
-
-    updated = 0
-    total = len(docs)
-    for i, d in enumerate(docs, 1):
-        if should_cancel is not None and should_cancel():
-            print("Classification cancelled by user.")
-            break
-        title = d.get("title")
-        if title and str(title).strip() not in ("", "Title Not Found"):
-            result = classify_title(title, service=service)  # {topic: bool}
-            true_topics = [t for t, v in (result or {}).items() if v]
-            store.update_document(d["uuid"], {"classification": ", ".join(true_topics)})
-            rows.append({"filename": d.get("filename"), "title": title, **(result or {})})
-            updated += 1
-        if progress_callback:
-            progress_callback(i, total)
-
-    if rows:
-        pd.DataFrame(rows).to_excel(manager.classification_excel, index=False)
-    print(f"Classification updated {updated} document(s).")
-    return updated
+    return _run_classification(manager, "title", db_path=db_path, progress_callback=progress_callback,
+                               should_cancel=should_cancel, overwrite=overwrite, service=service, mode=mode)
 
 
-def classify_abstract_space(manager, db_path=None, progress_callback=None, should_cancel=None, overwrite=True, service=None) -> int:
+def classify_abstract_space(manager, db_path=None, progress_callback=None, should_cancel=None,
+                            overwrite=True, service=None, mode=None) -> int:
     """
-    Classify each document in a storage space by its **identified abstract text**
-    (reusing :func:`title_classifier.classify_abstract`) and persist the result in
-    the SQLite store's ``abstract_classification`` column, plus a managed
-    ``Abstract_Classification.xlsx`` workbook.
+    Classify each document by its **identified abstract text** and persist the
+    result (SQLite ``abstract_classification`` column + managed dated
+    ``Abstract_Classification.xlsx``). Reads the ``abstract_text`` column the
+    storage sync populated from each abstract JSON.
 
-    Independent of title classification: it reads the ``abstract_text`` column that
-    the storage sync populated from each document's abstract JSON. Returns the
-    number of documents classified. Requires an API key for the chosen ``service``.
-
-    ``service`` selects which configured LLM engine/model to use ('O' = DLR
-    Ollama, 'B' = Blablador -- same codes and session-selected model as the
-    "LLM Processing Service Engine" picker in the main window). If omitted,
-    ``classify_abstract`` falls back to its own default engine/model.
-
-    ``progress_callback(done, total)`` is called after each document if given, and
-    ``should_cancel`` is checked before each document for cooperative cancellation.
-
-    If ``Abstract_Classification.xlsx`` already has rows for this space:
-
-    * ``overwrite=True`` (default) reclassifies every matching document and
-      replaces the workbook from scratch.
-    * ``overwrite=False`` skips documents whose filename is already present in
-      the workbook and only classifies the remaining ones, merging the new
-      rows into the existing data. Use :func:`has_existing_classification`
-      (``kind="abstract"``) to check beforehand and let the user choose.
+    Independent of title classification. ``mode`` / ``overwrite`` / ``service`` /
+    ``progress_callback`` / ``should_cancel`` behave as in :func:`classify_space`.
     """
-    import pandas as pd
-    from alr.common.file_manager import DataAnalyzeManager
-    from alr.common.sql_store import AnalyzedDataStore, DB_PATH
-    from alr.analysis_evaluation.publication_classification.title_classifier import classify_abstract
-
-    if not isinstance(manager, DataAnalyzeManager):
-        manager = DataAnalyzeManager(manager)
-
-    store = AnalyzedDataStore(db_path or DB_PATH)
-    docs = [d for d in store.list_documents() if d.get("source_folder") == str(manager.folder)]
-
-    rows, existing_filenames = ([], set()) if overwrite else _load_existing_classification(manager.abstract_classification_excel)
-    if existing_filenames:
-        docs = [d for d in docs if str(d.get("filename")) not in existing_filenames]
-
-    updated = 0
-    total = len(docs)
-    for i, d in enumerate(docs, 1):
-        if should_cancel is not None and should_cancel():
-            print("Abstract classification cancelled by user.")
-            break
-        abstract_text = d.get("abstract_text")
-        if abstract_text and str(abstract_text).strip():
-            result = classify_abstract(abstract_text, service=service)  # {topic: bool}
-            true_topics = [t for t, v in (result or {}).items() if v]
-            store.update_document(d["uuid"], {"abstract_classification": ", ".join(true_topics)})
-            rows.append({"filename": d.get("filename"), "title": d.get("title"), **(result or {})})
-            updated += 1
-        if progress_callback:
-            progress_callback(i, total)
-
-    if rows:
-        pd.DataFrame(rows).to_excel(manager.abstract_classification_excel, index=False)
-    print(f"Abstract classification updated {updated} document(s).")
-    return updated
+    return _run_classification(manager, "abstract", db_path=db_path, progress_callback=progress_callback,
+                               should_cancel=should_cancel, overwrite=overwrite, service=service, mode=mode)
 
 
 def question_score_space(manager, source="registry", download_log=None, output_excel=None):

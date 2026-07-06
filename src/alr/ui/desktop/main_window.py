@@ -484,6 +484,7 @@ class AutomatedLiteratureUI(tk.Tk):
             "references": tk.BooleanVar(value=False),
             "doi": tk.BooleanVar(value=True),
             "classification": tk.BooleanVar(value=True),
+            "rag": tk.BooleanVar(value=False),
         }
         # Sections (incl. tables/images) is a required prerequisite -> checked + disabled.
         ttk.Checkbutton(comp_frame, text="Sections (incl. tables/images) — required",
@@ -493,6 +494,8 @@ class AutomatedLiteratureUI(tk.Tk):
         ttk.Checkbutton(comp_frame, text="References", variable=self.comp_vars["references"]).grid(row=1, column=0, sticky="w", padx=6, pady=3)
         ttk.Checkbutton(comp_frame, text="DOI / metadata", variable=self.comp_vars["doi"]).grid(row=1, column=1, sticky="w", padx=6, pady=3)
         ttk.Checkbutton(comp_frame, text="Classification", variable=self.comp_vars["classification"]).grid(row=1, column=2, sticky="w", padx=6, pady=3)
+        ttk.Checkbutton(comp_frame, text="Build Text + Vector DB (RAG)",
+                        variable=self.comp_vars["rag"]).grid(row=2, column=0, sticky="w", padx=6, pady=3)
 
         # Batch options
         batch_frame = ttk.Frame(tab)
@@ -548,57 +551,80 @@ class AutomatedLiteratureUI(tk.Tk):
         components = {c for c in ("abstract", "intro", "references") if self.comp_vars[c].get()}
         do_doi = self.comp_vars["doi"].get()
         do_classify = self.comp_vars["classification"].get()
+        do_rag = self.comp_vars["rag"].get()
         print(f"[Selection] Components: sections (required)"
               + "".join(f", {c}" for c in ("abstract", "intro", "references") if c in components)
-              + (", doi/metadata" if do_doi else "") + (", classification" if do_classify else ""))
+              + (", doi/metadata" if do_doi else "") + (", classification" if do_classify else "")
+              + (", text+vector DB" if do_rag else ""))
 
-        # If classification workbooks already have data for this space, ask
-        # whether to rewrite everything or only classify what's newly analyzed.
-        # This must happen on the main thread (before the background work
-        # starts) since it may pop a modal dialog.
-        classify_title_overwrite = True
-        classify_abstract_overwrite = True
+        # Classification & Evaluation copy-vs-generate decision. When prior dated
+        # data already exists for this storage space, ask ONCE per category (on the
+        # main thread, before the worker starts, since it may pop a modal dialog)
+        # whether to copy the previous data or generate fresh data into today's
+        # dated file. A brand-new batch has no prior data and defaults to generate.
+        class_mode = "generate"
+        eval_mode = "generate"
+
         if do_classify:
             from alr.analysis_evaluation.publication_classification.classify_runner import has_existing_classification
-
-            existing_title_n = has_existing_classification(MF, kind="title")
-            if existing_title_n:
+            existing_class = has_existing_classification(MF, kind="title") + has_existing_classification(MF, kind="abstract")
+            if existing_class:
                 choice = messagebox.askyesnocancel(
-                    "Existing title classification found",
-                    f"{existing_title_n} document(s) already have title classification data saved "
-                    "for this storage space.\n\n"
-                    "Yes = rewrite all data from scratch\n"
-                    "No = keep the existing data and classify only the remaining document(s)\n"
+                    "Existing classification found",
+                    f"{existing_class} classification record(s) already exist for this storage space.\n\n"
+                    "Yes = generate NEW classification (write today's dated file; prior files kept)\n"
+                    "No = COPY the existing classification from the previous dated file(s)\n"
                     "Cancel = abort")
                 if choice is None:
                     return
-                classify_title_overwrite = bool(choice)
+                class_mode = "generate" if choice else "copy"
 
-            existing_abstract_n = has_existing_classification(MF, kind="abstract")
-            if existing_abstract_n:
-                choice = messagebox.askyesnocancel(
-                    "Existing abstract classification found",
-                    f"{existing_abstract_n} document(s) already have abstract classification data saved "
-                    "for this storage space.\n\n"
-                    "Yes = rewrite all data from scratch\n"
-                    "No = keep the existing data and classify only the remaining document(s)\n"
-                    "Cancel = abort")
-                if choice is None:
-                    return
-                classify_abstract_overwrite = bool(choice)
+        # Evaluation prior data lives in the dated Abstract_Eval_Overview workbooks.
+        from alr.common.file_manager import Vec_DB_Manager
+        try:
+            eval_overview_folder = Vec_DB_Manager(MF.folder).Abstract_Overview_folder
+            existing_eval = any(eval_overview_folder.glob("*Abstract_Eval_Overview*.xlsx"))
+        except Exception:
+            existing_eval = False
+        if existing_eval:
+            choice = messagebox.askyesnocancel(
+                "Existing evaluation found",
+                "Evaluation data already exists for this storage space.\n\n"
+                "Yes = generate NEW evaluation\n"
+                "No = COPY the existing evaluation\n"
+                "Cancel = abort")
+            if choice is None:
+                return
+            eval_mode = "generate" if choice else "copy"
 
         # The whole analysis + enrichment chain runs on a background thread with a
-        # progress dialog so the UI stays responsive and cancellable.
+        # progress dialog so the UI stays responsive and cancellable. Each document
+        # is taken through ALL selected steps before moving to the next one (rather
+        # than stage-by-stage), and every step is precheck-driven: existing data is
+        # copied across storage/SQL instead of recomputed.
         def work(progress, should_cancel):
             from alr.data_analysis.batch_dedup import find_new_and_duplicate_pdfs
+            from alr.common.sql_store import sync_one_document, AnalyzedDataStore, DB_PATH
+
+            def lookup_doc(filename):
+                """Fetch this document's current SQL row (or None)."""
+                try:
+                    store = AnalyzedDataStore(DB_PATH)
+                    for d in store.list_documents():
+                        if str(d.get("filename")) == str(filename) and d.get("source_folder") == str(MF.folder):
+                            return d
+                except Exception as e:
+                    print(f"[DB lookup] {filename}: {e}")
+                return None
 
             print("[Processing Strategy Active] Directing targets into analysis execution channels...")
-            processed = 0
+
+            # Build the list of PDFs to process (single file, or a folder with an
+            # optional fuzzy-duplicate pre-scan) plus a shared Docling converter for
+            # batches (loaded once). Single files keep the isolated subprocess path.
+            doc_converter = None
             if result.kind == "pdf_file":
-                # Single PDF: keep the isolated subprocess-with-timeout extraction.
-                progress(text=f"Analyzing {Path(result.input_path).name}…")
-                process_pdf_mode_file(result.input_path, MF.folder, components=components)
-                processed = 1
+                to_process = [Path(result.input_path)]
             else:
                 if skip_dupes:
                     progress(text="Scanning for duplicate titles…")
@@ -611,8 +637,6 @@ class AutomatedLiteratureUI(tk.Tk):
                 else:
                     to_process = sorted(Path(result.input_path).rglob("*.pdf"))
 
-                # Batch: load the Docling model pipeline once and reuse it for all PDFs.
-                doc_converter = None
                 if to_process and not should_cancel():
                     progress(text="Loading Docling model (once for the batch)…")
                     try:
@@ -621,46 +645,74 @@ class AutomatedLiteratureUI(tk.Tk):
                     except Exception as e:
                         print(f"[Docling] Shared converter unavailable; falling back to per-file: {e}")
 
-                total = len(to_process)
-                for i, pdf in enumerate(to_process, 1):
-                    if should_cancel():
-                        break
-                    progress(done=i, total=total, text=f"Analyzing {i}/{total}: {pdf.name}")
-                    process_pdf_mode_file(str(pdf), str(MF.folder), components=components,
-                                          doc_converter=doc_converter)
-                    processed += 1
+            processed = 0
+            total = len(to_process)
+            for i, pdf in enumerate(to_process, 1):
+                if should_cancel():
+                    break
+                pdf = Path(pdf)
+
+                # 1. Analyze the document (sectioning + selected components; on-disk
+                #    resume skips already-completed stages). Evaluation runs inside
+                #    right after abstract, honoring eval_mode.
+                progress(done=i, total=total, text=f"[{i}/{total}] Analyzing {pdf.name}")
+                process_pdf_mode_file(str(pdf), str(MF.folder), components=components,
+                                      doc_converter=doc_converter, eval_mode=eval_mode)
+
+                # 2. Copy this document's analysis into SQL immediately (latest wins).
+                progress(text=f"[{i}/{total}] Updating database: {pdf.name}")
+                try:
+                    if not sync_one_document(MF, pdf.name):
+                        print(f"[Database Sync] No registry row yet for {pdf.name}.")
+                except Exception as e:
+                    print(f"[Database Sync] {pdf.name}: {e}")
+
+                doc = lookup_doc(pdf.name)
+
+                # 3. DOI / metadata (precheck copies existing data instead of re-extracting).
+                if do_doi and not should_cancel():
+                    progress(text=f"[{i}/{total}] DOI / metadata: {pdf.name}")
+                    try:
+                        from alr.data_analysis.doi_metadata import enrich_space_with_doi
+                        enrich_space_with_doi(MF, input_path=str(pdf), should_cancel=should_cancel)
+                        doc = lookup_doc(pdf.name) or doc
+                    except Exception as e:
+                        print(f"[DOI Enrichment] {pdf.name}: {e}")
+
+                # 4. Classification (title + abstract), copy-or-generate per class_mode.
+                if do_classify and doc and not should_cancel():
+                    progress(text=f"[{i}/{total}] Classifying: {pdf.name}")
+                    try:
+                        from alr.analysis_evaluation.publication_classification.classify_runner import classify_document
+                        classify_document(MF, doc, kind="title", service=service, mode=class_mode)
+                        classify_document(MF, doc, kind="abstract", service=service, mode=class_mode)
+                    except Exception as e:
+                        print(f"[Classification] {pdf.name}: {e}")
+
+                processed += 1
 
             print("Analysis Execution Chain Log Sequence Finished.")
 
             if should_cancel():
                 return processed
 
-            # Mirror results into the central SQLite store, then enrich. All non-fatal.
-            progress(text="Syncing to the review database…")
+            # --- Finalization: full SQL refresh + completeness sweeps for anything
+            # the per-document pass skipped (all idempotent). ---
+            progress(text="Finalizing: syncing the review database…")
             try:
                 synced = sync_storage_to_sql(MF)
                 print(f"[Database Sync] {synced} document(s) written to the review database.")
             except Exception as e:
                 print(f"[Database Sync] Skipped/failed: {e}")
 
-            # Data evaluation (abstract-grounding of each section) -> Excel DBs + SQL.
-            progress(text="Evaluating analyzed data…")
+            progress(text="Finalizing: evaluation sweep…")
             try:
                 from alr.analysis_evaluation.data_evaluator import evaluate_space
-                evaluate_space(MF, should_cancel=should_cancel)
+                evaluate_space(MF, should_cancel=should_cancel, mode=eval_mode)
             except Exception as e:
                 print(f"[Evaluation] Skipped/failed: {e}")
 
             if do_doi:
-                progress(text="Extracting DOI / metadata…")
-                try:
-                    from alr.data_analysis.doi_metadata import enrich_space_with_doi
-                    # Target exactly the file/folder selected above, not the
-                    # whole storage-space PDF subfolder.
-                    enrich_space_with_doi(MF, input_path=result.input_path, should_cancel=should_cancel)
-                except Exception as e:
-                    print(f"[DOI Enrichment] Skipped/failed: {e}")
-
                 progress(text="Matching metadata from download logs…")
                 try:
                     from alr.common.download_log_enrich import enrich_from_download_logs
@@ -670,19 +722,24 @@ class AutomatedLiteratureUI(tk.Tk):
                     print(f"[Download-log Enrichment] Skipped/failed: {e}")
 
             if do_classify:
-                progress(text="Classifying publications (title)…")
+                progress(text="Finalizing: classification sweep…")
                 try:
-                    from alr.analysis_evaluation.publication_classification.classify_runner import classify_space
-                    classify_space(MF, should_cancel=should_cancel, overwrite=classify_title_overwrite, service=service)
+                    from alr.analysis_evaluation.publication_classification.classify_runner import (
+                        classify_space, classify_abstract_space,
+                    )
+                    classify_space(MF, should_cancel=should_cancel, service=service, mode=class_mode)
+                    classify_abstract_space(MF, should_cancel=should_cancel, service=service, mode=class_mode)
                 except Exception as e:
                     print(f"[Classification] Skipped/failed: {e}")
 
-                progress(text="Classifying publications (abstract)…")
+            # Build text DB + FAISS vector DB for RAG when requested (heavy; last).
+            if do_rag and not should_cancel():
+                progress(text="Building text + vector DB…")
                 try:
-                    from alr.analysis_evaluation.publication_classification.classify_runner import classify_abstract_space
-                    classify_abstract_space(MF, should_cancel=should_cancel, overwrite=classify_abstract_overwrite, service=service)
+                    from alr.rag_builders.db_manager import generate_databases as build_rag_databases
+                    build_rag_databases(str(MF.folder))
                 except Exception as e:
-                    print(f"[Abstract Classification] Skipped/failed: {e}")
+                    print(f"[RAG DB] Skipped/failed: {e}")
 
             # Prune empty files/folders the manager pre-created but nothing wrote to.
             progress(text="Cleaning up empty files and folders…")

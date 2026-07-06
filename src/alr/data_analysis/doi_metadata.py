@@ -403,13 +403,18 @@ class MetadataLogic:
                 if filename.lower().endswith(".pdf"):
                     yield os.path.join(dirpath, filename)
 
-    def process_input_to_excel(self, input_path, output_excel, should_cancel=None):
+    def process_input_to_excel(self, input_path, output_excel, should_cancel=None, skip_filenames=None):
         """
         Process a single PDF file OR a folder of PDFs (recursively) and write
         the combined metadata to ``output_excel``. Generalized version of
         ``process_directory_to_excel`` that also accepts a single file path.
+
+        ``skip_filenames`` is an optional set of basenames to skip entirely
+        (files whose DOI metadata already exists and is carried forward by the
+        caller), so only genuinely-new PDFs incur PDF reads / network lookups.
         """
         all_metadata = []
+        skip_filenames = skip_filenames or set()
 
         # --- PHASE 1: Initial Processing ---
         for file_path in self._iter_pdf_files(input_path):
@@ -419,6 +424,9 @@ class MetadataLogic:
                 return
 
             filename = os.path.basename(file_path)
+            if filename in skip_filenames:
+                print(f"--- Skipping (DOI already present): {filename} ---")
+                continue
             print(f"--- Processing: {filename} ---")
 
             try:
@@ -468,13 +476,14 @@ class MetadataLogic:
 
         print(f"\nProcessing complete! Data saved to {output_excel}")
 
-    def process_directory_to_excel(self, root_folder, output_excel, should_cancel=None):
+    def process_directory_to_excel(self, root_folder, output_excel, should_cancel=None, skip_filenames=None):
         """
         Kept for backward compatibility: scans a folder recursively for PDFs.
         Delegates to ``process_input_to_excel``, which also accepts a single
         PDF file path.
         """
-        return self.process_input_to_excel(root_folder, output_excel, should_cancel=should_cancel)
+        return self.process_input_to_excel(root_folder, output_excel, should_cancel=should_cancel,
+                                           skip_filenames=skip_filenames)
 
     def _save_to_excel(self, data_list, filename):
         """Helper to convert list of dicts to Excel with specific column order"""
@@ -509,6 +518,36 @@ DOI_EXCEL_TO_DB = {
     "DOI_First_Author": "first_author",
 }
 
+# Full ordered column set for the managed DOI_Metadata workbook.
+DOI_EXCEL_COLUMNS = [
+    "Publication Name", "DOI_Link", "Publication Year", "Publisher", "Container",
+    "Subtitle", "DOI_Authors", "DOI_First_Author", "File_Name", "File_Path",
+]
+
+
+def _has_real_doi(value) -> bool:
+    """True if a DOI/link value is present and not a 'not found' placeholder."""
+    if value is None:
+        return False
+    text = str(value).strip()
+    return text != "" and text.lower() not in ("nan", "n/a")
+
+
+def _doi_row_from_sql(doc) -> dict:
+    """Reconstruct a DOI_Metadata-shaped row from an existing SQL document row."""
+    return {
+        "Publication Name": doc.get("title") or "",
+        "DOI_Link": doc.get("doi_link") or "",
+        "Publication Year": doc.get("publication_year") or "",
+        "Publisher": doc.get("publisher") or "",
+        "Container": doc.get("container") or "",
+        "Subtitle": "",
+        "DOI_Authors": doc.get("authors") or "",
+        "DOI_First_Author": doc.get("first_author") or "",
+        "File_Name": doc.get("filename") or "",
+        "File_Path": doc.get("relative_path") or "",
+    }
+
 
 def enrich_space_with_doi(manager, db_path=None, should_cancel=None, input_path=None) -> int:
     """
@@ -533,19 +572,54 @@ def enrich_space_with_doi(manager, db_path=None, should_cancel=None, input_path=
     if not isinstance(manager, DataAnalyzeManager):
         manager = DataAnalyzeManager(manager)
 
+    from alr.common.analysis_precheck import latest_dated_row
+
     scan_target = input_path if input_path else str(manager.pdf_subfolder)
     output_excel = manager.doi_metadata_excel
 
+    store = AnalyzedDataStore(db_path or DB_PATH)
+    docs_by_filename = {d.get("filename"): d for d in store.list_documents() if d.get("filename")}
+
+    # --- Precheck: skip PDFs whose DOI metadata already exists (SQL or a prior
+    # dated DOI file). Carry those prior rows forward so the refreshed workbook
+    # stays complete, and only genuinely-missing files incur extraction. ---
+    scanned = {os.path.basename(p) for p in MetadataLogic()._iter_pdf_files(scan_target)}
+    skip_filenames = set()
+    carry_rows = []
+    for fname in scanned:
+        doc = docs_by_filename.get(fname)
+        prev_path, prev_row = latest_dated_row(manager.doi_metadata_subfolder, "DOI_Metadata", "File_Name", fname)
+        has_sql = bool(doc) and _has_real_doi(doc.get("doi_link"))
+        has_file = bool(prev_row) and _has_real_doi(prev_row.get("DOI_Link"))
+        if has_file:
+            skip_filenames.add(fname)
+            carry_rows.append({c: prev_row.get(c, "") for c in DOI_EXCEL_COLUMNS})
+        elif has_sql:
+            skip_filenames.add(fname)
+            carry_rows.append(_doi_row_from_sql(doc))
+
     meta_logic = MetadataLogic()
-    meta_logic.process_input_to_excel(scan_target, output_excel, should_cancel=should_cancel)
+    meta_logic.process_input_to_excel(scan_target, output_excel, should_cancel=should_cancel,
+                                      skip_filenames=skip_filenames)
+
+    # Merge carried-forward rows into today's workbook (dedup by File_Name).
+    if carry_rows:
+        existing = []
+        if os.path.exists(output_excel):
+            try:
+                existing = pd.read_excel(output_excel).to_dict("records")
+            except Exception:
+                existing = []
+        existing_names = {str(r.get("File_Name")) for r in existing}
+        merged = existing + [r for r in carry_rows if str(r.get("File_Name")) not in existing_names]
+        pd.DataFrame(merged).reindex(columns=DOI_EXCEL_COLUMNS).to_excel(output_excel, index=False)
 
     if not os.path.exists(output_excel):
         return 0
 
     df = pd.read_excel(output_excel)
-    store = AnalyzedDataStore(db_path or DB_PATH)
     # filename -> uuid, built once
-    by_filename = {d.get("filename"): d["uuid"] for d in store.list_documents() if d.get("filename")}
+    by_filename = {fn: d["uuid"] for fn, d in docs_by_filename.items()}
 
     updated = 0
     for _, row in df.iterrows():
