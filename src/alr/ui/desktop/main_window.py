@@ -661,14 +661,20 @@ class AutomatedLiteratureUI(tk.Tk):
 
         self._run_threaded(work, "Analyzing Literature", "analyzed")
 
-    def _run_threaded(self, work, title, result_word="processed"):
+    def _run_threaded(self, work, title, result_word="processed", on_success=None):
         """
         Run ``work(progress, should_cancel)`` on a background thread with a modal
         progress dialog (with Cancel). The worker only touches a thread-safe queue;
         all Tk access happens on the main thread via an ``after``-scheduled poller
         (calling Tk from a worker thread is unsafe). ``progress(done=?, total=?,
         text=?)`` enqueues an update; ``should_cancel()`` returns True once Cancel
-        is pressed; ``work`` returns an int count.
+        is pressed; ``work`` returns a value passed to ``on_success`` (or, by
+        default, treated as an int document count).
+
+        ``on_success(result)``, if given, is called on the main thread instead of
+        the default "processed N document(s)" message box -- for passes whose
+        result isn't a plain document count (e.g. a classification result dict,
+        a workbook path, or computed metrics text).
         """
         cancel_event = threading.Event()
         dlg = ProgressDialog(self, title, on_cancel=cancel_event.set)
@@ -691,6 +697,8 @@ class AutomatedLiteratureUI(tk.Tk):
             elif cancel_event.is_set():
                 messagebox.showinfo(title, f"{title}: cancelled after {result_word} "
                                            f"{outcome.get('n', 0)} document(s).")
+            elif on_success is not None:
+                on_success(outcome.get("n"))
             else:
                 messagebox.showinfo(title, f"{title}: {result_word} {outcome.get('n', 0)} document(s).")
 
@@ -932,63 +940,107 @@ class AutomatedLiteratureUI(tk.Tk):
             messagebox.showerror("Error", "Please select a valid analyzed storage folder first.")
             return
 
+        # API-key checks happen up front on the main thread (they may pop a
+        # modal dialog), before any background work starts.
+        if mode in ("abstract", "references"):
+            if not self._ensure_api_key("B") and not self._ensure_api_key("O"):
+                return
+        elif mode in ("classify_title", "classify_abstract"):
+            if not self._ensure_api_key("B"):
+                return
+
         clean_path = clean_folder_path(folder) if folder and Path(folder).is_dir() else None
-        try:
+
+        titles = {
+            "download_logs": "Enrich from Download Logs",
+            "abstract": "Re-run Abstract Analysis",
+            "references": "Re-run Reference Extraction",
+            "evaluate": "Build Evaluation DBs",
+            "classify_title": "Classify Titles",
+            "classify_abstract": "Classify Abstracts",
+            "master_excel": "Build Master Excel DB",
+        }
+        dialog_title = titles.get(mode, "Storage-Space Pass")
+
+        def work(progress, should_cancel):
             if mode == "download_logs":
                 from alr.common.download_log_enrich import enrich_from_download_logs
                 from alr.common.file_manager import ALR_main_folder
                 root = clean_path or ALR_main_folder
+                progress(text=f"Enriching metadata from download logs under: {root}…")
                 print(f"[Evaluate] Enriching metadata from download logs under: {root}")
-                n = enrich_from_download_logs(root)
+                n = enrich_from_download_logs(root, should_cancel=should_cancel)
                 print(f"[Evaluate] Download-log enrichment updated {n} document(s).")
-                messagebox.showinfo("Done", f"Download-log enrichment updated {n} document(s). See the console log.")
-                return
+                return n
+
             if mode == "abstract":
-                if not self._ensure_api_key("B") and not self._ensure_api_key("O"):
-                    return
                 from alr.data_analysis.Folder_Data_Analyzer import process_abstract
+                progress(text="Re-running abstract analysis pass…")
                 print("[Evaluate] Re-running abstract analysis pass...")
                 process_abstract(DataAnalyzeManager(clean_path))
-            elif mode == "references":
-                if not self._ensure_api_key("B") and not self._ensure_api_key("O"):
-                    return
+                print("[Evaluate] Abstract analysis pass finished.")
+                return 0
+
+            if mode == "references":
                 from alr.data_analysis.Folder_Data_Analyzer import process_references
+                progress(text="Re-running reference extraction pass…")
                 print("[Evaluate] Re-running reference extraction pass...")
                 process_references(DataAnalyzeManager(clean_path))
-            elif mode == "evaluate":
+                print("[Evaluate] Reference extraction pass finished.")
+                return 0
+
+            if mode == "evaluate":
                 from alr.common.sql_store import sync_storage_to_sql
                 from alr.analysis_evaluation.data_evaluator import generate_databases as generate_eval_databases
+                progress(text="Syncing storage to DB…")
                 print("[Evaluate] Syncing storage to DB, then building analysis-evaluation databases...")
                 sync_storage_to_sql(DataAnalyzeManager(clean_path))
+                progress(text="Building analysis-evaluation databases…")
                 generate_eval_databases(clean_path)
-            elif mode == "classify_title":
-                if not self._ensure_api_key("B"):
-                    return
+                print("[Evaluate] Analysis-evaluation databases built.")
+                return 0
+
+            if mode == "classify_title":
                 from alr.common.sql_store import sync_storage_to_sql
                 from alr.analysis_evaluation.publication_classification.classify_runner import classify_space
+                progress(text="Syncing storage to DB…")
                 print("[Evaluate] Syncing storage to DB, then classifying titles...")
                 sync_storage_to_sql(DataAnalyzeManager(clean_path))
-                n = classify_space(clean_path)
+                progress(text="Classifying titles…")
+                n = classify_space(
+                    clean_path, should_cancel=should_cancel,
+                    progress_callback=lambda d, t: progress(done=d, total=t, text=f"Classifying titles {d}/{t}…"))
                 print(f"[Evaluate] Title classification updated {n} document(s).")
-            elif mode == "classify_abstract":
-                if not self._ensure_api_key("B"):
-                    return
+                return n
+
+            if mode == "classify_abstract":
                 from alr.common.sql_store import sync_storage_to_sql
                 from alr.analysis_evaluation.publication_classification.classify_runner import classify_abstract_space
+                progress(text="Syncing storage to DB…")
                 print("[Evaluate] Syncing storage to DB, then classifying abstracts...")
                 sync_storage_to_sql(DataAnalyzeManager(clean_path))
-                n = classify_abstract_space(clean_path)
+                progress(text="Classifying abstracts…")
+                n = classify_abstract_space(
+                    clean_path, should_cancel=should_cancel,
+                    progress_callback=lambda d, t: progress(done=d, total=t, text=f"Classifying abstracts {d}/{t}…"))
                 print(f"[Evaluate] Abstract classification updated {n} document(s).")
-            elif mode == "master_excel":
+                return n
+
+            if mode == "master_excel":
                 from alr.rag_builders.master_excel_db_builder import build_master_excel_db
+                progress(text="Consolidating per-section data into the master Excel workbook…")
                 print("[Evaluate] Consolidating per-section data into the master Excel workbook...")
                 written, master_path = build_master_excel_db(clean_path)
                 print(f"[Evaluate] Master Excel workbook ({written} document(s)): {master_path}")
+                return written
+
+            return 0
+
+        def on_success(n):
             print("[Evaluate] Pass finished.")
             messagebox.showinfo("Done", "Storage-space pass finished. See the console log for details.")
-        except Exception as e:
-            print(f"[Evaluate] Failed: {e}")
-            messagebox.showerror("Error", f"Pass failed: {e}")
+
+        self._run_threaded(work, dialog_title, on_success=on_success)
 
     def _classify_title_action(self):
         title = self.classify_title_entry.get().strip()
@@ -997,20 +1049,25 @@ class AutomatedLiteratureUI(tk.Tk):
             return
         if not self._ensure_api_key("B"):
             return
-        try:
+
+        def work(progress, should_cancel):
             from alr.analysis_evaluation.publication_classification.title_classifier import classify_title
+            progress(text=f"Classifying title: {title!r}…")
             print(f"[Classify] Classifying title: {title!r}")
             result = classify_title(title) or {}
+            print(f"[Classify] Result: {result}")
+            return result
+
+        def on_success(result):
+            result = result or {}
             matched = [topic for topic, hit in result.items() if hit]
             if matched:
                 messagebox.showinfo("Classification result",
                                     "Matched topics:\n\n- " + "\n- ".join(matched))
             else:
                 messagebox.showinfo("Classification result", "No topics matched this title.")
-            print(f"[Classify] Result: {result}")
-        except Exception as e:
-            print(f"[Classify] Failed: {e}")
-            messagebox.showerror("Error", f"Classification failed: {e}")
+
+        self._run_threaded(work, "Classify Title", on_success=on_success)
 
     def _question_score_action(self):
         use_log = self.qscore_source_var.get().startswith("Download log")
@@ -1029,19 +1086,26 @@ class AutomatedLiteratureUI(tk.Tk):
 
         if not self._ensure_api_key("B"):
             return
-        try:
+
+        def work(progress, should_cancel):
             from alr.analysis_evaluation.publication_classification.classify_runner import question_score_space
+            progress(text="Running question-scored classification (this can take a while)…")
             print("[Question Scoring] Running question-scored classification (this can take a while)...")
             manager = DataAnalyzeManager(clean_folder_path(folder)) if folder else DataAnalyzeManager()
             out = question_score_space(manager, source=source, download_log=download_log)
             if out:
                 print(f"[Question Scoring] Workbook written: {out}")
+            else:
+                print("[Question Scoring] No workbook was produced.")
+            return out
+
+        def on_success(out):
+            if out:
                 messagebox.showinfo("Done", f"Question-scored classification saved to:\n{out}")
             else:
                 messagebox.showwarning("Nothing produced", "No workbook was produced. See the console log.")
-        except Exception as e:
-            print(f"[Question Scoring] Failed: {e}")
-            messagebox.showerror("Error", f"Question-scored classification failed: {e}")
+
+        self._run_threaded(work, "Question-Scored Classification", on_success=on_success)
 
     def _compute_metrics_action(self):
         ref = self.metric_ref_text.get("1.0", tk.END).strip()
@@ -1049,8 +1113,11 @@ class AutomatedLiteratureUI(tk.Tk):
         if not ref or not cand:
             messagebox.showerror("Error", "Please provide both a reference and a candidate text.")
             return
-        try:
+
+        def work(progress, should_cancel):
             import importlib
+            progress(text="Computing text comparison metrics…")
+            print("[Metrics] Computing text comparison metrics...")
             lexical = importlib.import_module("alr.analysis_evaluation.Lexical_Overlap_Metrics")
             distance = importlib.import_module("alr.analysis_evaluation.Distance_w_Structural _Alignment")
 
@@ -1073,14 +1140,16 @@ class AutomatedLiteratureUI(tk.Tk):
                 f"  deletions={edit['word_level']['deletions']}",
             ]
             text = "\n".join(lines)
+            print("[Metrics]\n" + text)
+            return text
+
+        def on_success(text):
             self.metric_result_text.configure(state="normal")
             self.metric_result_text.delete("1.0", tk.END)
-            self.metric_result_text.insert("1.0", text)
+            self.metric_result_text.insert("1.0", text or "")
             self.metric_result_text.configure(state="disabled")
-            print("[Metrics]\n" + text)
-        except Exception as e:
-            print(f"[Metrics] Failed: {e}")
-            messagebox.showerror("Error", f"Metric computation failed: {e}")
+
+        self._run_threaded(work, "Compute Metrics", on_success=on_success)
 
     # ==========================================
     # API KEY MANAGEMENT
