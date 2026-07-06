@@ -1,4 +1,3 @@
-
 from alr.common.file_manager import DataAnalyzeManager, Vec_DB_Manager
 from alr.common.llm_utils import llm_call
 
@@ -167,14 +166,23 @@ The JSON must follow this exact structure, covering all specified dimensions:
 #         print(f"❌ Blablador failed. Full response: {result}")
 #         raise ValueError(f"Unexpected response format from Blablador: {exc}") from exc
 
-def classify_title(title):
+def classify_title(title, service=None):
+    """
+    Classify a publication by its title against the taxonomy.
+
+    ``service`` selects which configured LLM engine to use ('O' = DLR Ollama,
+    'B' = Blablador -- same codes as the "LLM Processing Service Engine"
+    picker in the main window), and which session-selected model
+    (``set_selected_model``/``get_selected_model``) is used for the call. If
+    omitted, ``llm_call`` falls back to its own default engine/model.
+    """
     Prompt = f"""Title of publication to be analyzed:
                 - {title}
             """
             # Add a delay here (e.g., 1.5 seconds) to stay under rate limits
     time.sleep(1.5)
     try:
-        response = llm_call(Prompt,system_prompt_sysE)
+        response = llm_call(Prompt, system_prompt_sysE, service) if service else llm_call(Prompt, system_prompt_sysE)
         # Parse the string response into a dictionary
         return json.loads(response)
     except Exception as e:
@@ -195,12 +203,16 @@ TAXONOMY_TOPICS = [
 ]
 
 
-def classify_abstract(abstract_text):
+def classify_abstract(abstract_text, service=None):
     """
     Classify a publication against the same taxonomy as :func:`classify_title`,
     but using the identified abstract text (from the abstract analyzer) instead of
     the title. Returns ``{topic: bool}`` for every taxonomy topic; on failure it
-    falls back to an all-False result. Requires a Blablador API key.
+    falls back to an all-False result. Requires an API key for the chosen service.
+
+    ``service`` selects which configured LLM engine to use ('O' = DLR Ollama,
+    'B' = Blablador), and which session-selected model is used for the call.
+    If omitted, ``llm_call`` falls back to its own default engine/model.
     """
     Prompt = f"""Abstract of the publication to be analyzed:
                 - {abstract_text}
@@ -208,7 +220,7 @@ def classify_abstract(abstract_text):
     # Small delay to stay under the Blablador rate limit.
     time.sleep(1.5)
     try:
-        response = llm_call(Prompt, system_prompt_sysE)
+        response = llm_call(Prompt, system_prompt_sysE, service) if service else llm_call(Prompt, system_prompt_sysE)
         return json.loads(response)
     except Exception as e:
         print(f"Error processing abstract: {e}")
@@ -240,27 +252,3 @@ if __name__ == "__main__":
         time.sleep(0.1)
 
     print(f"✅ Finished! All data saved to {source_file}")
-
-
-
-
-    
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-

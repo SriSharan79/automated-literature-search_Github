@@ -673,14 +673,14 @@ class AutomatedLiteratureUI(tk.Tk):
                 progress(text="Classifying publications (title)…")
                 try:
                     from alr.analysis_evaluation.publication_classification.classify_runner import classify_space
-                    classify_space(MF, should_cancel=should_cancel, overwrite=classify_title_overwrite)
+                    classify_space(MF, should_cancel=should_cancel, overwrite=classify_title_overwrite, service=service)
                 except Exception as e:
                     print(f"[Classification] Skipped/failed: {e}")
 
                 progress(text="Classifying publications (abstract)…")
                 try:
                     from alr.analysis_evaluation.publication_classification.classify_runner import classify_abstract_space
-                    classify_abstract_space(MF, should_cancel=should_cancel, overwrite=classify_abstract_overwrite)
+                    classify_abstract_space(MF, should_cancel=should_cancel, overwrite=classify_abstract_overwrite, service=service)
                 except Exception as e:
                     print(f"[Abstract Classification] Skipped/failed: {e}")
 
@@ -855,6 +855,17 @@ class AutomatedLiteratureUI(tk.Tk):
         self.eval_storage_entry.pack(side="left", padx=5)
         ttk.Button(row, text="Browse...", command=lambda: self._browse_folder(self.eval_storage_entry)).pack(side="left", padx=2)
 
+        llm_row = ttk.Frame(pass_frame)
+        llm_row.pack(fill="x", padx=5, pady=(0, 8))
+        ttk.Label(llm_row, text="LLM Processing Service Engine:").pack(side="left", padx=5)
+        self.llm_choice_eval = ttk.Combobox(llm_row, values=["O", "B"], width=5, state="readonly")
+        self.llm_choice_eval.set("B")
+        self.llm_choice_eval.pack(side="left", padx=5)
+        ttk.Button(llm_row, text="Choose Model...",
+                   command=lambda: self._choose_model_action(self.llm_choice_eval.get())
+                   ).pack(side="left", padx=5)
+        ttk.Label(llm_row, text="(used by Classify Titles / Classify Abstracts below)").pack(side="left", padx=5)
+
         btn_row = ttk.Frame(pass_frame)
         btn_row.pack(fill="x", padx=5, pady=(0, 8))
         ttk.Button(btn_row, text="Re-run Abstract Analysis",
@@ -977,11 +988,12 @@ class AutomatedLiteratureUI(tk.Tk):
 
         # API-key checks happen up front on the main thread (they may pop a
         # modal dialog), before any background work starts.
+        classify_service = self.llm_choice_eval.get()
         if mode in ("abstract", "references"):
             if not self._ensure_api_key("B") and not self._ensure_api_key("O"):
                 return
         elif mode in ("classify_title", "classify_abstract"):
-            if not self._ensure_api_key("B"):
+            if not self._ensure_api_key(classify_service):
                 return
 
         clean_path = clean_folder_path(folder) if folder and Path(folder).is_dir() else None
@@ -1063,7 +1075,7 @@ class AutomatedLiteratureUI(tk.Tk):
                 sync_storage_to_sql(DataAnalyzeManager(clean_path))
                 progress(text="Classifying titles…")
                 n = classify_space(
-                    clean_path, should_cancel=should_cancel, overwrite=overwrite,
+                    clean_path, should_cancel=should_cancel, overwrite=overwrite, service=classify_service,
                     progress_callback=lambda d, t: progress(done=d, total=t, text=f"Classifying titles {d}/{t}…"))
                 print(f"[Evaluate] Title classification updated {n} document(s).")
                 return n
@@ -1076,7 +1088,7 @@ class AutomatedLiteratureUI(tk.Tk):
                 sync_storage_to_sql(DataAnalyzeManager(clean_path))
                 progress(text="Classifying abstracts…")
                 n = classify_abstract_space(
-                    clean_path, should_cancel=should_cancel, overwrite=overwrite,
+                    clean_path, should_cancel=should_cancel, overwrite=overwrite, service=classify_service,
                     progress_callback=lambda d, t: progress(done=d, total=t, text=f"Classifying abstracts {d}/{t}…"))
                 print(f"[Evaluate] Abstract classification updated {n} document(s).")
                 return n
@@ -1102,14 +1114,15 @@ class AutomatedLiteratureUI(tk.Tk):
         if not title:
             messagebox.showerror("Error", "Please enter a publication title to classify.")
             return
-        if not self._ensure_api_key("B"):
+        service = self.llm_choice_eval.get()
+        if not self._ensure_api_key(service):
             return
 
         def work(progress, should_cancel):
             from alr.analysis_evaluation.publication_classification.title_classifier import classify_title
             progress(text=f"Classifying title: {title!r}…")
-            print(f"[Classify] Classifying title: {title!r}")
-            result = classify_title(title) or {}
+            print(f"[Classify] Classifying title: {title!r} (service={service})")
+            result = classify_title(title, service=service) or {}
             print(f"[Classify] Result: {result}")
             return result
 

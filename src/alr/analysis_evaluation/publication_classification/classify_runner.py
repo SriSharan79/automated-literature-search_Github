@@ -53,13 +53,18 @@ def has_existing_classification(manager, kind="title") -> int:
     return len(existing_filenames)
 
 
-def classify_space(manager, db_path=None, progress_callback=None, should_cancel=None, overwrite=True) -> int:
+def classify_space(manager, db_path=None, progress_callback=None, should_cancel=None, overwrite=True, service=None) -> int:
     """
     Classify each document in a storage space by title and persist the result.
 
     ``manager`` is a DataAnalyzeManager (or a folder path). Returns the number of
-    documents classified. Requires a Blablador API key (classify_title uses it);
+    documents classified. Requires an API key for the chosen ``service``;
     individual titles that fail fall back to an all-False result.
+
+    ``service`` selects which configured LLM engine/model to use ('O' = DLR
+    Ollama, 'B' = Blablador -- same codes and session-selected model as the
+    "LLM Processing Service Engine" picker in the main window). If omitted,
+    ``classify_title`` falls back to its own default engine/model.
 
     ``progress_callback(done, total)`` is called after each document if given.
     ``should_cancel`` is an optional callable checked before each document for
@@ -97,7 +102,7 @@ def classify_space(manager, db_path=None, progress_callback=None, should_cancel=
             break
         title = d.get("title")
         if title and str(title).strip() not in ("", "Title Not Found"):
-            result = classify_title(title)  # {topic: bool}
+            result = classify_title(title, service=service)  # {topic: bool}
             true_topics = [t for t, v in (result or {}).items() if v]
             store.update_document(d["uuid"], {"classification": ", ".join(true_topics)})
             rows.append({"filename": d.get("filename"), "title": title, **(result or {})})
@@ -111,7 +116,7 @@ def classify_space(manager, db_path=None, progress_callback=None, should_cancel=
     return updated
 
 
-def classify_abstract_space(manager, db_path=None, progress_callback=None, should_cancel=None, overwrite=True) -> int:
+def classify_abstract_space(manager, db_path=None, progress_callback=None, should_cancel=None, overwrite=True, service=None) -> int:
     """
     Classify each document in a storage space by its **identified abstract text**
     (reusing :func:`title_classifier.classify_abstract`) and persist the result in
@@ -120,7 +125,12 @@ def classify_abstract_space(manager, db_path=None, progress_callback=None, shoul
 
     Independent of title classification: it reads the ``abstract_text`` column that
     the storage sync populated from each document's abstract JSON. Returns the
-    number of documents classified. Requires a Blablador API key.
+    number of documents classified. Requires an API key for the chosen ``service``.
+
+    ``service`` selects which configured LLM engine/model to use ('O' = DLR
+    Ollama, 'B' = Blablador -- same codes and session-selected model as the
+    "LLM Processing Service Engine" picker in the main window). If omitted,
+    ``classify_abstract`` falls back to its own default engine/model.
 
     ``progress_callback(done, total)`` is called after each document if given, and
     ``should_cancel`` is checked before each document for cooperative cancellation.
@@ -157,7 +167,7 @@ def classify_abstract_space(manager, db_path=None, progress_callback=None, shoul
             break
         abstract_text = d.get("abstract_text")
         if abstract_text and str(abstract_text).strip():
-            result = classify_abstract(abstract_text)  # {topic: bool}
+            result = classify_abstract(abstract_text, service=service)  # {topic: bool}
             true_topics = [t for t, v in (result or {}).items() if v]
             store.update_document(d["uuid"], {"abstract_classification": ", ".join(true_topics)})
             rows.append({"filename": d.get("filename"), "title": d.get("title"), **(result or {})})
