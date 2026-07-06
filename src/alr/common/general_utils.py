@@ -265,7 +265,7 @@ def find_first_match_in_first_n_chars(strings, target, n):
                 # prev_s = strings[i - 1] if i > 0 else None
                 
                 # Safely grab the next string if it exists
-                next_s = strings[i + 1] if i < len(strings) - 1 else None
+                next_s = strings[i + 1] if i < len(strings) - 1 else ''
                 
                 return s+next_s
 

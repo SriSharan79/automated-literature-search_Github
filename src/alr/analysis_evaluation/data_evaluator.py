@@ -208,7 +208,7 @@ def _save_list_section(UUID, key, content_list, ex_path, title, file_name, abs_t
         _write_section_sheet_flat(Path(ex_path), key, entry)
         aggregate_bullets = "\n ".join(bullet_lines)
         _update_master_overview(storage_path, key, UUID, title, file_name, aggregate_bullets, true_count, false_count, entry)
-        print(Fore.GREEN + f"✅ Synced flat list '{key}' ({len(content_list)} items) for UUID: {UUID}")
+        print(Fore.GREEN + f"✅ Evaluated flat list '{key}' ({len(content_list)} items) for UUID: {UUID}")
 
     return true_count, false_count
 
@@ -237,7 +237,7 @@ def _save_single_section(UUID, key, content_value, ex_path, title, file_name, ab
         _write_section_sheet_flat(Path(ex_path), key, entry)
         # Save overview text and append sectional layout data onto a unique sheet inside Master_Overview.xlsx
         _update_master_overview(storage_path, key, UUID, title, file_name, content_str, true_count, false_count, entry)
-        print(Fore.GREEN + f"✅ Synced single_section '{key}' for UUID: {UUID}")
+        print(Fore.GREEN + f"✅ Evaluated single_section '{key}' for UUID: {UUID}")
 
     return true_count, false_count
 
