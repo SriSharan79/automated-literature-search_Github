@@ -820,6 +820,8 @@ class AutomatedLiteratureUI(tk.Tk):
                    command=lambda: self._run_storage_pass("references")).pack(side="left", padx=4)
         ttk.Button(btn_row, text="Build Evaluation DBs",
                    command=lambda: self._run_storage_pass("evaluate")).pack(side="left", padx=4)
+        ttk.Button(btn_row, text="Classify Titles",
+                   command=lambda: self._run_storage_pass("classify_title")).pack(side="left", padx=4)
         ttk.Button(btn_row, text="Classify Abstracts",
                    command=lambda: self._run_storage_pass("classify_abstract")).pack(side="left", padx=4)
         ttk.Button(btn_row, text="Build Master Excel DB",
@@ -959,6 +961,15 @@ class AutomatedLiteratureUI(tk.Tk):
                 print("[Evaluate] Syncing storage to DB, then building analysis-evaluation databases...")
                 sync_storage_to_sql(DataAnalyzeManager(clean_path))
                 generate_eval_databases(clean_path)
+            elif mode == "classify_title":
+                if not self._ensure_api_key("B"):
+                    return
+                from alr.common.sql_store import sync_storage_to_sql
+                from alr.analysis_evaluation.publication_classification.classify_runner import classify_space
+                print("[Evaluate] Syncing storage to DB, then classifying titles...")
+                sync_storage_to_sql(DataAnalyzeManager(clean_path))
+                n = classify_space(clean_path)
+                print(f"[Evaluate] Title classification updated {n} document(s).")
             elif mode == "classify_abstract":
                 if not self._ensure_api_key("B"):
                     return
