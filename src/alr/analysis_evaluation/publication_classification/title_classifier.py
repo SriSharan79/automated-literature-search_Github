@@ -182,6 +182,7 @@ def classify_title(title, service=None):
             # Add a delay here (e.g., 1.5 seconds) to stay under rate limits
     time.sleep(1.5)
     try:
+        print(Fore.GREEN + f" Prompt : \n {Prompt}"+ Style.RESET_ALL)
         response = llm_call(Prompt, system_prompt_sysE, service) if service else llm_call(Prompt, system_prompt_sysE)
         
         print(Fore.CYAN + "\n--- RAW LLM RESPONSE START ---" + Style.RESET_ALL)
@@ -225,6 +226,8 @@ def classify_abstract(abstract_text, service=None):
     # Small delay to stay under the Blablador rate limit.
     time.sleep(1.5)
     try:
+        
+        print(Fore.GREEN + f" Prompt : \n {Prompt}"+ Style.RESET_ALL)
         response = llm_call(Prompt, system_prompt_sysE, service) if service else llm_call(Prompt, system_prompt_sysE)
         
         print(Fore.CYAN + "\n--- RAW LLM RESPONSE START ---" + Style.RESET_ALL)
