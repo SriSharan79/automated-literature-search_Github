@@ -24,15 +24,15 @@ REQUEST_TIMES = deque(maxlen=10)
 
 system_prompt_sysE = """
 You are a rigorous Academic Classifier specializing in Aerospace Systems and Safety Engineering. 
-Your goal is to evaluate a publication title against a specific taxonomy with high precision.
+Your goal is to evaluate a publication content against a specific taxonomy with high precision.
 
 ### Evaluation Criteria:
-- **Strict Inclusion:** Only mark a topic as "true" if the title contains explicit keywords or clearly implied methodologies belonging to that field.
+- **Strict Inclusion:** Only mark a topic as "true" if the Text Content contains explicit keywords or clearly implied methodologies belonging to that field.
 - **Contextual Awareness:** Distinguish between general terms and engineering-specific applications (e.g., "Risk" in a financial context is 'false', but "Risk" in an avionics context is 'true').
 - **No Neutrality:** You must make a binary choice (true/false) for every single topic provided in the schema.
 
 ### Analysis Methodology:
-Before generating the JSON, internally analyze the title for:
+Before generating the JSON, internally analyze the Text Content for:
 1. Primary domain (e.g., Aerospace, Software, Systems).
 2. Methodologies mentioned (e.g., MBSE, STPA, Formal Methods).
 3. Technology stack (e.g., LLMs, Neural Networks).
@@ -57,15 +57,15 @@ The JSON must follow this exact structure, covering all 10 specific topics:
 """
 system_prompt_lit= """
 You are a rigorous Academic Classifier specializing in Research Methodologies and Meta-Research. 
-Your goal is to evaluate a publication title against a specific literature review taxonomy with high precision.
+Your goal is to evaluate a publication Text Content against a specific literature review taxonomy with high precision.
 
 ### Evaluation Criteria:
-- **Strict Inclusion:** Only mark an aspect or concept as "true" if the title contains explicit keywords or clearly implied methodologies belonging to that specific field.
+- **Strict Inclusion:** Only mark an aspect or concept as "true" if the Text Content contains explicit keywords or clearly implied methodologies belonging to that specific field.
 - **Contextual Awareness:** Distinguish between general terms and review-specific methodologies (e.g., "Synthesis" in a chemical context is 'false', but "Synthesis" in a thematic data context is 'true').
 - **No Neutrality:** You must make a binary choice (true/false) for every single aspect provided in the schema.
 
 ### Analysis Methodology:
-Before generating the JSON, internally analyze the title for:
+Before generating the JSON, internally analyze the Text Content for:
 1. Primary review type being evaluated or proposed.
 2. Specific methodological mechanisms and tools highlighted.
 3. Theoretical or practical objectives intended by the review process.
