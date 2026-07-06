@@ -552,6 +552,41 @@ class AutomatedLiteratureUI(tk.Tk):
               + "".join(f", {c}" for c in ("abstract", "intro", "references") if c in components)
               + (", doi/metadata" if do_doi else "") + (", classification" if do_classify else ""))
 
+        # If classification workbooks already have data for this space, ask
+        # whether to rewrite everything or only classify what's newly analyzed.
+        # This must happen on the main thread (before the background work
+        # starts) since it may pop a modal dialog.
+        classify_title_overwrite = True
+        classify_abstract_overwrite = True
+        if do_classify:
+            from alr.analysis_evaluation.publication_classification.classify_runner import has_existing_classification
+
+            existing_title_n = has_existing_classification(MF, kind="title")
+            if existing_title_n:
+                choice = messagebox.askyesnocancel(
+                    "Existing title classification found",
+                    f"{existing_title_n} document(s) already have title classification data saved "
+                    "for this storage space.\n\n"
+                    "Yes = rewrite all data from scratch\n"
+                    "No = keep the existing data and classify only the remaining document(s)\n"
+                    "Cancel = abort")
+                if choice is None:
+                    return
+                classify_title_overwrite = bool(choice)
+
+            existing_abstract_n = has_existing_classification(MF, kind="abstract")
+            if existing_abstract_n:
+                choice = messagebox.askyesnocancel(
+                    "Existing abstract classification found",
+                    f"{existing_abstract_n} document(s) already have abstract classification data saved "
+                    "for this storage space.\n\n"
+                    "Yes = rewrite all data from scratch\n"
+                    "No = keep the existing data and classify only the remaining document(s)\n"
+                    "Cancel = abort")
+                if choice is None:
+                    return
+                classify_abstract_overwrite = bool(choice)
+
         # The whole analysis + enrichment chain runs on a background thread with a
         # progress dialog so the UI stays responsive and cancellable.
         def work(progress, should_cancel):
@@ -638,14 +673,14 @@ class AutomatedLiteratureUI(tk.Tk):
                 progress(text="Classifying publications (title)…")
                 try:
                     from alr.analysis_evaluation.publication_classification.classify_runner import classify_space
-                    classify_space(MF, should_cancel=should_cancel)
+                    classify_space(MF, should_cancel=should_cancel, overwrite=classify_title_overwrite)
                 except Exception as e:
                     print(f"[Classification] Skipped/failed: {e}")
 
                 progress(text="Classifying publications (abstract)…")
                 try:
                     from alr.analysis_evaluation.publication_classification.classify_runner import classify_abstract_space
-                    classify_abstract_space(MF, should_cancel=should_cancel)
+                    classify_abstract_space(MF, should_cancel=should_cancel, overwrite=classify_abstract_overwrite)
                 except Exception as e:
                     print(f"[Abstract Classification] Skipped/failed: {e}")
 
