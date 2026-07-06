@@ -620,7 +620,9 @@ class AutomatedLiteratureUI(tk.Tk):
                 progress(text="Extracting DOI / metadata…")
                 try:
                     from alr.data_analysis.doi_metadata import enrich_space_with_doi
-                    enrich_space_with_doi(MF, should_cancel=should_cancel)
+                    # Target exactly the file/folder selected above, not the
+                    # whole storage-space PDF subfolder.
+                    enrich_space_with_doi(MF, input_path=result.input_path, should_cancel=should_cancel)
                 except Exception as e:
                     print(f"[DOI Enrichment] Skipped/failed: {e}")
 
@@ -825,6 +827,25 @@ class AutomatedLiteratureUI(tk.Tk):
         ttk.Button(btn_row, text="Enrich from Download Logs",
                    command=lambda: self._run_storage_pass("download_logs")).pack(side="left", padx=4)
 
+        # --- DOI / metadata extraction (standalone, targets a selected file/folder) ---
+        doi_frame = tk.LabelFrame(tab, text="DOI / Metadata Extraction (standalone)")
+        doi_frame.pack(fill="x", padx=10, pady=5)
+
+        drow = ttk.Frame(doi_frame)
+        drow.pack(fill="x", padx=5, pady=8)
+        ttk.Label(drow, text="PDF file or folder:").pack(side="left", padx=5)
+        self.doi_input_entry = ttk.Entry(drow, width=45)
+        self.doi_input_entry.pack(side="left", padx=5)
+        ttk.Button(drow, text="Select File", command=lambda: self._browse_file(self.doi_input_entry)).pack(side="left", padx=2)
+        ttk.Button(drow, text="Select Folder", command=lambda: self._browse_folder(self.doi_input_entry)).pack(side="left", padx=2)
+        ttk.Button(drow, text="Run DOI / Metadata Extraction",
+                   command=self._run_doi_extraction_action).pack(side="left", padx=8)
+        ttk.Label(doi_frame,
+                  text="(Extracts DOI/arXiv metadata from exactly the file or folder selected above -- not the "
+                       "whole storage space. Uses the 'Storage folder' above for the managed output workbook and "
+                       "SQLite sync; leave it blank to use the default storage space.)"
+                  ).pack(anchor="w", padx=8, pady=(0, 6))
+
         # --- Publication title classification (on-demand, single title) ---
         cls_frame = tk.LabelFrame(tab, text="Publication Title Classification")
         cls_frame.pack(fill="x", padx=10, pady=5)
@@ -881,6 +902,25 @@ class AutomatedLiteratureUI(tk.Tk):
 
         self.metric_result_text = tk.Text(met_frame, height=8, wrap="word", state="disabled")
         self.metric_result_text.pack(fill="both", expand=True, padx=5, pady=(0, 5))
+
+    def _run_doi_extraction_action(self):
+        input_target = self.doi_input_entry.get().strip()
+        if not input_target or not Path(input_target).exists():
+            messagebox.showerror("Error", "Please select a valid PDF file or folder first.")
+            return
+
+        folder = self.eval_storage_entry.get().strip()
+        clean_path = clean_folder_path(folder) if folder and Path(folder).is_dir() else None
+
+        def work(progress, should_cancel):
+            from alr.data_analysis.doi_metadata import enrich_space_with_doi
+            progress(text=f"Extracting DOI / metadata from {Path(input_target).name}…")
+            MF = DataAnalyzeManager(clean_path) if clean_path else DataAnalyzeManager()
+            n = enrich_space_with_doi(MF, input_path=input_target, should_cancel=should_cancel)
+            print(f"[Evaluate] DOI/metadata enrichment updated {n} document(s).")
+            return n
+
+        self._run_threaded(work, "DOI / Metadata Extraction", "updated")
 
     def _run_storage_pass(self, mode):
         folder = self.eval_storage_entry.get().strip()

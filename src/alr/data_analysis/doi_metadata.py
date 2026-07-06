@@ -386,34 +386,55 @@ class MetadataLogic:
 
         return base_data
 
-    def process_directory_to_excel(self, root_folder, output_excel, should_cancel=None):
+    def _iter_pdf_files(self, input_path):
+        """
+        Yield PDF file paths for ``input_path``. Accepts either a single PDF
+        file path or a folder, which is walked recursively. This lets callers
+        target exactly a selected file/folder instead of always scanning an
+        entire storage-space PDF subfolder.
+        """
+        if os.path.isfile(input_path):
+            if input_path.lower().endswith(".pdf"):
+                yield input_path
+            return
+
+        for dirpath, _, filenames in os.walk(input_path):
+            for filename in filenames:
+                if filename.lower().endswith(".pdf"):
+                    yield os.path.join(dirpath, filename)
+
+    def process_input_to_excel(self, input_path, output_excel, should_cancel=None):
+        """
+        Process a single PDF file OR a folder of PDFs (recursively) and write
+        the combined metadata to ``output_excel``. Generalized version of
+        ``process_directory_to_excel`` that also accepts a single file path.
+        """
         all_metadata = []
 
         # --- PHASE 1: Initial Processing ---
-        for dirpath, _, filenames in os.walk(root_folder):
-            for filename in filenames:
-                if should_cancel is not None and should_cancel():
-                    print("DOI extraction cancelled by user.")
-                    self._save_to_excel(all_metadata, output_excel)
-                    return
-                if filename.lower().endswith(".pdf"):
-                    file_path = os.path.join(dirpath, filename)
-                    print(f"--- Processing: {filename} ---")
-                    
-                    try:
-                        # Note: You should pass file_path to fetch_metadata_by_arxiv 
-                        # inside extract_meta_data_from_doi to catch the filename for the 429 list
-                        base_data = self.extract_meta_data_from_doi(file_path)
-                        
-                        if base_data['Publication Name'] == "Metadata Not Found":
-                            title = get_title_in_the_file(file_path, 'b')
-                            base_data['Publication Name'] = title
-                        
-                        all_metadata.append(base_data)
-                        self._save_to_excel(all_metadata, output_excel)
-                            
-                    except Exception as e:
-                        print(f"Error processing {filename}: {e}")
+        for file_path in self._iter_pdf_files(input_path):
+            if should_cancel is not None and should_cancel():
+                print("DOI extraction cancelled by user.")
+                self._save_to_excel(all_metadata, output_excel)
+                return
+
+            filename = os.path.basename(file_path)
+            print(f"--- Processing: {filename} ---")
+
+            try:
+                # Note: You should pass file_path to fetch_metadata_by_arxiv
+                # inside extract_meta_data_from_doi to catch the filename for the 429 list
+                base_data = self.extract_meta_data_from_doi(file_path)
+
+                if base_data['Publication Name'] == "Metadata Not Found":
+                    title = get_title_in_the_file(file_path, 'b')
+                    base_data['Publication Name'] = title
+
+                all_metadata.append(base_data)
+                self._save_to_excel(all_metadata, output_excel)
+
+            except Exception as e:
+                print(f"Error processing {filename}: {e}")
 
         # --- PHASE 2: Batch Processing 429 Failures ---
         if self.failed_arxiv_requests:
@@ -446,6 +467,14 @@ class MetadataLogic:
             self._save_to_excel(all_metadata, output_excel)
 
         print(f"\nProcessing complete! Data saved to {output_excel}")
+
+    def process_directory_to_excel(self, root_folder, output_excel, should_cancel=None):
+        """
+        Kept for backward compatibility: scans a folder recursively for PDFs.
+        Delegates to ``process_input_to_excel``, which also accepts a single
+        PDF file path.
+        """
+        return self.process_input_to_excel(root_folder, output_excel, should_cancel=should_cancel)
 
     def _save_to_excel(self, data_list, filename):
         """Helper to convert list of dicts to Excel with specific column order"""
@@ -481,14 +510,22 @@ DOI_EXCEL_TO_DB = {
 }
 
 
-def enrich_space_with_doi(manager, db_path=None, should_cancel=None) -> int:
+def enrich_space_with_doi(manager, db_path=None, should_cancel=None, input_path=None) -> int:
     """
-    Run DOI/metadata extraction over a storage space's PDFs, write the managed
-    ``DOI_Metadata.xlsx``, and push the metadata into the SQLite store (matching
-    by File_Name -> document filename). Returns the number of documents updated.
+    Run DOI/metadata extraction, write the managed ``DOI_Metadata.xlsx``, and
+    push the metadata into the SQLite store (matching by File_Name ->
+    document filename). Returns the number of documents updated.
 
-    ``manager`` is a DataAnalyzeManager (or a folder path). ``should_cancel`` is
-    an optional callable checked between PDFs for cooperative cancellation.
+    ``manager`` is a DataAnalyzeManager (or a folder path); it supplies the
+    managed ``DOI_Metadata.xlsx`` output location.
+
+    ``input_path``, if given, is a specific PDF file OR folder to scan
+    instead of the manager's own ``pdf_subfolder`` -- e.g. exactly the file
+    or folder selected in the UI. This lets a run target only what was
+    selected rather than always re-scanning the whole storage space. When
+    omitted, behavior is unchanged: it scans ``manager.pdf_subfolder``.
+    ``should_cancel`` is an optional callable checked between PDFs for
+    cooperative cancellation.
     """
     from alr.common.file_manager import DataAnalyzeManager
     from alr.common.sql_store import AnalyzedDataStore, DB_PATH
@@ -496,11 +533,11 @@ def enrich_space_with_doi(manager, db_path=None, should_cancel=None) -> int:
     if not isinstance(manager, DataAnalyzeManager):
         manager = DataAnalyzeManager(manager)
 
-    pdf_folder = str(manager.pdf_subfolder)
+    scan_target = input_path if input_path else str(manager.pdf_subfolder)
     output_excel = manager.doi_metadata_excel
 
     meta_logic = MetadataLogic()
-    meta_logic.process_directory_to_excel(pdf_folder, output_excel, should_cancel=should_cancel)
+    meta_logic.process_input_to_excel(scan_target, output_excel, should_cancel=should_cancel)
 
     if not os.path.exists(output_excel):
         return 0
@@ -533,6 +570,6 @@ def enrich_space_with_doi(manager, db_path=None, should_cancel=None) -> int:
 if __name__ == "__main__":
     import sys
     if len(sys.argv) >= 2:
-        enrich_space_with_doi(sys.argv[1])
+        enrich_space_with_doi(sys.argv[1], input_path=sys.argv[2] if len(sys.argv) >= 3 else None)
     else:
-        print("Usage: python -m alr.data_analysis.doi_metadata <storage_space_folder>")
+        print("Usage: python -m alr.data_analysis.doi_metadata <storage_space_folder> [pdf_file_or_folder]")

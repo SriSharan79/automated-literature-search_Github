@@ -133,6 +133,8 @@ class DataAnalyzeManager:
         # 1. Convert to Path object FIRST
         self.folder = Path(folder_path)
         
+        current_date = datetime.now().strftime("%Y-%m-%d")
+        
         # 2. Now you can safely call mkdir
         self.folder.mkdir(parents=True, exist_ok=True)
         # Core Excel Files
@@ -188,15 +190,15 @@ class DataAnalyzeManager:
         # publication classification). Always created inside the storage space.
         self.doi_metadata_subfolder = self.folder / "DOI_Metadata_Files"
         self.doi_metadata_subfolder.mkdir(exist_ok=True)
-        self.doi_metadata_excel = os.path.join(self.doi_metadata_subfolder, "DOI_Metadata.xlsx")
+        self.doi_metadata_excel = os.path.join(self.doi_metadata_subfolder, f"{current_date}_DOI_Metadata.xlsx")
 
         self.classification_subfolder = self.folder / "Publication_Classification_Files"
         self.classification_subfolder.mkdir(exist_ok=True)
-        self.classification_excel = os.path.join(self.classification_subfolder, "Publication_Classification.xlsx")
+        self.classification_excel = os.path.join(self.classification_subfolder, f"{current_date}_Title_Classification.xlsx")
         # Abstract-based classification (uses the identified abstract text).
-        self.abstract_classification_excel = os.path.join(self.classification_subfolder, "Abstract_Classification.xlsx")
+        self.abstract_classification_excel = os.path.join(self.classification_subfolder, f"{current_date}_Abstract_Classification.xlsx")
         # Question-scored classification (multi-sheet, on-demand) output.
-        self.question_classification_excel = os.path.join(self.classification_subfolder, "Question_Scored_Classification.xlsx")
+        self.question_classification_excel = os.path.join(self.classification_subfolder, f"{current_date}_Question_Scored_Classification.xlsx")
 
         # Batch de-duplication skip log (PDFs skipped before analysis because a
         # fuzzy-matching title was already analyzed).
