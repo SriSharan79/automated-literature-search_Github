@@ -265,3 +265,64 @@ def build_sections_master_map(vdb, master_excel_path) -> dict[str, tuple]:
 def build_sections_eval_map(vdb) -> dict[str, tuple]:
     """Was: Analysis_Evaluation/Data_evaluator.py :: inline SECTION_MAP"""
     return get_eval_sections_map(vdb)
+
+
+# ---------------------------------------------------------------------------
+# Introduction sections — the analyzed-introduction JSON counterpart of
+# ALR_SECTIONS. The Introduction analyzer writes {uuid}_Intro.json with these
+# keys plus the identified full-introduction text; evaluation treats them the
+# same way data_evaluator treats the abstract sections.
+# ---------------------------------------------------------------------------
+
+# The key store_to_json_with_text writes for the raw texts.
+ABSTRACT_TEXT_KEY = "Abstract Text identified:"
+INTRO_TEXT_KEY = "Introduction Text identified:"
+
+# Intro JSON key -> Vec_DB_Manager eval-workbook attribute.
+INTRO_SECTIONS: tuple[tuple[str, str], ...] = (
+    ("Background", "Background_Eval_excel"),
+    ("Motivation", "Motivation_Eval_excel"),
+    ("Gaps & Limitations", "Gaps_Limitations_Eval_excel"),
+    ("RQs & Scope", "RQs_Scope_Eval_excel"),
+)
+
+
+def build_intro_sections_eval_map(vdb) -> dict[str, tuple]:
+    """
+    Introduction counterpart of :func:`build_sections_eval_map`:
+    ``{intro_section_key: (eval_excel_path, intro_section_key)}``.
+    """
+    return {key: (getattr(vdb, attr), key) for key, attr in INTRO_SECTIONS}
+
+
+# ---------------------------------------------------------------------------
+# Batch metric-evaluation workbooks (lexical / distance / cosine): each metric
+# kind records into its own dated workbook per target, and a combined overview
+# workbook holds all metric data together. Single source of truth for which
+# Vec_DB_Manager attribute each (target, kind) pair maps to.
+# ---------------------------------------------------------------------------
+
+# target -> {metric kind or "overview": Vec_DB_Manager attribute}
+METRIC_WORKBOOK_ATTRS = {
+    "abstract": {
+        "lexical": "Abstract_Lexical_Metrics",
+        "distance": "Abstract_Distance_Metrics",
+        "cosine": "Abstract_Cosine_Metrics",
+        "overview": "Abstract_Metrics_Overview",
+    },
+    "intro": {
+        "lexical": "Introduction_Lexical_Metrics",
+        "distance": "Introduction_Distance_Metrics",
+        "cosine": "Introduction_Cosine_Metrics",
+        "overview": "Introduction_Metrics_Overview",
+    },
+}
+
+
+def build_metric_workbooks_map(vdb, target="abstract") -> dict[str, "object"]:
+    """
+    Return ``{metric_kind_or_"overview": workbook_path}`` for a target
+    ("abstract" or "intro"), resolved against a Vec_DB_Manager instance.
+    """
+    attrs = METRIC_WORKBOOK_ATTRS[target if target in METRIC_WORKBOOK_ATTRS else "abstract"]
+    return {kind: getattr(vdb, attr) for kind, attr in attrs.items()}

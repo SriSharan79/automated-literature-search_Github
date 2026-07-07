@@ -712,6 +712,14 @@ class AutomatedLiteratureUI(tk.Tk):
             except Exception as e:
                 print(f"[Evaluation] Skipped/failed: {e}")
 
+            # Introduction evaluation keeps pace with the abstract evaluation.
+            progress(text="Finalizing: introduction evaluation sweep…")
+            try:
+                from alr.analysis_evaluation.data_evaluator import evaluate_space
+                evaluate_space(MF, should_cancel=should_cancel, mode=eval_mode, target="intro")
+            except Exception as e:
+                print(f"[Intro Evaluation] Skipped/failed: {e}")
+
             if do_doi:
                 progress(text="Matching metadata from download logs…")
                 try:
@@ -898,21 +906,33 @@ class AutomatedLiteratureUI(tk.Tk):
     # TAB 5: EVALUATE & ENRICH
     # ==========================================
     def _build_evaluate_tab(self):
-        tab = ttk.Frame(self.notebook)
-        self.notebook.add(tab, text="5. Evaluate & Enrich")
+        outer = ttk.Frame(self.notebook)
+        self.notebook.add(outer, text="5. Evaluate & Enrich")
 
-        # --- Storage-space re-run passes & evaluation DBs ---
-        pass_frame = tk.LabelFrame(tab, text="Storage-Space Passes (on an already-analyzed folder)")
-        pass_frame.pack(fill="x", padx=10, pady=(10, 5))
+        # The tab holds two full sections (Evaluation + Enrichment) and grows
+        # past the window height, so its content lives in a scrollable canvas.
+        canvas = tk.Canvas(outer, highlightthickness=0)
+        vsb = ttk.Scrollbar(outer, orient="vertical", command=canvas.yview)
+        canvas.configure(yscrollcommand=vsb.set)
+        vsb.pack(side="right", fill="y")
+        canvas.pack(side="left", fill="both", expand=True)
+        tab = ttk.Frame(canvas)
+        tab_window = canvas.create_window((0, 0), window=tab, anchor="nw")
+        tab.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
+        canvas.bind("<Configure>", lambda e: canvas.itemconfig(tab_window, width=e.width))
 
-        row = ttk.Frame(pass_frame)
+        # --- Shared inputs (used by both Evaluation and Enrichment below) ---
+        shared = tk.LabelFrame(tab, text="Storage Space & LLM Service (shared)")
+        shared.pack(fill="x", padx=10, pady=(10, 5))
+
+        row = ttk.Frame(shared)
         row.pack(fill="x", padx=5, pady=8)
         ttk.Label(row, text="Storage folder:").pack(side="left", padx=5)
         self.eval_storage_entry = ttk.Entry(row, width=55)
         self.eval_storage_entry.pack(side="left", padx=5)
         ttk.Button(row, text="Browse...", command=lambda: self._browse_folder(self.eval_storage_entry)).pack(side="left", padx=2)
 
-        llm_row = ttk.Frame(pass_frame)
+        llm_row = ttk.Frame(shared)
         llm_row.pack(fill="x", padx=5, pady=(0, 8))
         ttk.Label(llm_row, text="LLM Processing Service Engine:").pack(side="left", padx=5)
         self.llm_choice_eval = ttk.Combobox(llm_row, values=["O", "B"], width=5, state="readonly")
@@ -921,16 +941,86 @@ class AutomatedLiteratureUI(tk.Tk):
         ttk.Button(llm_row, text="Choose Model...",
                    command=lambda: self._choose_model_action(self.llm_choice_eval.get())
                    ).pack(side="left", padx=5)
-        ttk.Label(llm_row, text="(used by Classify Titles / Classify Abstracts below)").pack(side="left", padx=5)
+        ttk.Label(llm_row, text="(used by Classify Titles / Classify Abstracts)").pack(side="left", padx=5)
+
+        # ================= EVALUATION =================
+        eval_frame = tk.LabelFrame(tab, text="Evaluation (batch, over the storage space above)")
+        eval_frame.pack(fill="x", padx=10, pady=5)
+
+        # Evaluation-type choices.
+        self.eval_kind_vars = {
+            "substring": tk.BooleanVar(value=True),
+            "lexical": tk.BooleanVar(value=False),
+            "distance": tk.BooleanVar(value=False),
+            "cosine": tk.BooleanVar(value=False),
+        }
+        kinds_row = ttk.Frame(eval_frame)
+        kinds_row.pack(fill="x", padx=5, pady=(8, 2))
+        ttk.Checkbutton(kinds_row, text="Substring match (data grounding)",
+                        variable=self.eval_kind_vars["substring"]).grid(row=0, column=0, sticky="w", padx=6, pady=2)
+        ttk.Checkbutton(kinds_row, text="Lexical overlap (Jaccard / ROUGE / BLEU)",
+                        variable=self.eval_kind_vars["lexical"]).grid(row=0, column=1, sticky="w", padx=6, pady=2)
+        ttk.Checkbutton(kinds_row, text="Distance & structural alignment (Levenshtein / WER)",
+                        variable=self.eval_kind_vars["distance"]).grid(row=1, column=0, sticky="w", padx=6, pady=2)
+        ttk.Checkbutton(kinds_row, text="Cosine similarity (embeddings; reuses/creates vector DBs)",
+                        variable=self.eval_kind_vars["cosine"]).grid(row=1, column=1, sticky="w", padx=6, pady=2)
+
+        target_row = ttk.Frame(eval_frame)
+        target_row.pack(fill="x", padx=5, pady=(2, 2))
+        ttk.Label(target_row, text="Evaluate:").pack(side="left", padx=6)
+        self.eval_target_var = tk.StringVar(value="abstract")
+        ttk.Radiobutton(target_row, text="Abstract data", value="abstract",
+                        variable=self.eval_target_var).pack(side="left", padx=4)
+        ttk.Radiobutton(target_row, text="Introduction data", value="intro",
+                        variable=self.eval_target_var).pack(side="left", padx=4)
+        ttk.Radiobutton(target_row, text="Both", value="both",
+                        variable=self.eval_target_var).pack(side="left", padx=4)
+        ttk.Button(target_row, text="Run Evaluation", command=self._run_evaluation_action).pack(side="left", padx=16)
+
+        ttk.Label(eval_frame,
+                  text="(Each selected metric compares every extracted section item against the document's "
+                       "identified abstract/introduction text. Results: per-section evaluation workbooks, one dated "
+                       "workbook per metric kind plus a combined metrics-overview workbook in the space, and summary "
+                       "columns in the review database. Tip: run 'Build Text + Vector DB (RAG)' first so cosine "
+                       "reuses the stored vectors.)",
+                  wraplength=860, justify="left").pack(anchor="w", padx=8, pady=(0, 6))
+
+        # --- Manual text comparison (kept from the standalone metrics panel) ---
+        met_frame = tk.LabelFrame(eval_frame, text="Manual text comparison (paste two texts)")
+        met_frame.pack(fill="both", expand=True, padx=6, pady=(0, 8))
+
+        grid = ttk.Frame(met_frame)
+        grid.pack(fill="both", expand=True, padx=5, pady=5)
+        grid.columnconfigure(0, weight=1)
+        grid.columnconfigure(1, weight=1)
+
+        ttk.Label(grid, text="Reference text:").grid(row=0, column=0, sticky="w")
+        ttk.Label(grid, text="Candidate text:").grid(row=0, column=1, sticky="w")
+        self.metric_ref_text = tk.Text(grid, height=5, wrap="word")
+        self.metric_ref_text.grid(row=1, column=0, sticky="nsew", padx=(0, 4), pady=2)
+        self.metric_cand_text = tk.Text(grid, height=5, wrap="word")
+        self.metric_cand_text.grid(row=1, column=1, sticky="nsew", padx=(4, 0), pady=2)
+        grid.rowconfigure(1, weight=1)
+
+        ttk.Button(met_frame, text="Compute Metrics", command=self._compute_metrics_action).pack(pady=6)
+
+        self.metric_result_text = tk.Text(met_frame, height=7, wrap="word", state="disabled")
+        self.metric_result_text.pack(fill="both", expand=True, padx=5, pady=(0, 5))
+
+        # ================= ENRICHMENT =================
+        enrich_frame = tk.LabelFrame(tab, text="Enrichment")
+        enrich_frame.pack(fill="x", padx=10, pady=5)
+
+        # --- Storage-space re-run passes ---
+        pass_frame = tk.LabelFrame(enrich_frame, text="Storage-Space Passes (on an already-analyzed folder)")
+        pass_frame.pack(fill="x", padx=6, pady=(8, 5))
 
         btn_row = ttk.Frame(pass_frame)
-        btn_row.pack(fill="x", padx=5, pady=(0, 8))
+        btn_row.pack(fill="x", padx=5, pady=8)
         ttk.Button(btn_row, text="Re-run Abstract Analysis",
                    command=lambda: self._run_storage_pass("abstract")).pack(side="left", padx=4)
         ttk.Button(btn_row, text="Re-run Reference Extraction",
                    command=lambda: self._run_storage_pass("references")).pack(side="left", padx=4)
-        ttk.Button(btn_row, text="Build Evaluation DBs",
-                   command=lambda: self._run_storage_pass("evaluate")).pack(side="left", padx=4)
         ttk.Button(btn_row, text="Classify Titles",
                    command=lambda: self._run_storage_pass("classify_title")).pack(side="left", padx=4)
         ttk.Button(btn_row, text="Classify Abstracts",
@@ -941,8 +1031,8 @@ class AutomatedLiteratureUI(tk.Tk):
                    command=lambda: self._run_storage_pass("download_logs")).pack(side="left", padx=4)
 
         # --- DOI / metadata extraction (standalone, targets a selected file/folder) ---
-        doi_frame = tk.LabelFrame(tab, text="DOI / Metadata Extraction (standalone)")
-        doi_frame.pack(fill="x", padx=10, pady=5)
+        doi_frame = tk.LabelFrame(enrich_frame, text="DOI / Metadata Extraction (standalone)")
+        doi_frame.pack(fill="x", padx=6, pady=5)
 
         drow = ttk.Frame(doi_frame)
         drow.pack(fill="x", padx=5, pady=8)
@@ -960,8 +1050,8 @@ class AutomatedLiteratureUI(tk.Tk):
                   ).pack(anchor="w", padx=8, pady=(0, 6))
 
         # --- Publication title classification (on-demand, single title) ---
-        cls_frame = tk.LabelFrame(tab, text="Publication Title Classification")
-        cls_frame.pack(fill="x", padx=10, pady=5)
+        cls_frame = tk.LabelFrame(enrich_frame, text="Publication Title Classification")
+        cls_frame.pack(fill="x", padx=6, pady=5)
         crow = ttk.Frame(cls_frame)
         crow.pack(fill="x", padx=5, pady=8)
         ttk.Label(crow, text="Title:").pack(side="left", padx=5)
@@ -970,8 +1060,8 @@ class AutomatedLiteratureUI(tk.Tk):
         ttk.Button(crow, text="Classify Title", command=self._classify_title_action).pack(side="left", padx=5)
 
         # --- Question-scored classification (on-demand, multi-sheet) ---
-        qcls_frame = tk.LabelFrame(tab, text="Question-Scored Classification (on demand)")
-        qcls_frame.pack(fill="x", padx=10, pady=5)
+        qcls_frame = tk.LabelFrame(enrich_frame, text="Question-Scored Classification (on demand)")
+        qcls_frame.pack(fill="x", padx=6, pady=(5, 8))
 
         qrow = ttk.Frame(qcls_frame)
         qrow.pack(fill="x", padx=5, pady=(8, 2))
@@ -994,27 +1084,63 @@ class AutomatedLiteratureUI(tk.Tk):
         ttk.Button(qrow2, text="Browse...", command=lambda: self._browse_file(self.qscore_log_entry)).pack(side="left", padx=2)
         ttk.Label(qcls_frame, text="(Uses the 'Storage folder' above for registry source and managed output; scores each title against the full question set.)").pack(anchor="w", padx=8, pady=(0, 6))
 
-        # --- Text comparison metrics ---
-        met_frame = tk.LabelFrame(tab, text="Text Comparison Metrics (lexical overlap + edit distance)")
-        met_frame.pack(fill="both", expand=True, padx=10, pady=5)
+    def _run_evaluation_action(self):
+        """
+        Run the selected evaluation types over the shared storage space, against
+        the chosen target data (abstract / introduction / both). Substring
+        grounding goes through data_evaluator; lexical/distance/cosine go
+        through metric_evaluator. Everything is synced to SQL for overviews.
+        """
+        folder = self.eval_storage_entry.get().strip()
+        if not folder or not Path(folder).is_dir():
+            messagebox.showerror("Error", "Select a valid analyzed storage folder first (shared inputs above).")
+            return
+        clean_path = clean_folder_path(folder)
 
-        grid = ttk.Frame(met_frame)
-        grid.pack(fill="both", expand=True, padx=5, pady=5)
-        grid.columnconfigure(0, weight=1)
-        grid.columnconfigure(1, weight=1)
+        do_substring = self.eval_kind_vars["substring"].get()
+        metric_kinds = {k for k in ("lexical", "distance", "cosine") if self.eval_kind_vars[k].get()}
+        if not do_substring and not metric_kinds:
+            messagebox.showerror("Error", "Select at least one evaluation type.")
+            return
 
-        ttk.Label(grid, text="Reference text:").grid(row=0, column=0, sticky="w")
-        ttk.Label(grid, text="Candidate text:").grid(row=0, column=1, sticky="w")
-        self.metric_ref_text = tk.Text(grid, height=6, wrap="word")
-        self.metric_ref_text.grid(row=1, column=0, sticky="nsew", padx=(0, 4), pady=2)
-        self.metric_cand_text = tk.Text(grid, height=6, wrap="word")
-        self.metric_cand_text.grid(row=1, column=1, sticky="nsew", padx=(4, 0), pady=2)
-        grid.rowconfigure(1, weight=1)
+        choice = self.eval_target_var.get()
+        targets = ["abstract", "intro"] if choice == "both" else [choice]
+        print(f"[Evaluation] types: "
+              + ", ".join((["substring"] if do_substring else []) + sorted(metric_kinds))
+              + f" | target(s): {', '.join(targets)}")
 
-        ttk.Button(met_frame, text="Compute Metrics", command=self._compute_metrics_action).pack(pady=6)
+        def work(progress, should_cancel):
+            from alr.common.sql_store import sync_storage_to_sql
 
-        self.metric_result_text = tk.Text(met_frame, height=8, wrap="word", state="disabled")
-        self.metric_result_text.pack(fill="both", expand=True, padx=5, pady=(0, 5))
+            # Sync first so evaluation summaries land on existing SQL rows.
+            progress(text="Syncing storage into the review database…")
+            try:
+                sync_storage_to_sql(DataAnalyzeManager(clean_path))
+            except Exception as e:
+                print(f"[Database Sync] Skipped/failed: {e}")
+
+            n = 0
+            for t in targets:
+                label = "introduction" if t == "intro" else "abstract"
+                if should_cancel():
+                    break
+                if do_substring:
+                    progress(text=f"Substring grounding evaluation ({label})…")
+                    from alr.analysis_evaluation.data_evaluator import evaluate_space
+                    n = max(n, evaluate_space(
+                        clean_path, should_cancel=should_cancel, target=t,
+                        progress_callback=lambda d, tot, lab=label: progress(
+                            done=d, total=tot, text=f"Substring evaluation ({lab})  {d}/{tot}…")))
+                if metric_kinds and not should_cancel():
+                    progress(text=f"Metric evaluation ({', '.join(sorted(metric_kinds))}) — {label}…")
+                    from alr.analysis_evaluation.metric_evaluator import evaluate_space_metrics
+                    n = max(n, evaluate_space_metrics(
+                        clean_path, metric_kinds, target=t, should_cancel=should_cancel,
+                        progress_callback=lambda d, tot, lab=label: progress(
+                            done=d, total=tot, text=f"Metric evaluation ({lab})  {d}/{tot}…")))
+            return n
+
+        self._run_threaded(work, "Run Evaluation", "evaluated")
 
     def _run_doi_extraction_action(self):
         input_target = self.doi_input_entry.get().strip()

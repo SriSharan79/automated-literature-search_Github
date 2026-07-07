@@ -53,7 +53,8 @@ ENRICHMENT_COLUMNS = [
     "doi_link", "publisher", "container", "publication_year",
     "authors", "first_author", "publication_type", "classification",
     "abstract_classification", "evaluation_json", "evaluation_score",
-    "link", 
+    "intro_evaluation_json", "intro_evaluation_score", "metrics_json",
+    "link",
 ]
 
 # Full column order for the documents table.

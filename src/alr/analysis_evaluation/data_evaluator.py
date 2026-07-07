@@ -70,12 +70,15 @@ def _write_section_sheet_flat(file_path, sheet_name, data_entry):
         print(Fore.RED + f"❌ Failed to write to section sheet '{sheet_name}': {e}")
 
 
-def _update_master_overview(storage_dir, sheet_name, uuid, title, filename, text_content, true_count, false_count, full_section_entry):
-    """Updates the centralized Master Overview tracking true/false count per section and bulleted texts."""
-    
+def _update_master_overview(storage_dir, sheet_name, uuid, title, filename, text_content, true_count, false_count, full_section_entry, overview_path=None):
+    """
+    Updates the centralized Master Overview tracking true/false count per section
+    and bulleted texts. ``overview_path`` selects the workbook (defaults to the
+    abstract evaluation overview; the intro evaluation passes its own).
+    """
     VDB = Vec_DB_Manager(storage_dir)
     try:
-        master_overview_path = VDB.Abstract_Eval_Overview
+        master_overview_path = Path(overview_path) if overview_path else VDB.Abstract_Eval_Overview
         overview_sheet = "Overview"
         all_sheets = {}
 
@@ -132,17 +135,19 @@ def _update_master_overview(storage_dir, sheet_name, uuid, title, filename, text
 # =====================================================================
 
 
-def _sync_sections_for_uuid(UUID, title, file_name, json_data, sections, storage_path):
+def _sync_sections_for_uuid(UUID, title, file_name, json_data, sections, storage_path,
+                            text_key="Abstract Text identified:", overview_path=None):
     """
     Iterates through layout mappings to transform and evaluate section lists or
     strings. Returns a stats dict ``{section_key: {"true": t, "false": f}}`` that
     records, per section, how many extracted items were grounded in (a subset of)
-    the abstract text.
+    the reference text (``text_key`` -- the identified abstract or introduction
+    text). ``overview_path`` selects the master-overview workbook to update.
     """
     stats = {}
     for key, (ex_path, _) in sections.items():
         content_value = json_data.get(key, "Not Found")
-        abstract_text = json_data.get("Abstract Text identified:", "Not Found")
+        reference_text = json_data.get(text_key, "Not Found")
 
         if isinstance(content_value, list):
             t, f = _save_list_section(
@@ -152,8 +157,9 @@ def _sync_sections_for_uuid(UUID, title, file_name, json_data, sections, storage
                 ex_path=ex_path,
                 title=title,
                 file_name=file_name,
-                abs_txt=abstract_text,
-                storage_path=storage_path
+                abs_txt=reference_text,
+                storage_path=storage_path,
+                overview_path=overview_path
             )
         else:
             t, f = _save_single_section(
@@ -163,14 +169,15 @@ def _sync_sections_for_uuid(UUID, title, file_name, json_data, sections, storage
                 ex_path=ex_path,
                 title=title,
                 file_name=file_name,
-                abs_txt=abstract_text,
-                storage_path=storage_path
+                abs_txt=reference_text,
+                storage_path=storage_path,
+                overview_path=overview_path
             )
         stats[key] = {"true": t, "false": f}
     return stats
 
 
-def _save_list_section(UUID, key, content_list, ex_path, title, file_name, abs_txt, storage_path):
+def _save_list_section(UUID, key, content_list, ex_path, title, file_name, abs_txt, storage_path, overview_path=None):
     """
     Flattens lists horizontally using alternation layouts and uploads aggregate
     statistics. Always computes the true/false subset counts (returned for SQL),
@@ -207,13 +214,13 @@ def _save_list_section(UUID, key, content_list, ex_path, title, file_name, abs_t
     if not _is_duplicate_in_sheet(Path(ex_path), key, str(UUID)):
         _write_section_sheet_flat(Path(ex_path), key, entry)
         aggregate_bullets = "\n ".join(bullet_lines)
-        _update_master_overview(storage_path, key, UUID, title, file_name, aggregate_bullets, true_count, false_count, entry)
+        _update_master_overview(storage_path, key, UUID, title, file_name, aggregate_bullets, true_count, false_count, entry, overview_path=overview_path)
         print(Fore.GREEN + f"✅ Evaluated flat list '{key}' ({len(content_list)} items) for UUID: {UUID}")
 
     return true_count, false_count
 
 
-def _save_single_section(UUID, key, content_value, ex_path, title, file_name, abs_txt, storage_path):
+def _save_single_section(UUID, key, content_value, ex_path, title, file_name, abs_txt, storage_path, overview_path=None):
     """
     Saves single text objects cleanly mapping their matching criteria directly.
     Always computes the true/false subset counts (returned for SQL), but only
@@ -236,7 +243,7 @@ def _save_single_section(UUID, key, content_value, ex_path, title, file_name, ab
     if not _is_duplicate_in_sheet(Path(ex_path), key, str(UUID)):
         _write_section_sheet_flat(Path(ex_path), key, entry)
         # Save overview text and append sectional layout data onto a unique sheet inside Master_Overview.xlsx
-        _update_master_overview(storage_path, key, UUID, title, file_name, content_str, true_count, false_count, entry)
+        _update_master_overview(storage_path, key, UUID, title, file_name, content_str, true_count, false_count, entry, overview_path=overview_path)
         print(Fore.GREEN + f"✅ Evaluated single_section '{key}' for UUID: {UUID}")
 
     return true_count, false_count
@@ -251,34 +258,44 @@ def _eval_score(stats):
     return percent, total_true, total_false
 
 
-def _push_eval_to_sql(uuid, stats, db_path=None):
+# target -> (SQL json column, SQL score column) for the evaluation summary.
+_EVAL_SQL_COLUMNS = {
+    "abstract": ("evaluation_json", "evaluation_score"),
+    "intro": ("intro_evaluation_json", "intro_evaluation_score"),
+}
+
+
+def _push_eval_to_sql(uuid, stats, db_path=None, target="abstract"):
     """
     Write the evaluation summary (per-section subset counts + overall score) into
-    the SQLite document row, if that row exists. Returns True on update.
+    the SQLite document row, if that row exists. ``target`` selects the column
+    pair (abstract vs intro). Returns True on update.
     """
     import json as _json
     from alr.common.sql_store import AnalyzedDataStore, DB_PATH
 
+    json_col, score_col = _EVAL_SQL_COLUMNS[target]
     store = AnalyzedDataStore(db_path or DB_PATH)
     if not store.get_document(uuid):
         return False
     percent, _t, _f = _eval_score(stats)
     store.update_document(uuid, {
-        "evaluation_json": _json.dumps(stats),
-        "evaluation_score": "" if percent is None else str(percent),
+        json_col: _json.dumps(stats),
+        score_col: "" if percent is None else str(percent),
     })
     return True
 
 
-def _existing_evaluation(uuid, db_path=None):
+def _existing_evaluation(uuid, db_path=None, target="abstract"):
     """
     Return the stored per-section stats for ``uuid`` if this document has already
-    been evaluated (SQL ``evaluation_score`` present), else ``None``. Used by
-    ``mode="copy"`` to reuse a prior evaluation instead of recomputing.
+    been evaluated for ``target`` (its SQL score column is present), else ``None``.
+    Used by ``mode="copy"`` to reuse a prior evaluation instead of recomputing.
     """
     import json as _json
     from alr.common.sql_store import AnalyzedDataStore, DB_PATH
 
+    json_col, score_col = _EVAL_SQL_COLUMNS[target]
     try:
         store = AnalyzedDataStore(db_path or DB_PATH)
         row = store.get_document(uuid)
@@ -286,10 +303,10 @@ def _existing_evaluation(uuid, db_path=None):
         return None
     if not row:
         return None
-    score = row.get("evaluation_score")
+    score = row.get(score_col)
     if score is None or str(score).strip() in ("", "nan"):
         return None
-    raw = row.get("evaluation_json")
+    raw = row.get(json_col)
     if raw:
         try:
             return _json.loads(raw)
@@ -298,51 +315,99 @@ def _existing_evaluation(uuid, db_path=None):
     return {}  # score present but no detail: still counts as "already evaluated"
 
 
-def evaluate_document(storage_path, uuid, db_path=None, push_sql=True, mode="generate"):
+def _load_intro_json(MF, uuid):
+    """Load {uuid}_Intro.json from the space's Introduction data folder (or None)."""
+    import json as _json
+
+    path = Path(os.path.join(MF.AD_Intro, f"{uuid}_Intro.json"))
+    if not path.exists():
+        return None
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return _json.load(f)
+    except (OSError, _json.JSONDecodeError) as e:
+        print(Fore.YELLOW + f"⚠️ Could not read intro JSON for {uuid}: {e}")
+        return None
+
+
+def _load_recorded_intros(MF):
+    """UUIDs with a recorded introduction analysis (mirrors _load_recorded_abstracts)."""
+    from alr.common.excel_utils import extract_column
+
+    if MF.AD_Intro_log_path and Path(MF.AD_Intro_log_path).exists():
+        return extract_column(MF.AD_Intro_log_path, "UUID")
+    print(Fore.RED + "Introduction Log is not Available")
+    return []
+
+
+def evaluate_document(storage_path, uuid, db_path=None, push_sql=True, mode="generate", target="abstract"):
     """
     Evaluate one analyzed document (by ``uuid``): write its per-section evaluation
     Excel sheets and, when ``push_sql`` is set, mirror the summary into the SQLite
-    store (``evaluation_json`` / ``evaluation_score``) so overviews can use it.
+    store so overviews can use it.
+
+    ``target`` selects what is evaluated: ``"abstract"`` (default) grounds the 7
+    abstract sections against the identified abstract text (SQL columns
+    ``evaluation_json`` / ``evaluation_score``); ``"intro"`` grounds the analyzed
+    introduction keys (Background, Motivation, Gaps & Limitations, RQs & Scope)
+    against the identified introduction text (SQL columns
+    ``intro_evaluation_json`` / ``intro_evaluation_score``).
 
     ``mode="copy"`` reuses a prior evaluation when one already exists in SQL
     (skips recomputation); ``mode="generate"`` (default) always recomputes.
 
-    Returns the per-section stats dict, or ``None`` if the abstract JSON is missing.
+    Returns the per-section stats dict, or ``None`` if the source JSON is missing.
     Safe to call repeatedly: the Excel writes are idempotent per UUID.
     """
+    from alr.common.sections import build_intro_sections_eval_map, INTRO_TEXT_KEY, ABSTRACT_TEXT_KEY
+
     if mode == "copy":
-        prior = _existing_evaluation(uuid, db_path)
+        prior = _existing_evaluation(uuid, db_path, target=target)
         if prior is not None:
-            print(Fore.YELLOW + f"⏭️ Reusing existing evaluation for {uuid} (copy mode).")
+            print(Fore.YELLOW + f"⏭️ Reusing existing {target} evaluation for {uuid} (copy mode).")
             return prior
 
     MF = storage_path if isinstance(storage_path, DataAnalyzeManager) else DataAnalyzeManager(storage_path)
     VDB = Vec_DB_Manager(MF.folder)
-    sections = build_sections_eval_map(VDB)
+
+    if target == "intro":
+        sections = build_intro_sections_eval_map(VDB)
+        text_key = INTRO_TEXT_KEY
+        overview_path = VDB.Introduction_Eval_Overview
+        loader = _load_intro_json
+    else:
+        sections = build_sections_eval_map(VDB)
+        text_key = ABSTRACT_TEXT_KEY
+        overview_path = VDB.Abstract_Eval_Overview
+        loader = _load_abstract_json
 
     MF.update_id_files(uuid)
     title, file_name = _fetch_metadata(MF, uuid)
-    json_data = _load_abstract_json(MF, uuid)
+    json_data = loader(MF, uuid)
     if not json_data:
         return None
 
     stats = _sync_sections_for_uuid(
         UUID=uuid, title=title, file_name=file_name,
         json_data=json_data, sections=sections, storage_path=str(MF.folder),
+        text_key=text_key, overview_path=overview_path,
     )
     if push_sql:
         try:
-            _push_eval_to_sql(uuid, stats, db_path)
+            _push_eval_to_sql(uuid, stats, db_path, target=target)
         except Exception as e:
-            print(Fore.YELLOW + f"⚠️ Could not push evaluation to SQL for {uuid}: {e}")
+            print(Fore.YELLOW + f"⚠️ Could not push {target} evaluation to SQL for {uuid}: {e}")
     return stats
 
 
-def evaluate_space(storage_path, db_path=None, progress_callback=None, should_cancel=None, mode="generate") -> int:
+def evaluate_space(storage_path, db_path=None, progress_callback=None, should_cancel=None,
+                   mode="generate", target="abstract") -> int:
     """
     Evaluate every analyzed document in a storage space (build the evaluation Excel
     DBs and sync the summary into SQLite). Returns the number of documents evaluated.
 
+    ``target`` selects the data evaluated: ``"abstract"`` (default, documents from
+    the abstract log) or ``"intro"`` (documents from the introduction log).
     ``mode="copy"`` reuses prior evaluations already recorded in SQL (skips
     recompute); ``mode="generate"`` (default) recomputes. ``progress_callback(done,
     total)`` is called after each document if given, and ``should_cancel`` is
@@ -350,25 +415,25 @@ def evaluate_space(storage_path, db_path=None, progress_callback=None, should_ca
     """
     MF = storage_path if isinstance(storage_path, DataAnalyzeManager) else DataAnalyzeManager(storage_path)
 
-    recorded_abstracts = _load_recorded_abstracts(MF)
-    if not recorded_abstracts:
+    recorded = _load_recorded_intros(MF) if target == "intro" else _load_recorded_abstracts(MF)
+    if not recorded:
         return 0
 
     count = 0
-    total = len(recorded_abstracts)
-    for i, uuid in enumerate(recorded_abstracts, 1):
+    total = len(recorded)
+    for i, uuid in enumerate(recorded, 1):
         if should_cancel is not None and should_cancel():
             print("Evaluation cancelled by user.")
             break
         try:
-            evaluate_document(MF, uuid, db_path=db_path, push_sql=True, mode=mode)
+            evaluate_document(MF, uuid, db_path=db_path, push_sql=True, mode=mode, target=target)
             count += 1
         except Exception as e:
-            print(Fore.YELLOW + f"⚠️ Evaluation failed for {uuid}: {e}")
+            print(Fore.YELLOW + f"⚠️ {target.title()} evaluation failed for {uuid}: {e}")
         if progress_callback:
             progress_callback(i, total)
 
-    print(Fore.GREEN + f"✅ Evaluated {count} document(s); results synced to SQL.")
+    print(Fore.GREEN + f"✅ Evaluated {count} document(s) ({target}); results synced to SQL.")
     return count
 
 

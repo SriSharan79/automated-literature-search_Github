@@ -311,11 +311,39 @@ class Vec_DB_Manager:
         self.Abstract_Overview_folder.mkdir(exist_ok=True)
         
         self.Abstract_Overview = self.Abstract_Overview_folder / f"{current_date}_Abstract_Overview.xlsx"
-         
+
         self.Abstract_Eval_Overview = self.Abstract_Overview_folder / f"{current_date}_Abstract_Eval_Overview.xlsx"
-        
+        # Batch metric evaluation results: one workbook per metric kind plus a
+        # combined overview workbook holding all metric data together.
+        self.Abstract_Lexical_Metrics = self.Abstract_Overview_folder / f"{current_date}_Abstract_Lexical_Metrics.xlsx"
+        self.Abstract_Distance_Metrics = self.Abstract_Overview_folder / f"{current_date}_Abstract_Distance_Metrics.xlsx"
+        self.Abstract_Cosine_Metrics = self.Abstract_Overview_folder / f"{current_date}_Abstract_Cosine_Metrics.xlsx"
+        self.Abstract_Metrics_Overview = self.Abstract_Overview_folder / f"{current_date}_Abstract_Metrics_Overview.xlsx"
+
         self.Abstract_Eval = self.Abstract_DB / "Abstract_LLM_evaluation"
         self.Abstract_Eval.mkdir(exist_ok=True)
+
+        # Introduction DBs (evaluation of the analyzed-introduction JSONs,
+        # mirroring the abstract evaluation structure).
+        self.Introduction_DB = self.folder / "Introduction_DB"
+        self.Introduction_DB.mkdir(exist_ok=True)
+
+        self.Introduction_Eval = self.Introduction_DB / "Introduction_LLM_evaluation"
+        self.Introduction_Eval.mkdir(exist_ok=True)
+
+        self.Introduction_Eval_Overview = self.Introduction_DB / f"{current_date}_Introduction_Eval_Overview.xlsx"
+        # Batch metric evaluation results for introduction data (one workbook
+        # per metric kind + a combined overview workbook).
+        self.Introduction_Lexical_Metrics = self.Introduction_DB / f"{current_date}_Introduction_Lexical_Metrics.xlsx"
+        self.Introduction_Distance_Metrics = self.Introduction_DB / f"{current_date}_Introduction_Distance_Metrics.xlsx"
+        self.Introduction_Cosine_Metrics = self.Introduction_DB / f"{current_date}_Introduction_Cosine_Metrics.xlsx"
+        self.Introduction_Metrics_Overview = self.Introduction_DB / f"{current_date}_Introduction_Metrics_Overview.xlsx"
+
+        # Per-intro-section evaluation workbooks (see sections.INTRO_SECTIONS).
+        self.Background_Eval_excel = self.Introduction_Eval / "Background_Eval.xlsx"
+        self.Motivation_Eval_excel = self.Introduction_Eval / "Motivation_Eval.xlsx"
+        self.Gaps_Limitations_Eval_excel = self.Introduction_Eval / "Gaps_Limitations_Eval.xlsx"
+        self.RQs_Scope_Eval_excel = self.Introduction_Eval / "RQs_Scope_Eval.xlsx"
         
         self.results = self.folder/ "Querry_results"
         self.results.mkdir(exist_ok=True)
