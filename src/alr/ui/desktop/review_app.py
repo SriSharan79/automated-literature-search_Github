@@ -22,7 +22,7 @@ from tkinter import ttk, filedialog, messagebox
 
 from alr.common.sql_store import AnalyzedDataStore, sync_storage_to_sql, COLUMNS
 from alr.common.storage_scanner import detect_storage_spaces, find_download_logs
-from alr.common.file_manager import DataAnalyzeManager, ALR_overviews_folder
+from alr.common.file_manager import ALR_overviews_folder
 from alr.common.LLM_Config import get_stored_api_key
 from alr.ui.desktop.review_view import ReviewDataView, open_path
 
@@ -136,6 +136,7 @@ class ReviewApp:
         self._build_documents_tab()
         self._build_database_tab()
         self._build_overviews_tab()
+        self._build_help_tab()
 
     # ================================================================ Spaces
     def _build_spaces_tab(self):
@@ -166,7 +167,8 @@ class ReviewApp:
         ttk.Button(act, text="Link to database", command=self._link_selected).pack(side="left", padx=3)
         ttk.Button(act, text="Link ALL", command=self._link_all).pack(side="left", padx=3)
         ttk.Button(act, text="Extract DOI/metadata", command=self._doi_selected).pack(side="left", padx=3)
-        ttk.Button(act, text="Classify publications", command=self._classify_selected).pack(side="left", padx=3)
+        ttk.Button(act, text="Classify (title + abstract)", command=self._classify_selected).pack(side="left", padx=3)
+        ttk.Button(act, text="Evaluate data", command=self._evaluate_selected).pack(side="left", padx=3)
         ttk.Button(act, text="Open folder", command=self._open_selected_space).pack(side="right", padx=3)
 
         # Download logs
@@ -313,17 +315,52 @@ class ReviewApp:
                                    "Publication classification needs a BlaBla Door API key. "
                                    "Set it in the main application (API Keys…) first.")
             return
-        from alr.analysis_evaluation.publication_classification.classify_runner import classify_space
+        from alr.analysis_evaluation.publication_classification.classify_runner import (
+            classify_space, classify_abstract_space,
+        )
 
         def work(progress, should_cancel):
-            progress(text=f"Classifying publications in '{os.path.basename(s.path)}'…")
-            return classify_space(
+            # Make sure the space's documents exist in SQL first, otherwise
+            # classification finds nothing to work on.
+            progress(text=f"Syncing '{os.path.basename(s.path)}' into the database…")
+            sync_storage_to_sql(s.path, db_path=self.store.db_path)
+
+            progress(text="Classifying publications by title…")
+            n = classify_space(
                 s.path, db_path=self.store.db_path, should_cancel=should_cancel,
                 progress_callback=lambda done, total: progress(
-                    done=done, total=total, text=f"Classifying publications…  {done}/{total}"),
+                    done=done, total=total, text=f"Classifying by title…  {done}/{total}"),
             )
+            if should_cancel():
+                return n
+            progress(text="Classifying publications by abstract text…")
+            n += classify_abstract_space(
+                s.path, db_path=self.store.db_path, should_cancel=should_cancel,
+                progress_callback=lambda done, total: progress(
+                    done=done, total=total, text=f"Classifying by abstract…  {done}/{total}"),
+            )
+            return n
 
         self._run_threaded(work, "Classify publications", "classified")
+
+    def _evaluate_selected(self):
+        s = self._selected_space()
+        if not s:
+            return
+        from alr.analysis_evaluation.data_evaluator import evaluate_space
+
+        def work(progress, should_cancel):
+            # Sync first so the evaluation scores land on existing SQL rows.
+            progress(text=f"Syncing '{os.path.basename(s.path)}' into the database…")
+            sync_storage_to_sql(s.path, db_path=self.store.db_path)
+            progress(text="Evaluating analyzed data (section vs. abstract grounding)…")
+            return evaluate_space(
+                s.path, db_path=self.store.db_path, should_cancel=should_cancel,
+                progress_callback=lambda done, total: progress(
+                    done=done, total=total, text=f"Evaluating…  {done}/{total}"),
+            )
+
+        self._run_threaded(work, "Evaluate data", "evaluated")
 
     def _open_selected_space(self):
         s = self._selected_space()
@@ -424,7 +461,9 @@ class ReviewApp:
                            for p in st["per_space"][:6]) or "none"
         self.stats_label.config(text=(
             f"Total documents: {st['total']}    |    with abstract: {st['with_abstract']}    "
-            f"with DOI: {st['with_doi']}    classified: {st['with_classification']}\n"
+            f"with DOI: {st['with_doi']}    title-classified: {st['with_classification']}    "
+            f"abstract-classified: {st.get('with_abstract_classification', 0)}    "
+            f"evaluated: {st.get('with_evaluation', 0)}\n"
             f"distinct years: {st['distinct_years']}    distinct publication types: {st['distinct_types']}\n"
             f"storage spaces: {spaces}"))
         self._load_db_table()
@@ -586,16 +625,25 @@ class ReviewApp:
         cols, rows = self._overview_data()
         self._fill_tree(self.overview_tree, cols, rows, limit=2000)
         self._last_overview = (cols, rows)
+        self._preview_is_topic_counts = False
         self.overview_status.config(text=f"{len(rows)} row(s)" + (" (showing first 2000)" if len(rows) > 2000 else ""))
         if self._group_by():
             self._show_chart()
 
     def _export_overview(self, kind):
-        cols, rows = self._overview_data()
+        # When the preview currently shows topic counts, export exactly that --
+        # otherwise recomputing the flat/grouped overview would silently export
+        # a different table than the one on screen.
+        if getattr(self, "_preview_is_topic_counts", False) and getattr(self, "_last_overview", None):
+            cols, rows = self._last_overview
+            default_name = "topic_counts"
+        else:
+            cols, rows = self._overview_data()
+            default_name = "overview"
         if not rows:
             messagebox.showinfo("Nothing to export", "The overview is empty.")
             return
-        self._export_rows(cols, rows, "overview", kind)
+        self._export_rows(cols, rows, default_name, kind)
 
     def _export_rows(self, cols, rows, default_name, kind="xlsx"):
         os.makedirs(ALR_overviews_folder, exist_ok=True)
@@ -667,6 +715,7 @@ class ReviewApp:
         cols = ["topic", "count"]
         self._fill_tree(self.overview_tree, cols, data, limit=2000)
         self._last_overview = (cols, data)
+        self._preview_is_topic_counts = True
         label = "title" if column == "classification" else "abstract"
         self.overview_status.config(text=f"{len(data)} topic(s) from {label} classification")
         if not data:
@@ -766,6 +815,164 @@ class ReviewApp:
             return
         self._apply_spec(spec)
         self._preview_overview()
+
+    # ================================================================== Guide
+    # (title, body) blocks rendered into the Guide tab. Kept as data so the
+    # help text is easy to extend when features change.
+    HELP_SECTIONS = [
+        ("Quick start (typical workflow)",
+         "1. Storage Spaces tab -> 'Select folder…' and pick the folder that holds your "
+         "analysis results (e.g. ~/ALR DATA). Every recognized storage space is listed.\n"
+         "2. Select a space -> 'Link to database' (or 'Link ALL') to import it into the "
+         "shared SQLite database.\n"
+         "3. Optionally enrich: 'Extract DOI/metadata', 'Classify (title + abstract)', "
+         "'Evaluate data'.\n"
+         "4. Browse/edit in the Documents tab; inspect in the Database tab; build tables "
+         "and charts in the Overviews tab and export them."),
+
+        ("Storage Spaces — Select folder…",
+         "Recursively scans the chosen folder for analysis storage spaces (folders created "
+         "by a previous 'Analyze Literature' run). Status 'complete' means the space has a "
+         "processed-file registry AND at least one analyzed abstract; 'partial' means some "
+         "markers are missing. It also lists any *_download_log.xlsx files found.\n"
+         "Example: select 'D:/ALR DATA' -> 3 spaces found (2 complete, 1 partial), "
+         "1 download log."),
+
+        ("Storage Spaces — Link to database / Link ALL",
+         "Imports a space's registry + analyzed JSON files into the SQLite database so the "
+         "Documents/Database/Overviews tabs can see them. Safe to repeat: re-linking updates "
+         "rows to the latest data and never wipes enrichment (DOI/classification/evaluation) "
+         "already stored.\n"
+         "Example: select the 'LLM_Safety_Results' row -> 'Link to database' -> "
+         "'linked 42 document(s)'."),
+
+        ("Storage Spaces — Extract DOI/metadata",
+         "Reads each PDF's first pages, finds a DOI or arXiv id and looks up bibliographic "
+         "metadata (Crossref/arXiv): link, year, publisher, authors. Results go to the "
+         "space's dated DOI_Metadata workbook and into the database. Files whose DOI data "
+         "already exists (in the database or a previous dated file) are skipped and their "
+         "data is carried forward — only new PDFs cost network lookups.\n"
+         "Example: run it once -> 40/42 found; run it again next week after adding 3 PDFs "
+         "-> only the 3 new files are looked up."),
+
+        ("Storage Spaces — Classify (title + abstract)",
+         "Runs the publication classifier twice per document — once on the title, once on "
+         "the identified abstract text — against the aerospace/safety taxonomy (Systems "
+         "Engineering, Safety Engineering, Risk Assessment, Large Language Models, …). "
+         "Needs a BlaBla Door API key (set it in the main application). Results are stored "
+         "in the 'classification' and 'abstract_classification' columns and in today's "
+         "dated classification workbooks inside the space.\n"
+         "Example: after classifying, the Overviews tab filter 'Classification topic: "
+         "Large Language Models' returns every matching paper."),
+
+        ("Storage Spaces — Evaluate data",
+         "Checks, per analyzed section (Objective, Methodology, Results, …), whether the "
+         "extracted content is actually grounded in (a subset of) the abstract text, and "
+         "stores per-section true/false counts plus an overall percentage score "
+         "('evaluation_score') per document.\n"
+         "Example: a paper whose extracted sections all match its abstract scores 100.0; "
+         "check scores in the Database tab with:  SELECT title, evaluation_score FROM "
+         "documents ORDER BY evaluation_score."),
+
+        ("Storage Spaces — Import bibliographic data",
+         "Select one of the discovered *_download_log.xlsx files and click 'Import "
+         "bibliographic data'. Rows are matched by File_Name to documents already in the "
+         "database and fill link / authors / publication year / first author — only where "
+         "the document has no value yet.\n"
+         "Example: '2025-06-12_download_log.xlsx' -> 'Updated 17 document(s)'."),
+
+        ("Documents — browse & edit",
+         "Left: all documents in the database (Search matches title, filename or UUID — "
+         "e.g. type 'safety' and press Enter). Right: the selected document's sections, "
+         "editable. List sections (Results, Research Areas, Key Concepts) use ONE ITEM PER "
+         "LINE. 'Save Changes' writes edits back to the database. 'Open PDF' / 'Open "
+         "Abstract JSON' open the underlying files; 'Delete' removes only the database row "
+         "(files on disk stay). 'Sync from storage folder…' imports a space directly, and "
+         "'Export CSV/Excel…' saves the currently filtered list.\n"
+         "Example: search 'MBSE' -> select a paper -> fix a typo in Objective -> Save "
+         "Changes."),
+
+        ("Database — statistics & browser",
+         "The statistics panel shows totals (documents, with abstract, with DOI, "
+         "title/abstract-classified, evaluated) and per-space counts. The 'All documents' "
+         "table shows every column; the Filter box matches title/filename/UUID.\n"
+         "Example: after running 'Evaluate data', hit Refresh and watch the 'evaluated' "
+         "count rise."),
+
+        ("Database — SQL query (read-only)",
+         "Run a single SELECT over the 'documents' table (writes are blocked). "
+         "'Export result…' saves the result table.\n"
+         "Examples:\n"
+         "  SELECT title, publication_year FROM documents WHERE classification LIKE "
+         "'%Large Language Models%'\n"
+         "  SELECT publication_year, COUNT(*) AS n FROM documents GROUP BY publication_year "
+         "ORDER BY n DESC\n"
+         "  SELECT title, evaluation_score FROM documents WHERE evaluation_score <> '' "
+         "ORDER BY CAST(evaluation_score AS REAL) DESC"),
+
+        ("Overviews — columns & filters",
+         "Tick the columns you want, optionally set filters, then 'Preview'. Filters: "
+         "Storage folder (exact space), Year (e.g. 2023), Pub type (e.g. Journal Article), "
+         "Research area (substring), Classification topic (matches the title OR abstract "
+         "classification tags).\n"
+         "Example: columns title + publication_year + classification, filter Year=2024, "
+         "topic=Risk Assessment -> Preview -> Export Excel."),
+
+        ("Overviews — Group by & charts",
+         "Choose a 'Group by' column to turn the overview into value/count rows, drawn as "
+         "a bar or pie chart next to the table. 'Export chart…' saves it as PNG.\n"
+         "Example: Group by = publication_year, Chart = bar -> Preview -> a papers-per-year "
+         "bar chart appears."),
+
+        ("Overviews — Show topic counts",
+         "Classification tags are stored comma-joined per document ('Systems Engineering, "
+         "Risk Assessment'), so grouping by the classification column would count whole "
+         "combinations. 'Show topic counts' splits the tags and counts each topic once per "
+         "document — one row/bar per topic — from either the title or the abstract "
+         "classification, honouring the filters above. Export then saves exactly the "
+         "topic-count table shown.\n"
+         "Example: 'Topic counts from: Abstract classification' -> Show topic counts -> "
+         "Large Language Models 12, Safety Engineering 9, …"),
+
+        ("Overviews — templates",
+         "'Save…' stores the current column/filter/group-by/chart setup under a name; "
+         "'Load' restores it (and previews); 'Delete' removes it.\n"
+         "Example: save your monthly report layout as 'per-year LLM overview' and reload "
+         "it next month."),
+
+        ("Overviews — Build from description (LLM)",
+         "Type a plain-English request and let the LLM pick columns, filters and grouping "
+         "(needs a BlaBla Door API key). The result is applied to the controls, so you can "
+         "inspect/adjust it before exporting.\n"
+         "Examples:\n"
+         "  'count of documents per publication year for LLM papers'\n"
+         "  'title, year and authors of all Risk Assessment papers from 2023'"),
+    ]
+
+    def _build_help_tab(self):
+        tab = ttk.Frame(self.notebook)
+        self.notebook.add(tab, text="Guide")
+
+        txt = tk.Text(tab, wrap="word", padx=14, pady=10, borderwidth=0,
+                      background=ttk.Style().lookup("TFrame", "background") or "#f5f5f5")
+        vsb = ttk.Scrollbar(tab, orient="vertical", command=txt.yview)
+        txt.configure(yscrollcommand=vsb.set)
+        vsb.pack(side="right", fill="y")
+        txt.pack(side="left", fill="both", expand=True)
+
+        txt.tag_configure("h1", font=("TkDefaultFont", 13, "bold"), spacing3=6)
+        txt.tag_configure("h2", font=("TkDefaultFont", 10, "bold"), spacing1=10, spacing3=3)
+        txt.tag_configure("body", font=("TkDefaultFont", 9), spacing3=2, lmargin1=6, lmargin2=6)
+
+        txt.insert(tk.END, "Review Tool — feature guide\n", "h1")
+        txt.insert(tk.END, "How to use each feature, with examples. All data lives in the shared "
+                           "SQLite review database; storage spaces on disk stay untouched unless "
+                           "a feature says otherwise.\n", "body")
+        for title, body in self.HELP_SECTIONS:
+            txt.insert(tk.END, f"\n{title}\n", "h2")
+            txt.insert(tk.END, body + "\n", "body")
+        txt.config(state="disabled")
+        self.help_text = txt
 
     # ================================================================ shared
     def _refresh_all(self):

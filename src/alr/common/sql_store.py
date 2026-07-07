@@ -53,7 +53,7 @@ ENRICHMENT_COLUMNS = [
     "doi_link", "publisher", "container", "publication_year",
     "authors", "first_author", "publication_type", "classification",
     "abstract_classification", "evaluation_json", "evaluation_score",
-    "link", "pub_name",
+    "link", 
 ]
 
 # Full column order for the documents table.
@@ -286,6 +286,8 @@ class AnalyzedDataStore:
                 "with_abstract": one(_nonempty("abstract_text")),
                 "with_doi": one(_nonempty("doi_link")),
                 "with_classification": one(_nonempty("classification")),
+                "with_abstract_classification": one(_nonempty("abstract_classification")),
+                "with_evaluation": one(_nonempty("evaluation_score")),
                 "distinct_years": one(_nonempty("publication_year").replace("COUNT(*)", "COUNT(DISTINCT publication_year)")),
                 "distinct_types": one(_nonempty("publication_type").replace("COUNT(*)", "COUNT(DISTINCT publication_type)")),
                 "per_space": per_space,
@@ -349,8 +351,8 @@ class AnalyzedDataStore:
         """
         Merge bibliographic data from a download-log DataFrame into existing
         documents, matching the log's ``File_Name`` to a document ``filename``.
-        Fills link/authors/publication_year/first_author/pub_name (only where
-        the document currently has no value). Returns the number of rows updated.
+        Fills link/authors/publication_year/first_author (only where the
+        document currently has no value). Returns the number of rows updated.
         """
         # log column -> document column
         mapping = {
@@ -358,7 +360,6 @@ class AnalyzedDataStore:
             "Authors": "authors",
             "Publication Year": "publication_year",
             "First_Author": "first_author",
-            "Pub_Name": "pub_name",
         }
         updated = 0
         with self._connect() as conn:

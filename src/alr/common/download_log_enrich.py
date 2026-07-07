@@ -6,7 +6,7 @@ Identify bibliographic metadata for analyzed documents by scanning **all**
 ``*_download_log.xlsx`` workbooks under a root folder and fuzzy-matching each
 document's title against the log's ``Publication Name`` column (or, failing that,
 its filename against a file-name column). Matched metadata (link, authors,
-publication year, publisher/organization) is written into the SQLite store for
+first author, publication year) is written into the SQLite store for
 documents that do not already have those values.
 
 This complements :meth:`AnalyzedDataStore.merge_download_log`, which only does an
@@ -44,7 +44,6 @@ _METADATA_MAP = [
     (("authors", "author"), "authors"),
     (("firstauthor",), "first_author"),
     (("publicationyear", "year"), "publication_year"),
-    (("organization", "publisher", "pubname", "publicationname"), "pub_name"),
 ]
 
 

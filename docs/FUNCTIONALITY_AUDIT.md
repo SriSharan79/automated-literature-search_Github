@@ -19,8 +19,11 @@ reachable from the UI. It is meant as a backlog for surfacing existing value.
 
 The standalone **Review tool** (`alr.ui.desktop.review_app`, launched from the top bar or
 `review_main.py`) additionally covers: storage-space detection (complete/partial), DB linking,
-DOI + classification enrichment, a raw DB browser, read-only SQL, cross-space stats, and custom
-overviews (field-picker, filters, grouped charts, saved templates, natural-language requests).
+DOI enrichment, **title + abstract classification** and **data evaluation** per space (each
+synced to SQL first), a raw DB browser, read-only SQL, cross-space stats (incl.
+abstract-classified/evaluated counts), custom overviews (field-picker, filters, grouped charts,
+per-topic counts, saved templates, natural-language requests; exports match the previewed
+table), and a built-in **Guide tab** explaining every feature with examples.
 
 The CLI (`alr.ui.cli.pipeline`) exposes roughly the same Collect / Analyze / Visualize
 surface (now with model selection), plus it is the only place the console API-key prompt runs.
