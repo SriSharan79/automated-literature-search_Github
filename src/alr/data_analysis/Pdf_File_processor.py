@@ -273,7 +273,7 @@ def _register_failure(new_failed, file_path, error_Msg, failed_dest_root):
 
     # --- UPDATED: Move the file instead of copying ---
     try:
-        shutil.move(str(file_path), failed_dest_root)
+        shutil.copy2(str(file_path), failed_dest_root)
     except Exception as move_error:
         logger.warning(f"  ⚠️ Warning: Could not move file: {move_error}")
 
