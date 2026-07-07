@@ -1,5 +1,3 @@
-
-
 from alr.rag_builders.master_excel_db_builder import _sync_sections_master_for_uuid
 from alr.common.sections import*
 import json
@@ -118,7 +116,21 @@ def _sync_sections_VDB(VDB, sections):
             print(Fore.GREEN + f"   ✅ Created index and synced: {key}" + Style.RESET_ALL)
             
                 
-def generate_databases(Storage_path):
+def generate_databases(Storage_path, do_text: bool = True, do_vector: bool = True):
+    """
+    Sync the RAG databases for a storage space.
+
+    do_text:   sync the text databases (per-section JSON/Excel DBs + master
+               Excel overview) from the recorded abstracts.
+    do_vector: sync the FAISS vector DBs from the section JSON DBs. Note that
+               the vector sync reads the section JSON DBs written by the text
+               sync, so a vector-only run assumes the text DBs are up to date.
+
+    Both default to True, so existing callers keep the previous combined
+    behaviour. Both syncs are incremental: the text side upserts per UUID and
+    the vector side (see _sync_sections_VDB) only embeds/appends the strings
+    that are not yet in the index, instead of rebuilding from scratch.
+    """
     MF = DataAnalyzeManager(Storage_path)
     VDB = Vec_DB_Manager(Storage_path)    
     MASTER_EXCEL_FILE=VDB.Abstract_Overview
@@ -127,28 +139,30 @@ def generate_databases(Storage_path):
     if not recorded_abstracts:
         return
 
-    sections = build_sections_map(VDB)
-    Master_map = build_sections_master_map(VDB, MASTER_EXCEL_FILE)
+    if do_text:
+        sections = build_sections_map(VDB)
+        Master_map = build_sections_master_map(VDB, MASTER_EXCEL_FILE)
 
-    for UUID in recorded_abstracts:
-        MF.update_id_files(UUID)
+        for UUID in recorded_abstracts:
+            MF.update_id_files(UUID)
 
-        title, file_name = _fetch_metadata(MF, UUID)
-        json_data = _load_abstract_json(MF, UUID)
-        if not json_data:
-            continue
+            title, file_name = _fetch_metadata(MF, UUID)
+            json_data = _load_abstract_json(MF, UUID)
+            if not json_data:
+                continue
 
-        _sync_sections_for_uuid(
-            UUID=UUID,
-            title=title,
-            file_name=file_name,
-            json_data=json_data,
-            sections=sections
-        )
-        _sync_sections_master_for_uuid(UUID, title, file_name, json_data, Master_map) 
+            _sync_sections_for_uuid(
+                UUID=UUID,
+                title=title,
+                file_name=file_name,
+                json_data=json_data,
+                sections=sections
+            )
+            _sync_sections_master_for_uuid(UUID, title, file_name, json_data, Master_map) 
     
-    secs_VDB= build_sections_map_vdb(VDB)   
-    _sync_sections_VDB(VDB, secs_VDB)
+    if do_vector:
+        secs_VDB= build_sections_map_vdb(VDB)   
+        _sync_sections_VDB(VDB, secs_VDB)
 
 
 def generate_combined_databases(Source_path,Storage_path):
@@ -198,5 +212,3 @@ if __name__ == "__main__":
     generate_databases(storage_path)
     for S_path in Source_paths:
         generate_combined_databases(S_path,storage_path)
-
-

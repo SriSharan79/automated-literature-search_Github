@@ -500,7 +500,8 @@ class AutomatedLiteratureUI(tk.Tk):
             "references": tk.BooleanVar(value=False),
             "doi": tk.BooleanVar(value=True),
             "classification": tk.BooleanVar(value=True),
-            "rag": tk.BooleanVar(value=False),
+            "text_db": tk.BooleanVar(value=False),
+            "vector_db": tk.BooleanVar(value=False),
         }
         # Sections (incl. tables/images) is a required prerequisite -> checked + disabled.
         ttk.Checkbutton(comp_frame, text="Sections (incl. tables/images) — required",
@@ -510,8 +511,14 @@ class AutomatedLiteratureUI(tk.Tk):
         ttk.Checkbutton(comp_frame, text="References", variable=self.comp_vars["references"]).grid(row=1, column=0, sticky="w", padx=6, pady=3)
         ttk.Checkbutton(comp_frame, text="DOI / metadata", variable=self.comp_vars["doi"]).grid(row=1, column=1, sticky="w", padx=6, pady=3)
         ttk.Checkbutton(comp_frame, text="Classification", variable=self.comp_vars["classification"]).grid(row=1, column=2, sticky="w", padx=6, pady=3)
-        ttk.Checkbutton(comp_frame, text="Build Text + Vector DB (RAG)",
-                        variable=self.comp_vars["rag"]).grid(row=2, column=0, sticky="w", padx=6, pady=3)
+        # RAG database builds, now selectable separately. Both are incremental
+        # syncs (only missing entries/vectors are added, nothing is rebuilt from
+        # scratch). The vector DB is built FROM the text DB's section JSON files,
+        # so vector-only runs assume the text DB is already up to date.
+        ttk.Checkbutton(comp_frame, text="Build Text DB (RAG: section JSON + Excel)",
+                        variable=self.comp_vars["text_db"]).grid(row=2, column=0, sticky="w", padx=6, pady=3)
+        ttk.Checkbutton(comp_frame, text="Build Vector DB (RAG: FAISS embeddings)",
+                        variable=self.comp_vars["vector_db"]).grid(row=2, column=1, sticky="w", padx=6, pady=3)
 
         # Batch options
         batch_frame = ttk.Frame(tab)
@@ -567,11 +574,12 @@ class AutomatedLiteratureUI(tk.Tk):
         components = {c for c in ("abstract", "intro", "references") if self.comp_vars[c].get()}
         do_doi = self.comp_vars["doi"].get()
         do_classify = self.comp_vars["classification"].get()
-        do_rag = self.comp_vars["rag"].get()
+        do_text_db = self.comp_vars["text_db"].get()
+        do_vector_db = self.comp_vars["vector_db"].get()
         print(f"[Selection] Components: sections (required)"
               + "".join(f", {c}" for c in ("abstract", "intro", "references") if c in components)
               + (", doi/metadata" if do_doi else "") + (", classification" if do_classify else "")
-              + (", text+vector DB" if do_rag else ""))
+              + (", text DB" if do_text_db else "") + (", vector DB" if do_vector_db else ""))
 
         # Classification & Evaluation copy-vs-generate decision. When prior dated
         # data already exists for this storage space, ask ONCE per category (on the
@@ -756,12 +764,15 @@ class AutomatedLiteratureUI(tk.Tk):
                 except Exception as e:
                     print(f"[Classification] Skipped/failed: {e}")
 
-            # Build text DB + FAISS vector DB for RAG when requested (heavy; last).
-            if do_rag and not should_cancel():
-                progress(text="Building text + vector DB…")
+            # Build the RAG databases when requested (heavy; last). Text DB and
+            # vector DB are separate opt-ins; both syncs are incremental (see
+            # db_manager.generate_databases), so re-runs only add missing data.
+            if (do_text_db or do_vector_db) and not should_cancel():
+                parts = (["text DB"] if do_text_db else []) + (["vector DB"] if do_vector_db else [])
+                progress(text=f"Building {' + '.join(parts)}…")
                 try:
                     from alr.rag_builders.db_manager import generate_databases as build_rag_databases
-                    build_rag_databases(str(MF.folder))
+                    build_rag_databases(str(MF.folder), do_text=do_text_db, do_vector=do_vector_db)
                 except Exception as e:
                     print(f"[RAG DB] Skipped/failed: {e}")
 
@@ -1011,7 +1022,7 @@ class AutomatedLiteratureUI(tk.Tk):
                   text="(Each selected metric compares every extracted section item against the document's "
                        "identified abstract/introduction text. Results: per-section evaluation workbooks, one dated "
                        "workbook per metric kind plus a combined metrics-overview workbook in the space, and summary "
-                       "columns in the review database. Tip: run 'Build Text + Vector DB (RAG)' first so cosine "
+                       "columns in the review database. Tip: run 'Build Text DB' + 'Build Vector DB' (Analyze tab) first so cosine "
                        "reuses the stored vectors.)",
                   wraplength=860, justify="left").pack(anchor="w", padx=8, pady=(0, 6))
 
