@@ -15,7 +15,11 @@ from alr.collection.search_phrase_generator_utils import Keywords_Processing_wit
 from alr.collection.collection_system_prompts import KEYWORD_GENERATOR_PROMPT, SCOPE_DERIVATOR_PROMPT
 
 from alr.common.general_utils import Proccess_string_to_list
-from alr.common.llm_utils import list_available_models, set_selected_model, get_selected_model
+from alr.common.llm_utils import (
+    list_available_models, set_selected_model, get_selected_model,
+    list_embedding_models, set_selected_embedding_model, set_embedding_backend,
+    local_embedding_model_dir, embedding_model_repo_id,
+)
 from alr.common.LLM_Config import get_stored_api_key, set_api_key, KEY_ENV_NAMES
 from alr.common.sql_store import sync_storage_to_sql
 from alr.common import crash_logger
@@ -479,6 +483,12 @@ class AutomatedLiteratureUI(tk.Tk):
         ttk.Button(llm_frame, text="Choose Model...",
                    command=lambda: self._choose_model_action(self.llm_choice_an.get())
                    ).pack(side="left", padx=5)
+        
+        
+        # Embedding engine used to build/query the vector DBs (shared session
+        # setting - the same selector also appears on the Evaluate & Enrich tab
+        # and both stay in sync).
+        self._build_embedding_selector(llm_frame).pack(fill="x", padx=5, pady=(0, 5))
 
         # Components to extract (Sections incl. tables/images is required)
         comp_frame = tk.LabelFrame(tab, text="Components to Extract")
@@ -853,6 +863,11 @@ class AutomatedLiteratureUI(tk.Tk):
         self.visualize_storage_entry.pack(side="left", padx=5, pady=5)
         ttk.Button(db_path_frame, text="Browse...", command=lambda: self._browse_folder(self.visualize_storage_entry)).pack(side="left", padx=2, pady=5)
 
+        # Embedding engine used to build/query the vector DBs (shared session
+        # setting - the same selector also appears on the Evaluate & Enrich tab
+        # and both stay in sync).
+        self._build_embedding_selector(v_frame).pack(fill="x", padx=5, pady=(0, 5))
+
         # Query Formulation block structures
         query_frame = ttk.Frame(v_frame)
         query_frame.pack(fill="x", padx=5, pady=10)
@@ -953,6 +968,10 @@ class AutomatedLiteratureUI(tk.Tk):
                    command=lambda: self._choose_model_action(self.llm_choice_eval.get())
                    ).pack(side="left", padx=5)
         ttk.Label(llm_row, text="(used by Classify Titles / Classify Abstracts)").pack(side="left", padx=5)
+
+        # Embedding engine (used by the cosine-similarity evaluation and by
+        # vector-DB builds/queries; kept in sync with the Visualize tab copy).
+        self._build_embedding_selector(shared).pack(fill="x", padx=5, pady=(0, 8))
 
         # ================= EVALUATION =================
         eval_frame = tk.LabelFrame(tab, text="Evaluation (batch, over the storage space above)")
@@ -1529,6 +1548,147 @@ class AutomatedLiteratureUI(tk.Tk):
             dialog.destroy()
 
         ttk.Button(dialog, text="Use Selected Model", command=_on_confirm).pack(pady=10)
+
+    # ==========================================
+    # EMBEDDING ENGINE SELECTION (vector DBs / cosine similarity)
+    # ==========================================
+    def _build_embedding_selector(self, parent):
+        """
+        Build one 'Embedding Engine' selector row inside `parent`.
+
+        All instances share the same tk variables, so the copies on the
+        Visualize tab and on the Evaluate & Enrich tab always show the same
+        state. Changing any of them updates the session-wide embedding backend
+        (llm_utils.set_embedding_backend) used by cosine evaluation, RAG
+        vector-DB builds and vector queries via vector_db_updater.
+        """
+        if not hasattr(self, "embed_method_var"):
+            # Same deployment-aware default as vector_db_updater: local model
+            # if its weights exist on disk (or the env var forces a method),
+            # otherwise the remote embedding API.
+            override = os.getenv("ALR_EMBEDDING_METHOD", "").strip().lower()
+            if override in ("local", "api"):
+                default_method = "Local" if override == "local" else "API"
+            else:
+                has_local = bool(local_embedding_model_dir) and os.path.isdir(local_embedding_model_dir)
+                default_method = "Local" if has_local else "API"
+            default_service = "B" if "blabla" in os.getenv("ALR_EMBEDDING_SERVICE", "").lower() else "O"
+
+            self.embed_method_var = tk.StringVar(value=default_method)
+            self.embed_service_var = tk.StringVar(value=default_service)
+            self.embed_model_var = tk.StringVar(value="")
+            self._embed_service_boxes = []
+            self._embed_model_buttons = []
+            # Embedding model chosen this session, per service code ('O'/'B').
+            self._embed_model_choice = {"O": None, "B": None}
+
+        row = ttk.Frame(parent)
+        ttk.Label(row, text="Embedding Engine:").pack(side="left", padx=5)
+        method_box = ttk.Combobox(row, values=["Local", "API"], width=7, state="readonly",
+                                  textvariable=self.embed_method_var)
+        method_box.pack(side="left", padx=5)
+        method_box.bind("<<ComboboxSelected>>", lambda e: self._apply_embedding_backend())
+
+        ttk.Label(row, text="Service:").pack(side="left", padx=(10, 2))
+        service_box = ttk.Combobox(row, values=["O", "B"], width=5, state="readonly",
+                                   textvariable=self.embed_service_var)
+        service_box.pack(side="left", padx=5)
+        service_box.bind("<<ComboboxSelected>>", lambda e: self._apply_embedding_backend())
+
+        model_btn = ttk.Button(row, text="Choose Embedding Model...",
+                               command=self._choose_embedding_model_action)
+        model_btn.pack(side="left", padx=5)
+        ttk.Label(row, textvariable=self.embed_model_var).pack(side="left", padx=5)
+
+        self._embed_service_boxes.append(service_box)
+        self._embed_model_buttons.append(model_btn)
+        self._apply_embedding_backend()
+        return row
+
+    def _apply_embedding_backend(self):
+        """
+        Push the widgets' state into the session-wide embedding backend and
+        enable/disable the API-only controls (service box + model button).
+        """
+        method = "local" if self.embed_method_var.get() == "Local" else "api"
+        service_code = self.embed_service_var.get().upper()
+        service = "DLR Ollama" if service_code == "O" else "BlaBla"
+        set_embedding_backend(method=method, service=service)
+
+        box_state = "readonly" if method == "api" else "disabled"
+        btn_state = "normal" if method == "api" else "disabled"
+        for box in self._embed_service_boxes:
+            box.configure(state=box_state)
+        for btn in self._embed_model_buttons:
+            btn.configure(state=btn_state)
+
+        if method == "local":
+            self.embed_model_var.set(f"(model: {embedding_model_repo_id}, local GPU/CPU)")
+        else:
+            chosen = self._embed_model_choice.get(service_code)
+            self.embed_model_var.set(f"(model: {chosen})" if chosen else "(model: auto - service default)")
+
+    def _choose_embedding_model_action(self):
+        """
+        Fetch the live list of embedding models for the selected embedding
+        service ('O' = DLR Ollama, 'B' = Blablador), let the user pick one, and
+        store it as the session embedding model. Mirrors _choose_model_action.
+        """
+        service_code = self.embed_service_var.get().upper()
+        service = "DLR Ollama" if service_code == "O" else "BlaBla"
+
+        print(f"Fetching available {service} embedding models...")
+        try:
+            models = list_embedding_models(service)
+        except Exception as e:
+            messagebox.showerror("Model list failed", f"Could not fetch embedding models for {service}:\n{e}")
+            return
+
+        if not models:
+            messagebox.showwarning(
+                "No embedding models",
+                f"No embedding models returned for {service}.\n"
+                f"Keeping current: {self._embed_model_choice.get(service_code) or 'auto (service default)'}")
+            return
+
+        current = self._embed_model_choice.get(service_code)
+
+        dialog = tk.Toplevel(self)
+        dialog.title(f"Select {service} Embedding Model")
+        dialog.geometry("560x400")
+        dialog.transient(self)
+        dialog.grab_set()
+
+        ttk.Label(dialog, text=f"Available {service} embedding models (current: {current or 'auto'}):",
+                  font=("Arial", 10, "bold")).pack(padx=10, pady=8, anchor="w")
+
+        list_frame = ttk.Frame(dialog)
+        list_frame.pack(fill="both", expand=True, padx=10, pady=5)
+        scrollbar = ttk.Scrollbar(list_frame, orient="vertical")
+        listbox = tk.Listbox(list_frame, yscrollcommand=scrollbar.set)
+        scrollbar.config(command=listbox.yview)
+        scrollbar.pack(side="right", fill="y")
+        listbox.pack(side="left", fill="both", expand=True)
+
+        for m in models:
+            listbox.insert(tk.END, m)
+        if current in models:
+            idx = models.index(current)
+            listbox.selection_set(idx)
+            listbox.see(idx)
+
+        def _on_confirm():
+            sel = listbox.curselection()
+            if not sel:
+                messagebox.showinfo("No selection", "Please select a model, or close the dialog to keep the current one.")
+                return
+            chosen = models[sel[0]]
+            set_selected_embedding_model(service, chosen)
+            self._embed_model_choice[service_code] = chosen
+            self._apply_embedding_backend()
+            dialog.destroy()
+
+        ttk.Button(dialog, text="Use Selected Embedding Model", command=_on_confirm).pack(pady=10)
 
 
 if __name__ == "__main__":

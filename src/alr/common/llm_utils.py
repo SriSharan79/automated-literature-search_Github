@@ -209,6 +209,40 @@ def set_selected_embedding_model(service: str, model: str) -> None:
     print(Fore.GREEN + f"✅ {service} embedding model set to: {model}" + Style.RESET_ALL)
 
 
+# Session-wide embedding backend selection (set from the desktop UI).
+#   method:  'local' (GPU/CPU HuggingFace model) or 'api' (remote /embeddings).
+#            None means "not chosen yet" -> vector_db_updater keeps using its
+#            deployment-aware default (local when the weights exist on disk).
+#   service: 'BlaBla' or 'DLR Ollama' (only relevant when method == 'api').
+SELECTED_EMBEDDING_BACKEND = {"method": None, "service": None}
+
+
+def set_embedding_backend(method: str = None, service: str = None) -> None:
+    """
+    Set the session-wide embedding backend used by vector_db_updater's
+    vectorize_strings()/search_similar() defaults (cosine evaluation, RAG
+    vector-DB builds, vector queries). Pass only what you want to change.
+    """
+    if method is not None:
+        method = str(method).strip().lower()
+        if method not in ("local", "api"):
+            raise ValueError(f"Unknown embedding method '{method}'. Expected 'local' or 'api'.")
+        SELECTED_EMBEDDING_BACKEND["method"] = method
+    if service is not None:
+        if service not in ("BlaBla", "DLR Ollama"):
+            raise ValueError(f"Unknown service '{service}'. Expected 'BlaBla' or 'DLR Ollama'.")
+        SELECTED_EMBEDDING_BACKEND["service"] = service
+    print(Fore.GREEN
+          + f"✅ Embedding backend set to: method={SELECTED_EMBEDDING_BACKEND['method']}, "
+          + f"service={SELECTED_EMBEDDING_BACKEND['service']}"
+          + Style.RESET_ALL)
+
+
+def get_embedding_backend() -> dict:
+    """Return the current session embedding-backend selection (copy)."""
+    return dict(SELECTED_EMBEDDING_BACKEND)
+
+
 def get_embedding(
     text,
     service: str,
@@ -242,6 +276,28 @@ def get_embedding(
 
     inputs = text if isinstance(text, list) else [text]
     resolved_model = model or get_default_embedding_model(service)
+    
+    time.sleep(3)
+        
+    # --- RATE LIMITER LOGIC ---
+    current_time = time.time()
+    
+    # If we have already hit our 20 request capacity, check the oldest request
+    if len(REQUEST_TIMES) == 10:
+        oldest_request_time = REQUEST_TIMES[0]
+        elapsed_since_oldest = current_time - oldest_request_time
+        
+        # If the oldest request happened less than 60 seconds ago, we must wait
+        if elapsed_since_oldest < 60:
+            sleep_time = 60 - elapsed_since_oldest
+            print(Fore.YELLOW + f"⚠️ Rate limit approaching. Sleeping for {sleep_time:.2f} seconds..." + Style.RESET_ALL)
+            time.sleep(sleep_time)
+            
+    # Record the current timestamp for this request execution
+    REQUEST_TIMES.append(time.time())
+    # --------------------------
+
+    start_time = time.time()
 
     if service == "BlaBla":
         base_url = BLABLADOR_BASE_URL
@@ -1023,6 +1079,102 @@ def llm_call(prompt: str, system_prompt: str, service: str, model: str = None):
         return error_msg  # Return the error so the app doesn't crash downstream
 
     return response
+
+
+# ---------------------------------------------------------------------------
+# Main embedding call (timeout + cross-service fallback, mirrors llm_call)
+# ---------------------------------------------------------------------------
+def blabla_ask_embedding(texts):
+    """Embed via Blablador using the session-selected embedding model."""
+    return get_embedding(texts, service="BlaBla")
+
+
+def Ollama_ask_embedding(texts):
+    """Embed via DLR Ollama using the session-selected embedding model."""
+    return get_embedding(texts, service="DLR Ollama")
+
+
+def local_ask_embedding(texts):
+    """Embed via the local HuggingFace model; same result shape as get_embedding()."""
+    inputs = texts if isinstance(texts, list) else [texts]
+    vecs = vectorize_strings_local(inputs)
+    return {
+        "model": f"local:{embedding_model_repo_id}",
+        "service": "local",
+        "embeddings": vecs.tolist(),
+        "raw": None,
+    }
+
+
+def _normalize_embedding_service_code(service: str) -> str:
+    """Map 'B'/'BlaBla'/'O'/'DLR Ollama'/'L'/'local' (any case) to 'b'/'o'/'l'."""
+    s = str(service or "").strip().lower()
+    if s in ("b", "blabla", "blablador", "blabla door"):
+        return "b"
+    if s in ("o", "ollama", "dlr ollama"):
+        return "o"
+    if s in ("l", "local"):
+        return "l"
+    return s
+
+
+# Main embedding call method (built the same way as llm_call above)
+def embedding_call(texts, service: str, model: str = None, timeout: int = 120):
+    """
+    Get embeddings with timeout + fallback, mirroring llm_call():
+
+      'B' -> Blablador /embeddings; on timeout/error falls back to DLR Ollama.
+      'O' -> DLR Ollama /embeddings; on timeout/error falls back to Blablador.
+      'L' -> local HuggingFace embedding model (no remote fallback).
+
+    Long service names ("BlaBla", "DLR Ollama", "local") are accepted too.
+
+    Returns the get_embedding()-style dict, or None when the service AND its
+    fallback both failed/timed out. IMPORTANT: check result["service"] /
+    result["model"] - when the fallback kicked in they differ from the
+    requested service, and the vectors then live in a DIFFERENT embedding
+    space (never mix them into a FAISS index built with another model).
+    """
+    s = _normalize_embedding_service_code(service)
+
+    # Optional per-call model override: record it as the session selection for
+    # the targeted service (same pattern as llm_call + set_selected_model).
+    if model:
+        if s == 'b':
+            set_selected_embedding_model("BlaBla", model)
+        elif s == 'o':
+            set_selected_embedding_model("DLR Ollama", model)
+
+    # Service calling logic with timeout and fallback
+    if s == 'b':
+        # If service B (blabla) fails or times out, fallback to Ollama (o)
+        response = timeout_function(
+            blabla_ask_embedding, (texts,), timeout=timeout,
+            fallback=lambda texts: timeout_function(Ollama_ask_embedding, (texts,), timeout=timeout, fallback=None))
+        requested = "BlaBla"
+    elif s == 'o':
+        # If service O (Ollama) fails or times out, fallback to Blabla (b)
+        response = timeout_function(
+            Ollama_ask_embedding, (texts,), timeout=timeout,
+            fallback=lambda texts: timeout_function(blabla_ask_embedding, (texts,), timeout=timeout, fallback=None))
+        requested = "DLR Ollama"
+    elif s == 'l':
+        # Local embedding model call (no remote fallback, matching llm_call 'L')
+        response = local_ask_embedding(texts)
+        requested = "local"
+    else:
+        error_msg = "Error: Invalid embedding service. Use 'B', 'O', or 'L'."
+        print(error_msg)
+        return None
+
+    if response and response.get("service") and response["service"] != requested:
+        print(Fore.YELLOW
+              + f"⚠️ Embedding fallback used: requested '{requested}' but vectors came from "
+              + f"'{response['service']}' (model={response.get('model')}). These vectors are in a "
+              + "different embedding space - rebuild/query FAISS indexes with a consistent backend."
+              + Style.RESET_ALL)
+    return response
+
 
 # print(llm_call('hi','','o'))
 if __name__ == "__main__":

@@ -22,6 +22,8 @@ from alr.common.llm_utils import (
     DEFAULT_EMBEDDING_MODEL,
     local_embedding_model_dir,
     embedding_model_repo_id,
+    embedding_call,
+    get_embedding_backend,
 )
 
 # Which embedding method to use by default:
@@ -51,6 +53,30 @@ EMBEDDING_METHOD = _resolve_default_embedding_method()
 EMBEDDING_SERVICE = os.getenv("ALR_EMBEDDING_SERVICE", "DLR Ollama")  # only used when method == "api"
 
 
+def _current_backend() -> tuple:
+    """
+    Resolve the effective (method, service) at call time. A session selection
+    made in the desktop UI (llm_utils.set_embedding_backend) wins over the
+    deployment-aware module defaults above. Resolving at call time (instead of
+    baking EMBEDDING_METHOD into def-time defaults) is what makes the UI
+    dropdowns take effect for all downstream callers.
+    """
+    sel = get_embedding_backend()
+    return (sel.get("method") or EMBEDDING_METHOD, sel.get("service") or EMBEDDING_SERVICE)
+
+
+# Backend that actually produced the most recent vectors from
+# vectorize_strings(). This can differ from the *requested* backend when
+# embedding_call's timeout/fallback switched services, so index metadata is
+# written from here (the truth) rather than from the request parameters.
+LAST_EMBEDDING_BACKEND = {"method": None, "service": None, "model": None, "dim": None}
+
+
+def _record_last_backend(method, service, model, dim) -> None:
+    LAST_EMBEDDING_BACKEND.update(
+        {"method": method, "service": service, "model": model, "dim": int(dim) if dim else None})
+
+
 # ---------------------------------------------------------------------------
 # Index <-> embedding-backend metadata
 # ---------------------------------------------------------------------------
@@ -77,12 +103,25 @@ def _recorded_model(method: str, service: str, model: str = None) -> str:
 
 
 def write_index_metadata(index_file, method, service, model, dim) -> None:
-    meta = {
-        "method": method,
-        "service": service if method == "api" else None,
-        "model": _recorded_model(method, service, model),
-        "dim": int(dim),
-    }
+    # Prefer the backend that actually produced the most recent vectors: with
+    # embedding_call's timeout/fallback the vectors may come from a different
+    # service/model than the one requested, and the metadata must record what
+    # really built the index.
+    last = LAST_EMBEDDING_BACKEND
+    if last.get("model") and last.get("dim") == int(dim):
+        meta = {
+            "method": last.get("method") or method,
+            "service": last.get("service") if (last.get("method") or method) == "api" else None,
+            "model": last["model"],
+            "dim": int(dim),
+        }
+    else:
+        meta = {
+            "method": method,
+            "service": service if method == "api" else None,
+            "model": _recorded_model(method, service, model),
+            "dim": int(dim),
+        }
     try:
         with open(_meta_path(index_file), "w", encoding="utf-8") as f:
             json.dump(meta, f, indent=2)
@@ -114,7 +153,13 @@ def _validate_query_against_index(index_file, method, service, model, query_dim)
             f"with the same embedding method/model, or query with the matching backend."
         )
 
-    query_model = _recorded_model(method, service, model)
+    # The query vector was just produced by vectorize_strings(), so the
+    # last-used record identifies the real query backend (including fallbacks).
+    last = LAST_EMBEDDING_BACKEND
+    if last.get("model") and last.get("dim") == int(query_dim):
+        query_model = last["model"]
+    else:
+        query_model = _recorded_model(method, service, model)
     if meta.get("model") and query_model and meta["model"] != query_model:
         print(
             Fore.RED
@@ -127,8 +172,8 @@ def _validate_query_against_index(index_file, method, service, model, query_dim)
 
 def vectorize_strings(
     input_strings: list[str],
-    method: str = EMBEDDING_METHOD,
-    service: str = EMBEDDING_SERVICE,
+    method: str = None,
+    service: str = None,
     model: str = None,
     max_length: int = 512,
     batch_size: int = 32,
@@ -136,31 +181,61 @@ def vectorize_strings(
     """
     Get embedding vectors for a list of strings.
 
-    method='local' (default): uses the local GPU/CPU HuggingFace model via
+    method/service default to None and are resolved AT CALL TIME against the
+    session selection made in the UI (llm_utils.set_embedding_backend), falling
+    back to the deployment-aware module defaults - so the embedding-engine
+    dropdowns in main_window take effect everywhere without touching callers.
+
+    method='local': local GPU/CPU HuggingFace model via
         llm_utils.vectorize_strings_local() - same behaviour/weights as before.
-    method='api': calls the remote embedding API via llm_utils.get_embedding()
-        (DLR Ollama / Blablador), batched, then L2-normalises the result
-        client-side so cosine similarity == inner product (matches the FAISS
-        IndexFlatIP index built below).
+        If loading/inference fails (e.g. weights missing in the packaged
+        Windows build), it falls back to the API path below with a warning.
+    method='api': remote embedding call via llm_utils.embedding_call(), which
+        wraps get_embedding() with a timeout and cross-service fallback the
+        same way llm_call() does for chat (B <-> O). Results are batched and
+        L2-normalised client-side so cosine similarity == inner product
+        (matches the FAISS IndexFlatIP index built below).
     """
+    default_method, default_service = _current_backend()
+    method = (method or default_method).strip().lower()
+    service = service or default_service
+
     if not input_strings:
         return np.zeros((0, 0), dtype=np.float32)
 
     if method == "local":
-        return vectorize_strings_local(input_strings, max_length=max_length)
+        try:
+            vectors = vectorize_strings_local(input_strings, max_length=max_length)
+            _record_last_backend("local", "local", f"local:{embedding_model_repo_id}", vectors.shape[1])
+            return vectors
+        except Exception as e:
+            print(Fore.YELLOW
+                  + f"⚠️ Local embedding model failed ({e}); falling back to API service '{service}'."
+                  + Style.RESET_ALL)
+            method = "api"
 
     if method == "api":
-        resolved_model = model or get_default_embedding_model(service)
+        service_code = "B" if service == "BlaBla" else "O"
         all_embeddings = []
+        actual_service, actual_model = service, model
         for i in range(0, len(input_strings), batch_size):
             batch = input_strings[i:i + batch_size]
-            result = get_embedding(batch, service=service, model=resolved_model)
+            # Timeout + cross-service fallback (mirrors llm_call); returns None
+            # only when the requested service AND its fallback both failed.
+            result = embedding_call(batch, service_code, model=model)
+            if not result or not result.get("embeddings"):
+                raise RuntimeError(
+                    f"Embedding call failed for service '{service}' and its fallback "
+                    f"(batch {i}-{i + len(batch)} of {len(input_strings)} strings).")
+            actual_service = result.get("service", service)
+            actual_model = result.get("model", model)
             all_embeddings.extend(result["embeddings"])
 
         vectors = np.array(all_embeddings, dtype=np.float32)
         norms = np.linalg.norm(vectors, axis=1, keepdims=True)
         norms[norms == 0] = 1.0
         vectors = vectors / norms
+        _record_last_backend("api", actual_service, actual_model, vectors.shape[1])
         return vectors
 
     raise ValueError(f"Unknown embedding method '{method}'. Expected 'local' or 'api'.")
@@ -175,8 +250,12 @@ def create_faiss_index_cosine(vectors: np.ndarray) -> "faiss.Index":
     return index
 
 
-def save_index_file(index, file_path, method: str = EMBEDDING_METHOD, service: str = EMBEDDING_SERVICE, model: str = None):
+def save_index_file(index, file_path, method: str = None, service: str = None, model: str = None):
     import faiss
+
+    default_method, default_service = _current_backend()
+    method = method or default_method
+    service = service or default_service
 
     # Validate index
     if index is None or not hasattr(index, "ntotal"):
@@ -212,12 +291,16 @@ def load_index_file(file_path):
 def add_new_strings_to_index(
     index_file: str,
     new_strings: list[str],
-    method: str = EMBEDDING_METHOD,
-    service: str = EMBEDDING_SERVICE,
+    method: str = None,
+    service: str = None,
     model: str = None,
     max_length: int = 512,
 ):
     import faiss
+
+    default_method, default_service = _current_backend()
+    method = method or default_method
+    service = service or default_service
 
     # Normalise file_path to a real string
     if index_file is None:
@@ -257,11 +340,15 @@ def search_similar(
     index_file: str,
     query: str,
     top_k: int = 5,
-    method: str = EMBEDDING_METHOD,
-    service: str = EMBEDDING_SERVICE,
+    method: str = None,
+    service: str = None,
     model: str = None,
     max_length: int = 512,
 ):
+    default_method, default_service = _current_backend()
+    method = method or default_method
+    service = service or default_service
+
     index = load_index_file(index_file)
     qvec = vectorize_strings([query], method=method, service=service, model=model, max_length=max_length)
     # Fail loudly if the query backend does not match the one that built the index.
