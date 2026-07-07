@@ -8,11 +8,14 @@ Automated Literature Review app. Bundled by PyInstaller as a second executable
 
 import tkinter as tk
 
+from alr.common import crash_logger
 from alr.ui.desktop.review_app import ReviewApp
 
 
 def main():
+    crash_logger.install("Automated Literature Review — Review Tool")
     root = tk.Tk()
+    crash_logger.attach_to_tk(root)
     root.title("Automated Literature Review — Review Tool")
     root.geometry("1050x760")
     ReviewApp(root)

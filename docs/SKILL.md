@@ -1,6 +1,6 @@
 ---
 name: alr-development
-description: Working method for the alr package (Tkinter UI, SQLite store, Docling pipeline, dated Excel workbooks) — how to decompose requests, what to verify before claiming done, and the project-specific traps. Distilled from the precheck/per-document-pipeline and evaluation-metrics sessions.
+description: Working method for the alr package (Tkinter UI, SQLite store, Docling pipeline, dated Excel workbooks) — how to decompose requests, what to verify before claiming done, and the project-specific traps. Distilled from the precheck/per-document-pipeline sessions.
 ---
 
 # How I actually worked through this project
@@ -134,56 +134,3 @@ commit, and expect the next message after a push to be an unrelated new feature.
 task-list entries from prior features get deleted, not reused — the plan file may also be
 stale from a previous session (Write fails on unread files; read a few lines, then
 overwrite).
-
-## 11. Degrade per-metric, never per-batch — and prove it under the sandbox
-
-The venv ships without nltk's punkt data, so `calculate_bleu_score` raises `LookupError`
-on first use — which would have aborted a whole evaluation batch for one optional metric.
-The pattern in `metric_evaluator.py`: a one-time `_ensure_punkt()` that *attempts* a quiet
-`nltk.download("punkt"/"punkt_tab")`, plus every individual metric call wrapped in
-try/except that records `None` for that cell and moves on. The sandbox then blocked the
-download during testing (SSL error) — and that accident was the real test: BLEU came back
-None, every other column filled, batch completed. Write batch tests assuming network
-*will* fail; if the design is right, that's a pass, not a flake. Related import trap:
-`Distance_w_Structural _Alignment.py` has a space in the filename, so a plain `import`
-is a SyntaxError — load it with
-`importlib.import_module("alr.analysis_evaluation.Distance_w_Structural _Alignment")`.
-
-## 12. Reuse expensive artifacts via a graded fallback ladder — and test the *reuse*
-
-"Use vector DBs if they exist, else create them" decomposed into three ordered paths in
-`_CosineContext`: (a) `.bin` index + section text-DB JSON exist → map item to row via
-`contents.index(item)` and `index.reconstruct(pos)` (zero new embeddings); (b) JSON exists
-but no index → build the index from its "Content" list, save it, then use it; (c) neither
-(fresh space, intro target) → embed the item directly. The alignment invariant making (a)
-safe is that `db_manager` syncs `strings[vec_count:]`, so index row order always matches
-the JSON "Content" list. The test that matters is not "cosine ≈ expected" but *which path
-ran*: monkeypatch `vectorize_strings` with a call recorder and assert the item was **not**
-re-embedded on path (a), and that the `.bin` file appears on path (b). Without that,
-a silently broken reuse path falls through to (c) and every test still passes.
-
-## 13. New document shapes are registry rows in sections.py, not parallel code
-
-Introduction evaluation did not get a copy of data_evaluator. `sections.py` gained a data
-registry (`INTRO_SECTIONS` as (json_key, vdb_attr) pairs, `INTRO_TEXT_KEY`,
-`METRIC_WORKBOOK_ATTRS` mapping target→kind→Vec_DB attr with `build_*_map(vdb)` helpers),
-and `data_evaluator` was parametrized on exactly the things that differ: text key,
-overview path, SQL column pair (`_EVAL_SQL_COLUMNS`), recorded-UUID loader. Same move as
-the Review app's `HELP_SECTIONS` class attribute driving `_build_help_tab`. When the next
-target (say, Conclusion) arrives, it should be a new tuple in sections.py + new
-`file_manager` paths — if it needs a new `if target ==` branch in evaluator logic, the
-parametrization missed something. Corollary for outputs: "separate Excel per metric plus a
-combined overview" reused one writer (`_write_section_sheet_flat`, update-by-UUID) fed
-different column subsets per workbook — idempotent re-runs and later kind-merges came free.
-
-## 14. When the user hand-edits the schema, hunt every raw-SQL writer
-
-A system reminder flagged that the user deliberately removed `pub_name` from
-`ENRICHMENT_COLUMNS` in `sql_store.py`. The wrong response is re-adding it; the right one
-is finding the writers that still assume it: `merge_download_log`'s `"Pub_Name":
-"pub_name"` mapping built raw `SET pub_name=…` SQL that would crash with "no such column"
-on any *fresh* database (existing DBs still had the column via old migrations — the bug
-only bites new users), plus `download_log_enrich._METADATA_MAP`. The migration system here
-only ever ADDs columns (`PRAGMA table_info` + `ALTER TABLE ADD COLUMN`), so a removed
-column means grep for its name across the repo and align every reader/writer, then verify
-with a fresh temp DB, not the dev one.

@@ -223,5 +223,7 @@ example: 1
     select_functionality()
 
 if __name__ == "__main__":
+    from alr.common import crash_logger
+    crash_logger.install("Automated Literature Review CLI")
     select_functionality()
 

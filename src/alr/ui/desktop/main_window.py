@@ -18,6 +18,7 @@ from alr.common.general_utils import Proccess_string_to_list
 from alr.common.llm_utils import list_available_models, set_selected_model, get_selected_model
 from alr.common.LLM_Config import get_stored_api_key, set_api_key, KEY_ENV_NAMES
 from alr.common.sql_store import sync_storage_to_sql
+from alr.common import crash_logger
 from alr.ui.desktop.review_app import open_review_app, ProgressDialog
 from alr.ui.desktop.section_rewriter_view import JSONRestructurerUI, open_section_editor_window
 from alr.data_analysis.Pdf_File_processor import process_pdf_mode_file
@@ -134,6 +135,11 @@ class CustomTerminalText(tk.Text):
 class AutomatedLiteratureUI(tk.Tk):
     def __init__(self):
         super().__init__()
+
+        # Any crash (main thread, Tk callback, background thread) writes a
+        # timestamped traceback into ~/Automated Literature Review/00_Crash_Logs.
+        crash_logger.install("Automated Literature Review Support Tool")
+        crash_logger.attach_to_tk(self)
 
         self.title("Automated Literature Review Support Tool")
         self.geometry("900x750")
@@ -788,12 +794,17 @@ class AutomatedLiteratureUI(tk.Tk):
             try:
                 q.put(("done", work(progress, cancel_event.is_set)))
             except Exception as e:  # noqa: BLE001 - surface any failure to the UI
-                q.put(("error", e))
+                log_path = crash_logger.write_crash_log(
+                    *sys.exc_info(), origin=f"background task: {title}")
+                q.put(("error", (e, log_path)))
 
         def finish():
             dlg.close()
             if "error" in outcome:
-                messagebox.showerror(title, str(outcome["error"]))
+                msg = str(outcome["error"])
+                if outcome.get("error_log"):
+                    msg += f"\n\nA full traceback was saved to:\n{outcome['error_log']}"
+                messagebox.showerror(title, msg)
             elif cancel_event.is_set():
                 messagebox.showinfo(title, f"{title}: cancelled after {result_word} "
                                            f"{outcome.get('n', 0)} document(s).")
@@ -813,7 +824,7 @@ class AutomatedLiteratureUI(tk.Tk):
                         finish()
                         return
                     elif kind == "error":
-                        outcome["error"] = payload
+                        outcome["error"], outcome["error_log"] = payload
                         finish()
                         return
             except queue.Empty:

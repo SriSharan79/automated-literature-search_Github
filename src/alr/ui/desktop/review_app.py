@@ -16,9 +16,12 @@ tabs:
 import csv
 import os
 import queue
+import sys
 import threading
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
+
+from alr.common import crash_logger
 
 from alr.common.sql_store import AnalyzedDataStore, sync_storage_to_sql, COLUMNS
 from alr.common.storage_scanner import detect_storage_spaces, find_download_logs
@@ -231,12 +234,17 @@ class ReviewApp:
             try:
                 q.put(("done", work(progress, cancel_event.is_set)))
             except Exception as e:  # noqa: BLE001 - surface any failure to the UI
-                q.put(("error", e))
+                log_path = crash_logger.write_crash_log(
+                    *sys.exc_info(), origin=f"background task: {title}")
+                q.put(("error", (e, log_path)))
 
         def finish():
             dlg.close()
             if "error" in outcome:
-                messagebox.showerror(title, str(outcome["error"]))
+                msg = str(outcome["error"])
+                if outcome.get("error_log"):
+                    msg += f"\n\nA full traceback was saved to:\n{outcome['error_log']}"
+                messagebox.showerror(title, msg)
             elif cancel_event.is_set():
                 messagebox.showinfo(title, f"{title}: cancelled after {result_word} "
                                            f"{outcome.get('n', 0)} document(s).")
@@ -255,7 +263,7 @@ class ReviewApp:
                         finish()
                         return
                     elif kind == "error":
-                        outcome["error"] = payload
+                        outcome["error"], outcome["error_log"] = payload
                         finish()
                         return
             except queue.Empty:
@@ -987,6 +995,11 @@ class ReviewApp:
 def open_review_app(master=None):
     """Open the Review tool in its own window (Toplevel child, or standalone root)."""
     win = tk.Toplevel(master) if master is not None else tk.Tk()
+    if master is None:
+        # Standalone root: no main window installed the crash hooks for us.
+        # (As a Toplevel, callback exceptions route to the main app's root.)
+        crash_logger.install("Automated Literature Review — Review Tool")
+        crash_logger.attach_to_tk(win)
     win.title("Automated Literature Review — Review Tool")
     win.geometry("1050x760")
     ReviewApp(win)
