@@ -143,6 +143,12 @@ def generate_databases(Storage_path, do_text: bool = True, do_vector: bool = Tru
         sections = build_sections_map(VDB)
         Master_map = build_sections_master_map(VDB, MASTER_EXCEL_FILE)
 
+        # One UUID cache per sync run: each section's Excel/JSON DB pair is
+        # read once up front (see text_db_updater.save_to_db) instead of being
+        # re-read for every single entry, which makes re-runs over an
+        # already-synced space near-instant on the text side.
+        uuid_cache = {}
+
         for UUID in recorded_abstracts:
             MF.update_id_files(UUID)
 
@@ -156,7 +162,8 @@ def generate_databases(Storage_path, do_text: bool = True, do_vector: bool = Tru
                 title=title,
                 file_name=file_name,
                 json_data=json_data,
-                sections=sections
+                sections=sections,
+                uuid_cache=uuid_cache
             )
             _sync_sections_master_for_uuid(UUID, title, file_name, json_data, Master_map) 
     
@@ -177,6 +184,9 @@ def generate_combined_databases(Source_path,Storage_path):
     sections = build_sections_map(VDB)
     Master_map = build_sections_master_map(VDB, MASTER_EXCEL_FILE)
 
+    # Same per-run UUID cache as generate_databases (one read per DB pair).
+    uuid_cache = {}
+
     for UUID in recorded_abstracts:
         MF.update_id_files(UUID)
 
@@ -190,7 +200,8 @@ def generate_combined_databases(Source_path,Storage_path):
             title=title,
             file_name=file_name,
             json_data=json_data,
-            sections=sections
+            sections=sections,
+            uuid_cache=uuid_cache
         ) 
         _sync_sections_master_for_uuid(UUID, title, file_name, json_data, Master_map) 
     
