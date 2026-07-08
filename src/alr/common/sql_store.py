@@ -67,6 +67,47 @@ COLUMNS = (
     + ["source_folder", "created_at", "updated_at"]
 )
 
+# Snapshot of the built-in schema. User-defined topic columns (custom
+# classification) may not collide with these; anything found in a database
+# beyond this set is adopted as a custom enrichment column.
+_BASE_COLUMNS = frozenset(COLUMNS)
+
+
+def sanitize_column_name(name: str) -> str:
+    """
+    Turn a user-supplied topic name into a safe SQLite column name:
+    lower-cased, non-alphanumerics collapsed to underscores. Raises
+    ValueError if nothing usable remains.
+    """
+    import re
+    col = re.sub(r"[^a-z0-9_]+", "_", str(name).strip().lower()).strip("_")
+    if not col:
+        raise ValueError(f"'{name}' cannot be used as a column name.")
+    if col[0].isdigit():
+        col = "c_" + col
+    return col
+
+
+def register_custom_column(name: str, db_path=None) -> str:
+    """
+    Register a user-defined enrichment column (e.g. a custom classification
+    topic) and make sure it exists in the database. Returns the sanitized
+    column name. The column behaves like ``classification`` /
+    ``abstract_classification``: preserved on re-sync (COALESCE), editable,
+    exportable. Raises ValueError if the name collides with a built-in column.
+    """
+    col = sanitize_column_name(name)
+    if col in _BASE_COLUMNS:
+        raise ValueError(
+            f"'{col}' is a built-in database column; choose a different topic name.")
+    if col not in ENRICHMENT_COLUMNS:
+        ENRICHMENT_COLUMNS.append(col)
+    if col not in COLUMNS:
+        COLUMNS.append(col)
+    # init_db migrates the table (ALTER TABLE ADD COLUMN for anything missing).
+    AnalyzedDataStore(db_path or DB_PATH)
+    return col
+
 
 def _read_json(path):
     """Load a JSON file, returning (dict_or_None, raw_text_or_None)."""
@@ -102,6 +143,13 @@ class AnalyzedDataStore:
             for col in COLUMNS:
                 if col not in existing:
                     conn.execute(f"ALTER TABLE documents ADD COLUMN {col} TEXT")
+            # Reverse direction: adopt user-defined topic columns created by a
+            # previous session (custom classification) so they stay visible,
+            # COALESCE-preserved and exportable after a restart.
+            for col in existing:
+                if col not in COLUMNS:
+                    ENRICHMENT_COLUMNS.append(col)
+                    COLUMNS.append(col)
             # Saved overview definitions (field/filter/grouping/chart specs).
             conn.execute(
                 "CREATE TABLE IF NOT EXISTS overview_templates ("

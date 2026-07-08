@@ -209,6 +209,72 @@ TAXONOMY_TOPICS = [
 ]
 
 
+def build_custom_classifier_prompt(topic, tags):
+    """
+    Build a classification system prompt for a user-defined taxonomy.
+
+    Same structure and evaluation rules as ``system_prompt_sysE``, but the
+    JSON schema is generated from the user's classification ``tags`` and the
+    classifier is specialised on the user's ``topic``.
+    """
+    schema = ",\n".join(f'  "{t}": boolean' for t in tags)
+    return f"""
+You are a rigorous Academic Classifier specializing in {topic}.
+Your goal is to evaluate a publication content against a specific taxonomy with high precision.
+
+### Evaluation Criteria:
+- **Strict Inclusion:** Only mark a topic as "true" if the Text Content contains explicit keywords or clearly implied methodologies belonging to that field.
+- **Contextual Awareness:** Distinguish between general terms and domain-specific applications; a term counts only when it is used in the context of {topic}.
+- **No Neutrality:** You must make a binary choice (true/false) for every single topic provided in the schema.
+
+### Analysis Methodology:
+Before generating the JSON, internally analyze the Text Content for:
+1. The primary domain of the publication.
+2. Methodologies and approaches mentioned.
+3. Technologies and tools referenced.
+
+### Output Format:
+You must return ONLY a JSON object. Do not include conversational filler, markdown formatting (like ```json), or explanations.
+The JSON must follow this exact structure, covering all {len(tags)} specific topics:
+
+{{
+{schema}
+}}
+"""
+
+
+def classify_custom(text, tags, topic="the given taxonomy", service=None, source_label="Title"):
+    """
+    Classify a publication text against a **user-defined** tag taxonomy.
+
+    ``tags`` is the list of classification tags collected from the user; the
+    system prompt is generated from them via
+    :func:`build_custom_classifier_prompt`. ``source_label`` names what
+    ``text`` is ("Title" or "Abstract") in the prompt. Returns
+    ``{tag: bool}`` covering every tag (missing/extra keys from the LLM are
+    normalised away); on failure it falls back to all-False.
+    """
+    system_prompt = build_custom_classifier_prompt(topic, tags)
+    Prompt = f"""{source_label} of publication to be analyzed:
+                - {text}
+            """
+    # Small delay to stay under the Blablador rate limit.
+    time.sleep(1.5)
+    try:
+        print(Fore.GREEN + f" Prompt : \n {Prompt}" + Style.RESET_ALL)
+        response = llm_call(Prompt, system_prompt, service) if service else llm_call(Prompt, system_prompt)
+
+        print(Fore.CYAN + "\n--- RAW LLM RESPONSE START ---" + Style.RESET_ALL)
+        print(Fore.CYAN + response + Style.RESET_ALL)
+        print(Fore.CYAN + "--- RAW LLM RESPONSE END ---\n" + Style.RESET_ALL)
+
+        result = json.loads(response)
+        return {t: bool(result.get(t)) for t in tags}
+    except Exception as e:
+        print(f"Error in custom classification: {e}")
+        return {t: False for t in tags}
+
+
 def classify_abstract(abstract_text, service=None):
     """
     Classify a publication against the same taxonomy as :func:`classify_title`,

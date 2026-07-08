@@ -253,6 +253,74 @@ def classify_abstract_space(manager, db_path=None, progress_callback=None, shoul
                                should_cancel=should_cancel, overwrite=overwrite, service=service, mode=mode)
 
 
+def classify_custom_space(manager, topic, tags, source="title", db_path=None,
+                          progress_callback=None, should_cancel=None, service=None) -> int:
+    """
+    Classify every analyzed document in a storage space against a
+    **user-defined** tag taxonomy (custom classification prompt built from
+    ``tags``; see ``title_classifier.build_custom_classifier_prompt``).
+
+    * ``topic``   -- the user's topic tag. It names the dated workbook
+      (``{date}_{Topic}_Classification.xlsx`` in the space's classification
+      folder) and the SQLite column the summary is recorded under (sanitized;
+      behaves like ``classification`` / ``abstract_classification``).
+    * ``tags``    -- list of classification tags the LLM must decide true/false.
+    * ``source``  -- "title" or "abstract": which document text is classified.
+
+    Returns the number of documents classified. Requires an API key for the
+    chosen ``service``.
+    """
+    import re
+    from datetime import datetime
+    from alr.common.file_manager import DataAnalyzeManager
+    from alr.common.sql_store import AnalyzedDataStore, DB_PATH, register_custom_column
+    from alr.analysis_evaluation.publication_classification.title_classifier import classify_custom
+
+    if not isinstance(manager, DataAnalyzeManager):
+        manager = DataAnalyzeManager(manager)
+
+    tags = [str(t).strip() for t in tags if str(t).strip()]
+    if not tags:
+        print("Custom classification: no tags given; nothing to do.")
+        return 0
+
+    # The user's topic tag names both the SQL column and the dated workbook.
+    sql_col = register_custom_column(topic, db_path=db_path)
+    safe_topic = re.sub(r"[^A-Za-z0-9_\- ]+", "", str(topic).strip()).strip().replace(" ", "_") or sql_col
+    current_date = datetime.now().strftime("%Y-%m-%d")
+    excel_path = str(manager.classification_subfolder / f"{current_date}_{safe_topic}_Classification.xlsx")
+
+    text_field = "abstract_text" if source == "abstract" else "title"
+    kind = "abstract" if source == "abstract" else "title"
+    source_label = "Abstract" if source == "abstract" else "Title"
+
+    store = AnalyzedDataStore(db_path or DB_PATH)
+    docs = [d for d in store.list_documents() if d.get("source_folder") == str(manager.folder)]
+
+    updated = 0
+    total = len(docs)
+    for i, d in enumerate(docs, 1):
+        if should_cancel is not None and should_cancel():
+            print("Custom classification cancelled by user.")
+            break
+        text = d.get(text_field)
+        if _text_is_valid(kind, text):
+            result = classify_custom(text, tags, topic=topic, service=service,
+                                     source_label=source_label)
+            true_tags = [t for t, v in result.items() if v]
+            if d.get("uuid"):
+                store.update_document(d["uuid"], {sql_col: ", ".join(true_tags)})
+            _append_classification_row(
+                excel_path, {"filename": d.get("filename"), "title": d.get("title"), **result})
+            updated += 1
+        if progress_callback:
+            progress_callback(i, total)
+
+    print(f"Custom classification '{topic}' updated {updated} document(s) "
+          f"-> {excel_path} (SQL column: {sql_col}).")
+    return updated
+
+
 def question_score_space(manager, source="registry", download_log=None, output_excel=None):
     """
     Run the question-scored publication classification for a storage space.

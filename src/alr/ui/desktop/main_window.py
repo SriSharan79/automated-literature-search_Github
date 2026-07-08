@@ -185,7 +185,8 @@ class AutomatedLiteratureUI(tk.Tk):
         self._build_analyze_tab()
         self._build_visualize_tab()
         self._build_section_editor_tab()
-        self._build_evaluate_tab()
+        self._build_evaluation_tab()
+        self._build_enrichment_tab()
 
         # Integrated Console Terminal Output Box -> bottom 40%.
         terminal_frame = tk.LabelFrame(body, text="Console Output Log")
@@ -942,12 +943,14 @@ class AutomatedLiteratureUI(tk.Tk):
     # ==========================================
     # TAB 5: EVALUATE & ENRICH
     # ==========================================
-    def _build_evaluate_tab(self):
+    def _make_scrollable_tab(self, title):
+        """
+        Add a notebook tab whose content can grow past the window height:
+        the content lives inside a vertical-scroll canvas. Returns the inner
+        frame that tab content should be packed into.
+        """
         outer = ttk.Frame(self.notebook)
-        self.notebook.add(outer, text="5. Evaluate & Enrich")
-
-        # The tab holds two full sections (Evaluation + Enrichment) and grows
-        # past the window height, so its content lives in a scrollable canvas.
+        self.notebook.add(outer, text=title)
         canvas = tk.Canvas(outer, highlightthickness=0)
         vsb = ttk.Scrollbar(outer, orient="vertical", command=canvas.yview)
         canvas.configure(yscrollcommand=vsb.set)
@@ -957,32 +960,50 @@ class AutomatedLiteratureUI(tk.Tk):
         tab_window = canvas.create_window((0, 0), window=tab, anchor="nw")
         tab.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
         canvas.bind("<Configure>", lambda e: canvas.itemconfig(tab_window, width=e.width))
+        return tab
 
-        # --- Shared inputs (used by both Evaluation and Enrichment below) ---
-        shared = tk.LabelFrame(tab, text="Storage Space & LLM Service (shared)")
+    def _build_shared_eval_inputs(self, tab):
+        """
+        Build one copy of the shared Storage-Space / LLM / Embedding inputs.
+
+        Both the Evaluation and the Enrichment tab carry a copy of these
+        widgets; every copy is bound to the same tk variables, so setting the
+        storage folder or LLM service on one tab shows on the other as well.
+        """
+        if not hasattr(self, "eval_storage_var"):
+            self.eval_storage_var = tk.StringVar(value="")
+            self.eval_llm_var = tk.StringVar(value="B")
+
+        shared = tk.LabelFrame(tab, text="Storage Space & LLM Service (shared between the Evaluation and Enrichment tabs)")
         shared.pack(fill="x", padx=10, pady=(10, 5))
 
         row = ttk.Frame(shared)
         row.pack(fill="x", padx=5, pady=8)
         ttk.Label(row, text="Storage folder:").pack(side="left", padx=5)
-        self.eval_storage_entry = ttk.Entry(row, width=55)
-        self.eval_storage_entry.pack(side="left", padx=5)
-        ttk.Button(row, text="Browse...", command=lambda: self._browse_folder(self.eval_storage_entry)).pack(side="left", padx=2)
+        entry = ttk.Entry(row, width=55, textvariable=self.eval_storage_var)
+        entry.pack(side="left", padx=5)
+        self.eval_storage_entry = entry
+        ttk.Button(row, text="Browse...", command=lambda: self._browse_folder(entry)).pack(side="left", padx=2)
 
         llm_row = ttk.Frame(shared)
         llm_row.pack(fill="x", padx=5, pady=(0, 8))
         ttk.Label(llm_row, text="LLM Processing Service Engine:").pack(side="left", padx=5)
-        self.llm_choice_eval = ttk.Combobox(llm_row, values=["O", "B"], width=5, state="readonly")
-        self.llm_choice_eval.set("B")
-        self.llm_choice_eval.pack(side="left", padx=5)
+        combo = ttk.Combobox(llm_row, values=["O", "B"], width=5, state="readonly",
+                             textvariable=self.eval_llm_var)
+        combo.pack(side="left", padx=5)
+        self.llm_choice_eval = combo
         ttk.Button(llm_row, text="Choose Model...",
-                   command=lambda: self._choose_model_action(self.llm_choice_eval.get())
+                   command=lambda: self._choose_model_action(self.eval_llm_var.get())
                    ).pack(side="left", padx=5)
         ttk.Label(llm_row, text="(used by Classify Titles / Classify Abstracts)").pack(side="left", padx=5)
 
         # Embedding engine (used by the cosine-similarity evaluation and by
-        # vector-DB builds/queries; kept in sync with the Visualize tab copy).
+        # vector-DB builds/queries; all copies stay in sync).
         self._build_embedding_selector(shared).pack(fill="x", padx=5, pady=(0, 8))
+
+    def _build_evaluation_tab(self):
+        tab = self._make_scrollable_tab("5. Evaluation")
+        self._build_shared_eval_inputs(tab)
 
         # ================= EVALUATION =================
         eval_frame = tk.LabelFrame(tab, text="Evaluation (batch, over the storage space above)")
@@ -1047,6 +1068,43 @@ class AutomatedLiteratureUI(tk.Tk):
 
         self.metric_result_text = tk.Text(met_frame, height=7, wrap="word", state="disabled")
         self.metric_result_text.pack(fill="both", expand=True, padx=5, pady=(0, 5))
+
+        # ---- Custom topic classification (user-defined tags) ----
+        custom_frame = tk.LabelFrame(tab, text="Custom Topic Classification (user-defined tags)")
+        custom_frame.pack(fill="x", padx=10, pady=5)
+
+        crow1 = ttk.Frame(custom_frame)
+        crow1.pack(fill="x", padx=5, pady=(8, 2))
+        ttk.Label(crow1, text="Topic tag:").pack(side="left", padx=5)
+        self.custom_topic_entry = ttk.Entry(crow1, width=28)
+        self.custom_topic_entry.pack(side="left", padx=5)
+        ttk.Label(crow1, text="Classify:").pack(side="left", padx=(14, 4))
+        self.custom_source_var = tk.StringVar(value="title")
+        ttk.Radiobutton(crow1, text="Titles", value="title",
+                        variable=self.custom_source_var).pack(side="left", padx=2)
+        ttk.Radiobutton(crow1, text="Abstracts", value="abstract",
+                        variable=self.custom_source_var).pack(side="left", padx=2)
+        ttk.Button(crow1, text="Run Custom Classification",
+                   command=self._run_custom_classification_action).pack(side="left", padx=14)
+
+        crow2 = ttk.Frame(custom_frame)
+        crow2.pack(fill="x", padx=5, pady=(2, 2))
+        ttk.Label(crow2, text="Classification tags (comma-separated):").pack(side="left", padx=5)
+        self.custom_tags_entry = ttk.Entry(crow2, width=70)
+        self.custom_tags_entry.pack(side="left", padx=5, fill="x", expand=True)
+
+        ttk.Label(custom_frame,
+                  text="(Classifies every document in the storage space above against YOUR tags: the "
+                       "classification prompt is generated from them. Results go to a dated "
+                       "'{date}_{Topic}_Classification.xlsx' workbook in the space and into the review "
+                       "database under a column named after the topic tag — like 'classification' / "
+                       "'abstract_classification'. Example: Topic tag 'UAV Safety', tags 'Drones, "
+                       "Collision Avoidance, Certification, Autonomy'.)",
+                  wraplength=860, justify="left").pack(anchor="w", padx=8, pady=(0, 6))
+
+    def _build_enrichment_tab(self):
+        tab = self._make_scrollable_tab("6. Enrichment")
+        self._build_shared_eval_inputs(tab)
 
         # ================= ENRICHMENT =================
         enrich_frame = tk.LabelFrame(tab, text="Enrichment")
@@ -1182,6 +1240,59 @@ class AutomatedLiteratureUI(tk.Tk):
             return n
 
         self._run_threaded(work, "Run Evaluation", "evaluated")
+
+    def _run_custom_classification_action(self):
+        """
+        Classify every document in the shared storage space against the
+        user-defined tags: the classification prompt is generated from the
+        tags, results go to a dated '{date}_{Topic}_Classification.xlsx'
+        workbook and to a SQL column named after the topic tag.
+        """
+        folder = self.eval_storage_entry.get().strip()
+        if not folder or not Path(folder).is_dir():
+            messagebox.showerror("Error", "Select a valid analyzed storage folder first (shared inputs above).")
+            return
+        topic = self.custom_topic_entry.get().strip()
+        if not topic:
+            messagebox.showerror("Error", "Enter a Topic tag (it names the output file and the database column).")
+            return
+        tags = [t.strip() for t in self.custom_tags_entry.get().split(",") if t.strip()]
+        if not tags:
+            messagebox.showerror("Error", "Enter at least one classification tag (comma-separated).")
+            return
+
+        # Validate the topic-derived column name up front, on the main thread.
+        from alr.common.sql_store import sanitize_column_name, _BASE_COLUMNS
+        try:
+            col = sanitize_column_name(topic)
+            if col in _BASE_COLUMNS:
+                raise ValueError(f"'{topic}' collides with the built-in database column '{col}'; "
+                                 "choose a different topic name.")
+        except ValueError as e:
+            messagebox.showerror("Error", str(e))
+            return
+
+        service = self.eval_llm_var.get()
+        if not self._ensure_api_key(service):
+            return
+        source = self.custom_source_var.get()
+        clean_path = clean_folder_path(folder)
+        print(f"[Custom classification] topic: {topic} | tags: {', '.join(tags)} "
+              f"| source: {source} | SQL column: {col}")
+
+        def work(progress, should_cancel):
+            from alr.common.sql_store import sync_storage_to_sql
+            from alr.analysis_evaluation.publication_classification.classify_runner import classify_custom_space
+            progress(text="Syncing storage space to the review database…")
+            sync_storage_to_sql(clean_path)
+            progress(text=f"Classifying against '{topic}' tags…")
+            return classify_custom_space(
+                clean_path, topic, tags, source=source, service=service,
+                should_cancel=should_cancel,
+                progress_callback=lambda done, total: progress(
+                    done=done, total=total, text=f"Custom classification  {done}/{total}…"))
+
+        self._run_threaded(work, "Custom Topic Classification", "classified")
 
     def _run_doi_extraction_action(self):
         input_target = self.doi_input_entry.get().strip()
