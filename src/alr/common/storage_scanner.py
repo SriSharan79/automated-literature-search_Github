@@ -71,8 +71,11 @@ def detect_storage_spaces(root) -> list:
 
 def find_download_logs(root) -> list:
     """
-    Find all download-log workbooks under ``root``: files whose name contains
-    ``_download_log`` and ends with ``.xlsx`` (see File_Downloader._build_paths).
+    Find all bibliographic/metadata workbooks under ``root`` that can be merged
+    into the review database: download logs (``*_download_log*.xlsx``, see
+    File_Downloader._build_paths), managed DOI workbooks
+    (``*_DOI_Metadata.xlsx``) and publication-metadata exports
+    (``*publications_metadata.xlsx``).
     """
     root = Path(root)
     logs = []
@@ -80,7 +83,10 @@ def find_download_logs(root) -> list:
         return logs
     for p in root.rglob("*.xlsx"):
         name = p.name.lower()
-        if "_download_log" in name and not name.startswith("~$"):
+        if name.startswith("~$"):
+            continue
+        if ("_download_log" in name or "_doi_metadata" in name
+                or name.endswith("publications_metadata.xlsx")):
             logs.append(p)
     logs.sort(key=lambda p: str(p).lower())
     return logs

@@ -174,8 +174,9 @@ class ReviewApp:
         ttk.Button(act, text="Evaluate data", command=self._evaluate_selected).pack(side="left", padx=3)
         ttk.Button(act, text="Open folder", command=self._open_selected_space).pack(side="right", padx=3)
 
-        # Download logs
-        dl_frame = ttk.LabelFrame(tab, text="Download logs (*_download_log.xlsx)")
+        # Download logs & metadata workbooks
+        dl_frame = ttk.LabelFrame(
+            tab, text="Bibliographic workbooks (*_download_log / *_DOI_Metadata / publications_metadata .xlsx)")
         dl_frame.pack(fill="both", expand=True, padx=8, pady=4)
         self.logs_list = tk.Listbox(dl_frame, height=4)
         self.logs_list.pack(side="left", fill="both", expand=True, padx=(0, 4))
@@ -278,7 +279,8 @@ class ReviewApp:
         n_complete = sum(1 for s in self.spaces if s.status == "complete")
         self.spaces_status.config(
             text=f"Found {len(self.spaces)} space(s) ({n_complete} complete, "
-                 f"{len(self.spaces) - n_complete} partial); {len(self.download_logs)} download log(s).")
+                 f"{len(self.spaces) - n_complete} partial); "
+                 f"{len(self.download_logs)} bibliographic workbook(s).")
 
     def _selected_space(self):
         sel = self.spaces_tree.selection()
@@ -452,18 +454,29 @@ class ReviewApp:
             open_path(s.path)
 
     def _import_download_log(self):
+        """
+        Merge the selected bibliographic workbook into the database. Download
+        logs go through ``merge_download_log``; ``*_DOI_Metadata.xlsx`` and
+        ``publications_metadata.xlsx`` files go through the wider
+        ``merge_metadata_workbook`` (DOI/publisher/container/year/authors —
+        fill-if-empty, matched by UUID or File_Name).
+        """
         import pandas as pd
         sel = self.logs_list.curselection()
         if not sel:
-            messagebox.showinfo("No selection", "Select a download log first.")
+            messagebox.showinfo("No selection", "Select a workbook first.")
             return
         path = self.download_logs[sel[0]]
         try:
             df = pd.read_excel(path)
-            n = self.store.merge_download_log(df)
-            messagebox.showinfo("Import download log", f"Updated {n} document(s) with bibliographic data.")
+            if "_download_log" in os.path.basename(str(path)).lower():
+                n = self.store.merge_download_log(df)
+            else:
+                n = self.store.merge_metadata_workbook(df)
+            messagebox.showinfo("Import bibliographic data",
+                                f"Updated {n} document(s) with bibliographic data.")
         except Exception as e:
-            messagebox.showerror("Import download log", str(e))
+            messagebox.showerror("Import bibliographic data", str(e))
         self._refresh_all()
 
     # ============================================================= Documents
@@ -1002,13 +1015,16 @@ class ReviewApp:
          "Recursively scans the chosen folder for analysis storage spaces (folders created "
          "by a previous 'Analyze Literature' run). Status 'complete' means the space has a "
          "processed-file registry AND at least one analyzed abstract; 'partial' means some "
-         "markers are missing. It also lists any *_download_log.xlsx files found.\n"
+         "markers are missing. It also lists any bibliographic workbooks found "
+         "(*_download_log.xlsx, *_DOI_Metadata.xlsx, publications_metadata.xlsx).\n"
          "Example: select 'D:/ALR DATA' -> 3 spaces found (2 complete, 1 partial), "
          "1 download log."),
 
         ("Storage Spaces — Link to database / Link ALL",
          "Imports a space's registry + analyzed JSON files into the SQLite database so the "
-         "Documents/Database/Overviews tabs can see them. Safe to repeat: re-linking updates "
+         "Documents/Database/Overviews tabs can see them. It also merges the space's "
+         "recorded DOI/publication metadata workbooks and evaluation overviews into the "
+         "database (fill-if-empty). Safe to repeat: re-linking updates "
          "rows to the latest data and never wipes enrichment (DOI/classification/evaluation) "
          "already stored.\n"
          "Example: select the 'LLM_Safety_Results' row -> 'Link to database' -> "
@@ -1043,11 +1059,16 @@ class ReviewApp:
          "documents ORDER BY evaluation_score."),
 
         ("Storage Spaces — Import bibliographic data",
-         "Select one of the discovered *_download_log.xlsx files and click 'Import "
-         "bibliographic data'. Rows are matched by File_Name to documents already in the "
-         "database and fill link / authors / publication year / first author — only where "
-         "the document has no value yet.\n"
-         "Example: '2025-06-12_download_log.xlsx' -> 'Updated 17 document(s)'."),
+         "Select one of the discovered workbooks and click 'Import bibliographic data'. "
+         "Three kinds are recognized: *_download_log.xlsx (fills link / authors / "
+         "publication year / first author), *_DOI_Metadata.xlsx and "
+         "publications_metadata.xlsx (fill DOI link / publisher / container / year / "
+         "authors / first author). Rows are matched by UUID when the workbook has one, "
+         "else by File_Name — and values are only filled where the document has no value "
+         "yet, so nothing already in the database is overwritten.\n"
+         "Example: '2025-06-12_DOI_Metadata.xlsx' -> 'Updated 17 document(s)'.\n"
+         "Note: 'Link to database' also merges these workbooks (plus the evaluation "
+         "overview) automatically when it syncs a space."),
 
         ("Documents — browse & edit",
          "Left: all documents in the database (Search matches title, filename or UUID — "

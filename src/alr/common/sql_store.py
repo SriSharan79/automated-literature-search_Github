@@ -72,6 +72,11 @@ COLUMNS = (
 # beyond this set is adopted as a custom enrichment column.
 _BASE_COLUMNS = frozenset(COLUMNS)
 
+# Columns deliberately dropped from the schema. Old database files still
+# carry them (migrations only ever ADD columns), but they must not be
+# re-adopted as custom columns.
+_LEGACY_COLUMNS = {"pub_name"}
+
 
 def sanitize_column_name(name: str) -> str:
     """
@@ -147,7 +152,7 @@ class AnalyzedDataStore:
             # previous session (custom classification) so they stay visible,
             # COALESCE-preserved and exportable after a restart.
             for col in existing:
-                if col not in COLUMNS:
+                if col not in COLUMNS and col not in _LEGACY_COLUMNS:
                     ENRICHMENT_COLUMNS.append(col)
                     COLUMNS.append(col)
             # Saved overview definitions (field/filter/grouping/chart specs).
@@ -181,8 +186,18 @@ class AnalyzedDataStore:
             f"INSERT INTO documents ({col_list}) VALUES ({placeholders}) "
             f"ON CONFLICT(uuid) DO UPDATE SET {update_sql}"
         )
-        with self._connect() as conn:
-            conn.execute(sql, [data[c] for c in COLUMNS])
+        try:
+            with self._connect() as conn:
+                conn.execute(sql, [data[c] for c in COLUMNS])
+        except sqlite3.OperationalError as e:
+            # A custom column registered after this store's init (e.g. adopted
+            # from another database in the same process) may be missing here:
+            # migrate and retry once.
+            if "no column" not in str(e).lower():
+                raise
+            self.init_db()
+            with self._connect() as conn:
+                conn.execute(sql, [data[c] for c in COLUMNS])
 
     def update_document(self, uuid: str, fields: dict):
         """Update selected columns for a document (used by the editable review view)."""
@@ -191,11 +206,21 @@ class AnalyzedDataStore:
             return
         editable["updated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         set_sql = ", ".join(f"{c}=?" for c in editable)
-        with self._connect() as conn:
-            conn.execute(
-                f"UPDATE documents SET {set_sql} WHERE uuid=?",
-                list(editable.values()) + [uuid],
-            )
+        try:
+            with self._connect() as conn:
+                conn.execute(
+                    f"UPDATE documents SET {set_sql} WHERE uuid=?",
+                    list(editable.values()) + [uuid],
+                )
+        except sqlite3.OperationalError as e:
+            if "no column" not in str(e).lower():
+                raise
+            self.init_db()  # late-registered custom column: migrate and retry
+            with self._connect() as conn:
+                conn.execute(
+                    f"UPDATE documents SET {set_sql} WHERE uuid=?",
+                    list(editable.values()) + [uuid],
+                )
 
     def delete_document(self, uuid: str):
         with self._connect() as conn:
@@ -396,6 +421,76 @@ class AnalyzedDataStore:
             conn.execute("DELETE FROM overview_templates WHERE name=?", (name,))
 
     # -- download-log bibliographic merge -----------------------------------
+    # Metadata-workbook column -> documents column. Covers the managed
+    # ``*_DOI_Metadata.xlsx`` layout (doi_metadata.DOI_EXCEL_COLUMNS), the
+    # ``publications_metadata.xlsx`` exports and download-log spellings.
+    METADATA_TO_DB = {
+        "DOI_Link": "doi_link",
+        "DOI": "doi_link",
+        "Publisher": "publisher",
+        "Container": "container",
+        "Publication Year": "publication_year",
+        "Year": "publication_year",
+        "DOI_Authors": "authors",
+        "Authors": "authors",
+        "DOI_First_Author": "first_author",
+        "First_Author": "first_author",
+        "First Author": "first_author",
+        "Publication Type": "publication_type",
+        "Link": "link",
+    }
+
+    @staticmethod
+    def _real_value(val) -> str | None:
+        """A usable metadata cell value, or None for empty/placeholder cells."""
+        if val is None:
+            return None
+        text = str(val).strip()
+        if not text or text.lower() in ("nan", "n/a", "none", "not found"):
+            return None
+        return text
+
+    def merge_metadata_workbook(self, df) -> int:
+        """
+        Merge DOI/publication metadata from a workbook DataFrame into existing
+        documents — same fill-if-empty semantics as :meth:`merge_download_log`,
+        but covering the ``*_DOI_Metadata.xlsx`` / ``publications_metadata.xlsx``
+        column layouts (see ``METADATA_TO_DB``). Rows are matched by ``UUID``
+        when the workbook has one, else by ``File_Name`` -> ``filename``.
+        Returns the number of rows updated.
+        """
+        has_uuid = "UUID" in df.columns
+        updated = 0
+        with self._connect() as conn:
+            for _, row in df.iterrows():
+                doc = None
+                if has_uuid:
+                    uid = self._real_value(row.get("UUID"))
+                    if uid:
+                        doc = conn.execute(
+                            "SELECT uuid FROM documents WHERE uuid = ?", (uid,)).fetchone()
+                if doc is None:
+                    fname = self._real_value(row.get("File_Name"))
+                    if not fname:
+                        continue
+                    doc = conn.execute(
+                        "SELECT uuid FROM documents WHERE filename = ?", (fname,)).fetchone()
+                if not doc:
+                    continue
+                sets, params = [], []
+                for wb_col, db_col in self.METADATA_TO_DB.items():
+                    val = self._real_value(row.get(wb_col)) if wb_col in df.columns else None
+                    if val is not None:
+                        if db_col == "publication_year":
+                            val = val.split(".")[0]  # 2024.0 -> 2024
+                        sets.append(f"{db_col} = COALESCE(NULLIF({db_col}, ''), ?)")
+                        params.append(val)
+                if sets:
+                    params.append(doc[0])
+                    conn.execute(f"UPDATE documents SET {', '.join(sets)} WHERE uuid = ?", params)
+                    updated += 1
+        return updated
+
     def merge_download_log(self, df) -> int:
         """
         Merge bibliographic data from a download-log DataFrame into existing
@@ -503,75 +598,6 @@ def sync_storage_to_sql(manager_or_folder, db_path=DB_PATH,progress_callback=Non
         print(f"Could not read registry {registry}: {e}")
         return 0
 
-    # --- NEW: Pre-load Enrichment Data ---
-    enrichment_map = {}
-    
-    # 1. Load latest DOI or Publications Metadata
-    # Find both DOI metadata files and publications_metadata files
-    doi_files = glob.glob(os.path.join(manager.doi_metadata_subfolder, "*_DOI_Metadata.xlsx"))
-    
-    # Adjust this path if publications_metadata.xlsx lives in a specific subfolder
-    pub_files = glob.glob(os.path.join(manager.folder, "**", "*publications_metadata.xlsx"), recursive=True) 
-    
-    all_meta_files = doi_files + pub_files
-    
-    if all_meta_files:
-        # Sort and get the most recently modified file to ensure we use the freshest data
-        latest_meta = max(all_meta_files, key=os.path.getctime)
-        try:
-            meta_df = pd.read_excel(latest_meta)
-            for _, row in meta_df.iterrows():
-                uuid = str(row.get("UUID") or "").strip()
-                if uuid and uuid != "nan":
-                    if uuid not in enrichment_map:
-                        enrichment_map[uuid] = {}
-                    
-                    # Helper to safely extract non-NaN values
-                    def safe_get(col_name):
-                        val = row.get(col_name)
-                        return val if pd.notna(val) and str(val).strip() != "" else None
-
-                    # Map workbook columns to SQL ENRICHMENT_COLUMNS
-                    # Only assign if the value actually exists to prevent wiping existing SQL data
-                    doi = safe_get("DOI")
-                    if doi: enrichment_map[uuid]["doi_link"] = doi
-                    
-                    publisher = safe_get("Publisher")
-                    if publisher: enrichment_map[uuid]["publisher"] = publisher
-                    
-                    year = safe_get("Year") or safe_get("Publication Year")
-                    if year: enrichment_map[uuid]["publication_year"] = str(year).split(".")[0] # Fix float years like 2024.0
-                    
-                    authors = safe_get("Authors")
-                    if authors: enrichment_map[uuid]["authors"] = authors
-                    
-                    first_author = safe_get("First_Author") or safe_get("First Author")
-                    if first_author: enrichment_map[uuid]["first_author"] = first_author
-                    
-                    link = safe_get("Link")
-                    if link: enrichment_map[uuid]["link"] = link
-                    
-        except Exception as e:
-            print(f"Could not read metadata file {latest_meta}: {e}")
-
-    # 2. Load latest Evaluation Data (example using Abstract Evaluation)
-    # You will need to adapt the file path based on how your evaluation workbooks are named
-    eval_files = glob.glob(os.path.join(manager.folder, "10_Vector_DBs", "Abstract_DB", "Abstract_Overview_folder", "*_Abstract_Eval_Overview.xlsx"))
-    if eval_files:
-        latest_eval = max(eval_files, key=os.path.getctime)
-        try:
-            eval_df = pd.read_excel(latest_eval)
-            for _, row in eval_df.iterrows():
-                uuid = str(row.get("UUID") or "").strip()
-                if uuid:
-                    if uuid not in enrichment_map:
-                        enrichment_map[uuid] = {}
-                    enrichment_map[uuid]["evaluation_score"] = row.get("Score") 
-                    # Add other Eval columns as needed...
-        except Exception as e:
-            print(f"Could not read Evaluation file {latest_eval}: {e}")
-    # ---------------------------------------
-
     store = AnalyzedDataStore(db_path)
     synced = 0
     total_docs = len(df) # Get total number of documents to sync
@@ -579,18 +605,109 @@ def sync_storage_to_sql(manager_or_folder, db_path=DB_PATH,progress_callback=Non
     for index, row in df.iterrows():
         row_dict = row.to_dict()
         uuid = str(row_dict.get("UUID") or "").strip()
-        
+
         if not uuid:
             continue
-            
-        store.upsert_document(_record_from_registry_row(row_dict, manager, enrichment_map))
+
+        store.upsert_document(_record_from_registry_row(row_dict, manager))
         synced += 1
-        
-        # --- NEW: Trigger the callback ---
+
         if progress_callback:
             progress_callback(synced, total_docs, uuid)
 
+    # After the rows exist, pull DOI/publication metadata and evaluation
+    # summaries recorded in the space's workbooks into SQL (fill-if-empty,
+    # so values already in the database are never overwritten). This is what
+    # populates enrichment when a space is linked into a fresh database.
+    _merge_space_metadata_files(store, manager)
+    _merge_space_evaluation_overviews(store, manager)
+
     return synced
+
+
+def _merge_space_metadata_files(store, manager) -> int:
+    """
+    Merge every ``*_DOI_Metadata.xlsx`` (managed DOI workbook folder) and
+    ``*publications_metadata.xlsx`` (anywhere in the space) into the store —
+    newest file first, fill-if-empty — so the freshest recorded metadata wins
+    but nothing already in SQL is overwritten. Returns rows updated.
+    """
+    import glob
+    import pandas as pd
+
+    files = glob.glob(os.path.join(manager.doi_metadata_subfolder, "*_DOI_Metadata.xlsx"))
+    files += glob.glob(os.path.join(manager.folder, "**", "*publications_metadata.xlsx"),
+                       recursive=True)
+    updated = 0
+    for path in sorted(set(files), key=os.path.getmtime, reverse=True):
+        try:
+            updated += store.merge_metadata_workbook(pd.read_excel(path))
+        except Exception as e:
+            print(f"Could not merge metadata file {path}: {e}")
+    if updated:
+        print(f"Merged DOI/publication metadata from {len(files)} workbook(s): "
+              f"{updated} row update(s).")
+    return updated
+
+
+def _merge_space_evaluation_overviews(store, manager) -> int:
+    """
+    Rebuild evaluation summaries from the newest evaluation-overview workbook
+    (``{space}/Abstract_DB/Abstract_Overview_folder/*_Abstract_Eval_Overview.xlsx``
+    and the Introduction counterpart) and store them fill-if-empty into the
+    ``evaluation_json``/``evaluation_score`` (resp. ``intro_*``) columns. The
+    Overview sheet carries per-section ``{Section}_True_Count``/``_False_Count``
+    columns; the score is recomputed the same way data_evaluator does
+    (true / (true+false) * 100, one decimal). Returns rows updated.
+    """
+    import glob
+    import pandas as pd
+
+    targets = [
+        (os.path.join(manager.folder, "Abstract_DB", "Abstract_Overview_folder",
+                      "*_Abstract_Eval_Overview.xlsx"),
+         "evaluation_json", "evaluation_score"),
+        (os.path.join(manager.folder, "Introduction_DB",
+                      "*_Introduction_Eval_Overview.xlsx"),
+         "intro_evaluation_json", "intro_evaluation_score"),
+    ]
+    updated = 0
+    with store._connect() as conn:
+        for pattern, json_col, score_col in targets:
+            files = glob.glob(pattern)
+            if not files:
+                continue
+            latest = max(files, key=os.path.getmtime)
+            try:
+                ov = pd.read_excel(latest, sheet_name="Overview")
+            except Exception as e:
+                print(f"Could not read evaluation overview {latest}: {e}")
+                continue
+            sections = [c[: -len("_True_Count")] for c in ov.columns if c.endswith("_True_Count")]
+            for _, row in ov.iterrows():
+                uuid = str(row.get("UUID") or "").strip()
+                if not uuid or uuid == "nan":
+                    continue
+                stats = {}
+                for sec in sections:
+                    t, f = row.get(f"{sec}_True_Count"), row.get(f"{sec}_False_Count")
+                    if pd.notna(t) or pd.notna(f):
+                        stats[sec] = {"true": int(t or 0), "false": int(f or 0)}
+                if not stats:
+                    continue
+                total_true = sum(v["true"] for v in stats.values())
+                total = total_true + sum(v["false"] for v in stats.values())
+                percent = round(100.0 * total_true / total, 1) if total else None
+                cur = conn.execute(
+                    f"UPDATE documents SET "
+                    f"{json_col} = COALESCE(NULLIF({json_col}, ''), ?), "
+                    f"{score_col} = COALESCE(NULLIF({score_col}, ''), ?) "
+                    f"WHERE uuid = ?",
+                    (json.dumps(stats), "" if percent is None else str(percent), uuid))
+                updated += cur.rowcount if cur.rowcount > 0 else 0
+    if updated:
+        print(f"Merged evaluation summaries from overview workbook(s): {updated} row update(s).")
+    return updated
 
 
 def sync_one_document(manager_or_folder, filename, db_path=DB_PATH) -> bool:
