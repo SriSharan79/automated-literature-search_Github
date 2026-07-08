@@ -419,6 +419,8 @@ class ReviewApp:
         e.pack(side="left", padx=4)
         e.bind("<Return>", lambda ev: self._load_db_table())
         ttk.Button(top, text="Apply", command=self._load_db_table).pack(side="left", padx=2)
+        ttk.Button(top, text="Export columns to Excel…",
+                   command=self._export_db_columns).pack(side="left", padx=12)
         self.db_browse_status = ttk.Label(top, text="")
         self.db_browse_status.pack(side="right")
 
@@ -498,6 +500,88 @@ class ReviewApp:
             messagebox.showinfo("Nothing to export", "Run a query that returns rows first.")
             return
         self._export_rows(cols, rows, "query_result")
+
+    def _export_db_columns(self):
+        """Export database documents to Excel by ticking columns — no SQL needed.
+
+        Opens a dialog with one checkbox per database column, an optional
+        storage-space filter, and an option to honor the browser's current
+        filter text. The data comes straight from the SQLite store
+        (``list_documents``), so what you export is what the browser shows.
+        """
+        dlg = tk.Toplevel(self.container)
+        dlg.title("Export columns to Excel")
+        dlg.geometry("620x460")
+        dlg.transient(self.container.winfo_toplevel())
+        dlg.grab_set()
+
+        ttk.Label(dlg, text="Tick the columns to include in the Excel file:",
+                  font=("Arial", 10, "bold")).pack(anchor="w", padx=10, pady=(10, 4))
+
+        # Scrollable checkbox grid (same pattern as the Overviews field picker).
+        picker = ttk.Frame(dlg)
+        picker.pack(fill="both", expand=True, padx=10)
+        canvas = tk.Canvas(picker, highlightthickness=0)
+        vsb = ttk.Scrollbar(picker, orient="vertical", command=canvas.yview)
+        inner = ttk.Frame(canvas)
+        canvas.configure(yscrollcommand=vsb.set)
+        vsb.pack(side="right", fill="y")
+        canvas.pack(side="left", fill="both", expand=True)
+        canvas.create_window((0, 0), window=inner, anchor="nw")
+        inner.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
+
+        col_vars = {}
+        for i, col in enumerate(COLUMNS):
+            var = tk.BooleanVar(value=col in DEFAULT_OVERVIEW_FIELDS)
+            col_vars[col] = var
+            ttk.Checkbutton(inner, text=col, variable=var).grid(
+                row=i // 4, column=i % 4, sticky="w", padx=4, pady=1)
+
+        selbar = ttk.Frame(dlg)
+        selbar.pack(fill="x", padx=10, pady=(4, 0))
+        ttk.Button(selbar, text="Select all",
+                   command=lambda: [v.set(True) for v in col_vars.values()]).pack(side="left")
+        ttk.Button(selbar, text="Clear all",
+                   command=lambda: [v.set(False) for v in col_vars.values()]).pack(side="left", padx=6)
+
+        opts = ttk.Frame(dlg)
+        opts.pack(fill="x", padx=10, pady=6)
+        ttk.Label(opts, text="Storage space (optional):").grid(row=0, column=0, sticky="w")
+        space_var = tk.StringVar(value="")
+        ttk.Combobox(opts, textvariable=space_var, width=48,
+                     values=[""] + self.store.list_source_folders()).grid(
+            row=0, column=1, sticky="w", padx=6, pady=2)
+        current_search = self.db_search.get().strip()
+        use_filter = tk.BooleanVar(value=bool(current_search))
+        chk = ttk.Checkbutton(
+            opts, variable=use_filter,
+            text=f"Apply the browser's filter text ({current_search!r})" if current_search
+                 else "Apply the browser's filter text (empty — no effect)")
+        chk.grid(row=1, column=0, columnspan=2, sticky="w", pady=2)
+
+        def _do_export():
+            cols = [c for c in COLUMNS if col_vars[c].get()]
+            if not cols:
+                messagebox.showinfo("No columns", "Tick at least one column to export.",
+                                    parent=dlg)
+                return
+            search = current_search if (use_filter.get() and current_search) else None
+            rows = self.store.list_documents(search)
+            space = space_var.get().strip()
+            if space:
+                rows = [r for r in rows if (r.get("source_folder") or "") == space]
+            if not rows:
+                messagebox.showinfo("Nothing to export",
+                                    "No documents match the chosen filters.", parent=dlg)
+                return
+            rows = [{c: r.get(c) for c in cols} for r in rows]
+            dlg.destroy()
+            self._export_rows(cols, rows, "database_export")
+
+        btns = ttk.Frame(dlg)
+        btns.pack(fill="x", padx=10, pady=(4, 10))
+        ttk.Button(btns, text="Export…", command=_do_export).pack(side="left")
+        ttk.Button(btns, text="Cancel", command=dlg.destroy).pack(side="left", padx=8)
 
     # ============================================================= Overviews
     def _build_overviews_tab(self):
@@ -906,6 +990,16 @@ class ReviewApp:
          "table shows every column; the Filter box matches title/filename/UUID.\n"
          "Example: after running 'Evaluate data', hit Refresh and watch the 'evaluated' "
          "count rise."),
+
+        ("Database — Export columns to Excel…",
+         "Exports database documents to an Excel file without writing any SQL: tick the "
+         "columns you want (defaults match the overview builder), optionally restrict to "
+         "one storage space or reuse the browser's filter text, then choose where to save. "
+         "The data comes straight from the SQLite database, so it always reflects the "
+         "latest linked/enriched state.\n"
+         "Example: tick title + publication_year + classification + evaluation_score, "
+         "pick storage space 'LLM_Safety_Results' -> Export… -> "
+         "database_export.xlsx with one row per document."),
 
         ("Database — SQL query (read-only)",
          "Run a single SELECT over the 'documents' table (writes are blocked). "

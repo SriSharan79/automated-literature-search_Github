@@ -20,7 +20,9 @@ reachable from the UI. It is meant as a backlog for surfacing existing value.
 The standalone **Review tool** (`alr.ui.desktop.review_app`, launched from the top bar or
 `review_main.py`) additionally covers: storage-space detection (complete/partial), DB linking,
 DOI enrichment, **title + abstract classification** and **data evaluation** per space (each
-synced to SQL first), a raw DB browser, read-only SQL, cross-space stats (incl.
+synced to SQL first), a raw DB browser, read-only SQL, a **column-picker Excel export**
+(tick the database columns to export — optionally per storage space — no SQL needed),
+cross-space stats (incl.
 abstract-classified/evaluated counts), custom overviews (field-picker, filters, grouped charts,
 per-topic counts, saved templates, natural-language requests; exports match the previewed
 table), and a built-in **Guide tab** explaining every feature with examples.
