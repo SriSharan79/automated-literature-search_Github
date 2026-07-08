@@ -250,12 +250,48 @@ def _push_metrics_to_sql(uuid, averages, sql_label, db_path=None) -> bool:
     return True
 
 
+def _existing_metrics(uuid, metric_cols, sql_label, db_path=None):
+    """
+    Return the stored per-document metric averages for ``uuid`` if its
+    ``metrics_json[sql_label]`` already covers every selected metric column,
+    else ``None``. Used by ``mode="copy"`` (mirroring data_evaluator's
+    ``_existing_evaluation``) to reuse prior metrics instead of recomputing.
+    A document evaluated before with only SOME of the selected kinds (e.g.
+    lexical done, cosine newly requested) does not count and is recomputed.
+    """
+    import json
+    from alr.common.sql_store import AnalyzedDataStore, DB_PATH
+
+    try:
+        store = AnalyzedDataStore(db_path or DB_PATH)
+        row = store.get_document(uuid)
+    except Exception:
+        return None
+    if not row:
+        return None
+    try:
+        merged = json.loads(row.get("metrics_json") or "{}")
+    except (ValueError, TypeError):
+        return None
+    stored = merged.get(sql_label)
+    if not isinstance(stored, dict):
+        return None
+    if all(col in stored for col in metric_cols):
+        return stored
+    return None
+
+
 def evaluate_space_metrics(storage_path, kinds, target="abstract", db_path=None,
-                           progress_callback=None, should_cancel=None) -> int:
+                           progress_callback=None, should_cancel=None, mode="generate") -> int:
     """
     Batch-compute the selected metric ``kinds`` (subset of :data:`METRIC_KINDS`)
     for every analyzed document in a storage space, against the ``target`` data
     ("abstract" or "intro"). Returns the number of documents evaluated.
+
+    ``mode="copy"`` reuses prior metrics: documents whose SQL ``metrics_json``
+    already covers every selected metric column are skipped (only new/partially
+    evaluated documents are computed). ``mode="generate"`` (default, previous
+    behaviour) recomputes every document and updates the workbook rows in place.
 
     Results go to the storage space as one dated workbook **per metric kind**
     plus a **combined overview workbook** with all metric data (each workbook:
@@ -287,6 +323,15 @@ def evaluate_space_metrics(storage_path, kinds, target="abstract", db_path=None,
             print("Metric evaluation cancelled by user.")
             break
         try:
+            if mode == "copy":
+                prior = _existing_metrics(uuid, metric_cols, cfg["sql_label"], db_path)
+                if prior is not None:
+                    print(Fore.YELLOW + f"⏭️ Reusing existing {target} metrics for {uuid} (copy mode).")
+                    count += 1
+                    if progress_callback:
+                        progress_callback(i, total)
+                    continue
+
             MF.update_id_files(uuid)
             title, file_name = _fetch_metadata(MF, uuid)
             json_data = cfg["loader"](MF, uuid)

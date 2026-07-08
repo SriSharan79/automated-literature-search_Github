@@ -136,13 +136,19 @@ def _update_master_overview(storage_dir, sheet_name, uuid, title, filename, text
 
 
 def _sync_sections_for_uuid(UUID, title, file_name, json_data, sections, storage_path,
-                            text_key="Abstract Text identified:", overview_path=None):
+                            text_key="Abstract Text identified:", overview_path=None,
+                            overwrite=False):
     """
     Iterates through layout mappings to transform and evaluate section lists or
     strings. Returns a stats dict ``{section_key: {"true": t, "false": f}}`` that
     records, per section, how many extracted items were grounded in (a subset of)
     the reference text (``text_key`` -- the identified abstract or introduction
     text). ``overview_path`` selects the master-overview workbook to update.
+
+    ``overwrite=True`` rewrites the Excel rows of already-evaluated UUIDs in
+    place with the freshly computed values (used by ``mode="generate"``);
+    ``overwrite=False`` (default, previous behaviour) leaves existing rows
+    untouched and only appends UUIDs not yet in the sheets.
     """
     stats = {}
     for key, (ex_path, _) in sections.items():
@@ -159,7 +165,8 @@ def _sync_sections_for_uuid(UUID, title, file_name, json_data, sections, storage
                 file_name=file_name,
                 abs_txt=reference_text,
                 storage_path=storage_path,
-                overview_path=overview_path
+                overview_path=overview_path,
+                overwrite=overwrite
             )
         else:
             t, f = _save_single_section(
@@ -171,17 +178,20 @@ def _sync_sections_for_uuid(UUID, title, file_name, json_data, sections, storage
                 file_name=file_name,
                 abs_txt=reference_text,
                 storage_path=storage_path,
-                overview_path=overview_path
+                overview_path=overview_path,
+                overwrite=overwrite
             )
         stats[key] = {"true": t, "false": f}
     return stats
 
 
-def _save_list_section(UUID, key, content_list, ex_path, title, file_name, abs_txt, storage_path, overview_path=None):
+def _save_list_section(UUID, key, content_list, ex_path, title, file_name, abs_txt, storage_path, overview_path=None, overwrite=False):
     """
     Flattens lists horizontally using alternation layouts and uploads aggregate
     statistics. Always computes the true/false subset counts (returned for SQL),
-    but only writes the Excel sheet when this UUID has not already been evaluated.
+    but only writes the Excel sheet when this UUID has not already been evaluated
+    -- unless ``overwrite=True``, which updates the existing row in place
+    (_write_section_sheet_flat upserts by UUID).
     """
     entry = {
         "UUID": str(UUID),
@@ -210,8 +220,9 @@ def _save_list_section(UUID, key, content_list, ex_path, title, file_name, abs_t
 
         bullet_lines.append(f"- {content_str}")
 
-    # Skip the Excel write if already evaluated, but still return the counts.
-    if not _is_duplicate_in_sheet(Path(ex_path), key, str(UUID)):
+    # Skip the Excel write if already evaluated (unless overwriting), but
+    # still return the counts.
+    if overwrite or not _is_duplicate_in_sheet(Path(ex_path), key, str(UUID)):
         _write_section_sheet_flat(Path(ex_path), key, entry)
         aggregate_bullets = "\n ".join(bullet_lines)
         _update_master_overview(storage_path, key, UUID, title, file_name, aggregate_bullets, true_count, false_count, entry, overview_path=overview_path)
@@ -220,11 +231,12 @@ def _save_list_section(UUID, key, content_list, ex_path, title, file_name, abs_t
     return true_count, false_count
 
 
-def _save_single_section(UUID, key, content_value, ex_path, title, file_name, abs_txt, storage_path, overview_path=None):
+def _save_single_section(UUID, key, content_value, ex_path, title, file_name, abs_txt, storage_path, overview_path=None, overwrite=False):
     """
     Saves single text objects cleanly mapping their matching criteria directly.
     Always computes the true/false subset counts (returned for SQL), but only
-    writes the Excel sheet when this UUID has not already been evaluated.
+    writes the Excel sheet when this UUID has not already been evaluated --
+    unless ``overwrite=True``, which updates the existing row in place.
     """
     content_str = str(content_value)
     is_subset = content_str.lower() in str(abs_txt).lower() if abs_txt != "Not Found" else False
@@ -240,7 +252,7 @@ def _save_single_section(UUID, key, content_value, ex_path, title, file_name, ab
         "Is_Subset": is_subset
     }
 
-    if not _is_duplicate_in_sheet(Path(ex_path), key, str(UUID)):
+    if overwrite or not _is_duplicate_in_sheet(Path(ex_path), key, str(UUID)):
         _write_section_sheet_flat(Path(ex_path), key, entry)
         # Save overview text and append sectional layout data onto a unique sheet inside Master_Overview.xlsx
         _update_master_overview(storage_path, key, UUID, title, file_name, content_str, true_count, false_count, entry, overview_path=overview_path)
@@ -354,10 +366,12 @@ def evaluate_document(storage_path, uuid, db_path=None, push_sql=True, mode="gen
     ``intro_evaluation_json`` / ``intro_evaluation_score``).
 
     ``mode="copy"`` reuses a prior evaluation when one already exists in SQL
-    (skips recomputation); ``mode="generate"`` (default) always recomputes.
+    (skips recomputation; unevaluated documents are still computed);
+    ``mode="generate"`` (default) always recomputes AND rewrites the Excel rows
+    of already-evaluated UUIDs in place with the fresh values.
 
     Returns the per-section stats dict, or ``None`` if the source JSON is missing.
-    Safe to call repeatedly: the Excel writes are idempotent per UUID.
+    Safe to call repeatedly: the Excel writes upsert per UUID (no duplicates).
     """
     from alr.common.sections import build_intro_sections_eval_map, INTRO_TEXT_KEY, ABSTRACT_TEXT_KEY
 
@@ -391,6 +405,7 @@ def evaluate_document(storage_path, uuid, db_path=None, push_sql=True, mode="gen
         UUID=uuid, title=title, file_name=file_name,
         json_data=json_data, sections=sections, storage_path=str(MF.folder),
         text_key=text_key, overview_path=overview_path,
+        overwrite=(mode == "generate"),
     )
     if push_sql:
         try:

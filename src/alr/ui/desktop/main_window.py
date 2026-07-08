@@ -1027,6 +1027,18 @@ class AutomatedLiteratureUI(tk.Tk):
         ttk.Checkbutton(kinds_row, text="Cosine similarity (embeddings; reuses/creates vector DBs)",
                         variable=self.eval_kind_vars["cosine"]).grid(row=1, column=1, sticky="w", padx=6, pady=2)
 
+        # What to do with documents that already have results for the selected
+        # evaluation types: reuse them (only new documents are computed) or
+        # recompute everything and rewrite the stored rows in place.
+        mode_row = ttk.Frame(eval_frame)
+        mode_row.pack(fill="x", padx=5, pady=(2, 2))
+        ttk.Label(mode_row, text="Previously evaluated documents:").pack(side="left", padx=6)
+        self.eval_mode_var = tk.StringVar(value="copy")
+        ttk.Radiobutton(mode_row, text="Use existing results (only evaluate new documents)",
+                        value="copy", variable=self.eval_mode_var).pack(side="left", padx=4)
+        ttk.Radiobutton(mode_row, text="Rewrite (recompute & update all documents)",
+                        value="generate", variable=self.eval_mode_var).pack(side="left", padx=4)
+
         target_row = ttk.Frame(eval_frame)
         target_row.pack(fill="x", padx=5, pady=(2, 2))
         ttk.Label(target_row, text="Evaluate:").pack(side="left", padx=6)
@@ -1204,9 +1216,11 @@ class AutomatedLiteratureUI(tk.Tk):
 
         choice = self.eval_target_var.get()
         targets = ["abstract", "intro"] if choice == "both" else [choice]
+        eval_mode = self.eval_mode_var.get()
         print(f"[Evaluation] types: "
               + ", ".join((["substring"] if do_substring else []) + sorted(metric_kinds))
-              + f" | target(s): {', '.join(targets)}")
+              + f" | target(s): {', '.join(targets)}"
+              + f" | existing results: {'reuse (only new docs)' if eval_mode == 'copy' else 'rewrite all'}")
 
         def work(progress, should_cancel):
             from alr.common.sql_store import sync_storage_to_sql
@@ -1227,14 +1241,14 @@ class AutomatedLiteratureUI(tk.Tk):
                     progress(text=f"Substring grounding evaluation ({label})…")
                     from alr.analysis_evaluation.data_evaluator import evaluate_space
                     n = max(n, evaluate_space(
-                        clean_path, should_cancel=should_cancel, target=t,
+                        clean_path, should_cancel=should_cancel, target=t, mode=eval_mode,
                         progress_callback=lambda d, tot, lab=label: progress(
                             done=d, total=tot, text=f"Substring evaluation ({lab})  {d}/{tot}…")))
                 if metric_kinds and not should_cancel():
                     progress(text=f"Metric evaluation ({', '.join(sorted(metric_kinds))}) — {label}…")
                     from alr.analysis_evaluation.metric_evaluator import evaluate_space_metrics
                     n = max(n, evaluate_space_metrics(
-                        clean_path, metric_kinds, target=t, should_cancel=should_cancel,
+                        clean_path, metric_kinds, target=t, should_cancel=should_cancel, mode=eval_mode,
                         progress_callback=lambda d, tot, lab=label: progress(
                             done=d, total=tot, text=f"Metric evaluation ({lab})  {d}/{tot}…")))
             return n
