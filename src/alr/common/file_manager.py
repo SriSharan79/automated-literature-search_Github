@@ -310,6 +310,15 @@ class Vec_DB_Manager:
         self.Abstract_Overview_folder = self.Abstract_DB / "Abstract_Overview_folder"
         self.Abstract_Overview_folder.mkdir(exist_ok=True)
         
+        self.Abstract_DB_Excel = self.Abstract_DB / "Abstract_DB_Excel"
+        self.Abstract_DB_Excel.mkdir(exist_ok=True)        
+        
+        self.Abstract_DB_JSON = self.Abstract_DB / "Abstract_DB_JSON"
+        self.Abstract_DB_JSON.mkdir(exist_ok=True)
+                
+        self.Abstract_DB_Vec_bins = self.Abstract_DB / "Abstract_DB_Vec_bins"
+        self.Abstract_DB_Vec_bins.mkdir(exist_ok=True)
+    
         self.Abstract_Overview = self.Abstract_Overview_folder / f"{current_date}_Abstract_Overview.xlsx"
 
         self.Abstract_Eval_Overview = self.Abstract_Overview_folder / f"{current_date}_Abstract_Eval_Overview.xlsx"
@@ -351,31 +360,31 @@ class Vec_DB_Manager:
         self.DB_update_logger= self.Abstract_DB / "DB_update_logger.json"
 
         # Core Excel Files
-        self.Research_problem_DB_excel = self.Abstract_DB / "Research_problem_DB.xlsx"
-        self.Objective_DB_excel = self.Abstract_DB / "Objective_DB.xlsx"
-        self.Methodology_DB_excel = self.Abstract_DB / "Methodology_DB.xlsx"
-        self.Conclusion_DB_excel = self.Abstract_DB / "Conclusion_DB.xlsx" 
-        self.Results_DB_excel = self.Abstract_DB / "Results_DB.xlsx"   
-        self.Key_concepts_DB_excel = self.Abstract_DB / "Key_concepts_DB.xlsx"   
-        self.Research_Areas_DB_excel = self.Abstract_DB / "Research_Areas_DB.xlsx"     
+        self.Research_problem_DB_excel = self.Abstract_DB_Excel / "Research_problem_DB.xlsx"
+        self.Objective_DB_excel = self.Abstract_DB_Excel / "Objective_DB.xlsx"
+        self.Methodology_DB_excel = self.Abstract_DB_Excel / "Methodology_DB.xlsx"
+        self.Conclusion_DB_excel = self.Abstract_DB_Excel / "Conclusion_DB.xlsx" 
+        self.Results_DB_excel = self.Abstract_DB_Excel / "Results_DB.xlsx"   
+        self.Key_concepts_DB_excel = self.Abstract_DB_Excel / "Key_concepts_DB.xlsx"   
+        self.Research_Areas_DB_excel = self.Abstract_DB_Excel / "Research_Areas_DB.xlsx"     
          
         # Core JSON Files
-        self.Research_problem_DB_json = self.Abstract_DB / "Research_problem_DB.json"
-        self.Objective_DB_json = self.Abstract_DB / "Objective_DB.json"
-        self.Methodology_DB_json = self.Abstract_DB / "Methodology_DB.json"
-        self.Conclusion_DB_json = self.Abstract_DB / "Conclusion_DB.json"
-        self.Results_DB_json = self.Abstract_DB / "Results_DB.json"   
-        self.Key_concepts_DB_json = self.Abstract_DB / "Key_concepts_DB.json"   
-        self.Research_Areas_DB_json = self.Abstract_DB / "Research_Areas_DB.json"   
+        self.Research_problem_DB_json = self.Abstract_DB_JSON / "Research_problem_DB.json"
+        self.Objective_DB_json = self.Abstract_DB_JSON / "Objective_DB.json"
+        self.Methodology_DB_json = self.Abstract_DB_JSON / "Methodology_DB.json"
+        self.Conclusion_DB_json = self.Abstract_DB_JSON / "Conclusion_DB.json"
+        self.Results_DB_json = self.Abstract_DB_JSON / "Results_DB.json"   
+        self.Key_concepts_DB_json = self.Abstract_DB_JSON / "Key_concepts_DB.json"   
+        self.Research_Areas_DB_json = self.Abstract_DB_JSON / "Research_Areas_DB.json"   
         
         # Core DB files
-        self.Research_problem_DB_bin = self.Abstract_DB / "Research_problem_DB.bin"
-        self.Objective_DB_bin = self.Abstract_DB / "Objective_DB.bin"
-        self.Methodology_DB_bin = self.Abstract_DB / "Methodology_DB.bin"
-        self.Conclusion_DB_bin = self.Abstract_DB / "Conclusion_DB.bin"
-        self.Results_DB_bin = self.Abstract_DB / "Results_DB.bin"   
-        self.Key_concepts_DB_bin = self.Abstract_DB / "Key_concepts_DB.bin"   
-        self.Research_Areas_DB_bin = self.Abstract_DB / "Research_Areas_DB.bin"   
+        self.Research_problem_DB_bin = self.Abstract_DB_Vec_bins / "Research_problem_DB.bin"
+        self.Objective_DB_bin = self.Abstract_DB_Vec_bins / "Objective_DB.bin"
+        self.Methodology_DB_bin = self.Abstract_DB_Vec_bins / "Methodology_DB.bin"
+        self.Conclusion_DB_bin = self.Abstract_DB_Vec_bins / "Conclusion_DB.bin"
+        self.Results_DB_bin = self.Abstract_DB_Vec_bins / "Results_DB.bin"   
+        self.Key_concepts_DB_bin = self.Abstract_DB_Vec_bins / "Key_concepts_DB.bin"   
+        self.Research_Areas_DB_bin = self.Abstract_DB_Vec_bins / "Research_Areas_DB.bin"   
         
         
         self.Research_problem_Eval_excel = self.Abstract_Eval/ "Research_problem_Eval.xlsx"
