@@ -180,6 +180,82 @@ class ReviewApp:
         self.logs_list = tk.Listbox(dl_frame, height=4)
         self.logs_list.pack(side="left", fill="both", expand=True, padx=(0, 4))
         ttk.Button(dl_frame, text="Import bibliographic data", command=self._import_download_log).pack(side="right", padx=4, pady=4)
+        
+    def on_link_database_clicked(self):
+        # 1. Disable the button so the user can't click it twice
+        self.link_db_button.config(state="disabled")
+
+        # 2. Create the Progress Bar and Label UI elements
+        self.progress_var = tk.DoubleVar()
+        self.status_var = tk.StringVar(value="Preparing to sync...")
+        
+        self.progress_bar = ttk.Progressbar(self.parent_frame, variable=self.progress_var, maximum=100)
+        self.progress_bar.pack(fill="x", pady=(10, 2))
+        
+        self.status_label = ttk.Label(self.parent_frame, textvariable=self.status_var)
+        self.status_label.pack(pady=(0, 10))
+
+        # 3. Create a thread-safe Queue
+        self.progress_queue = queue.Queue()
+
+        # 4. Define the callback that sql_store.py will trigger
+        def progress_callback(current, total, current_uuid):
+            # Push progress to the queue (don't update Tkinter directly from the thread!)
+            self.progress_queue.put(("progress", current, total, current_uuid))
+
+        # 5. Define the worker function that runs in the background
+        def worker():
+            try:
+                total_synced = sync_storage_to_sql(self.manager, progress_callback=progress_callback)
+                self.progress_queue.put(("done", total_synced))
+            except Exception as e:
+                self.progress_queue.put(("error", str(e)))
+
+        # 6. Start the background thread
+        threading.Thread(target=worker, daemon=True).start()
+        
+        # 7. Start polling the queue on the main Tkinter thread
+        self._poll_progress_queue()
+
+    def _poll_progress_queue(self):
+        """Check the queue for updates every 100ms and update the Tkinter UI."""
+        try:
+            while True:
+                msg = self.progress_queue.get_nowait()
+                
+                if msg[0] == "progress":
+                    _, current, total, uuid = msg
+                    pct = (current / total * 100) if total > 0 else 0
+                    self.progress_var.set(pct)
+                    self.status_var.set(f"Syncing: {current} / {total} (UUID: {uuid})")
+                    
+                elif msg[0] == "done":
+                    total_synced = msg[1]
+                    self.progress_var.set(100)
+                    self.status_var.set(f"Success! Synced {total_synced} documents.")
+                    self.link_db_button.config(state="normal")
+                    
+                    # Optional: Destroy the progress bar after 3 seconds
+                    self.parent_frame.after(3000, self._cleanup_progress_ui)
+                    return  # Stop polling
+                    
+                elif msg[0] == "error":
+                    self.status_var.set(f"Sync failed: {msg[1]}")
+                    self.link_db_button.config(state="normal")
+                    return  # Stop polling
+                    
+        except queue.Empty:
+            pass
+
+        # If not done/error, schedule this function to run again in 100ms
+        self.parent_frame.after(100, self._poll_progress_queue)
+
+    def _cleanup_progress_ui(self):
+        """Hide the progress elements once finished."""
+        if hasattr(self, 'progress_bar') and self.progress_bar.winfo_exists():
+            self.progress_bar.pack_forget()
+        if hasattr(self, 'status_label') and self.status_label.winfo_exists():
+            self.status_label.pack_forget()
 
     def _scan_folder(self):
         folder = filedialog.askdirectory(title="Select a folder to scan for storage spaces")

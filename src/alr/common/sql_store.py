@@ -437,7 +437,7 @@ class AnalyzedDataStore:
 # ---------------------------------------------------------------------------
 # Syncing file-based analysis output into the database
 # ---------------------------------------------------------------------------
-def _record_from_registry_row(row: dict, manager: DataAnalyzeManager) -> dict:
+def _record_from_registry_row(row: dict, manager: DataAnalyzeManager,enrichment_data: dict = None) -> dict:
     """Build a documents record from one registry row + the on-disk JSON files."""
     uuid = str(row.get("UUID") or "").strip()
     record = {
@@ -472,17 +472,20 @@ def _record_from_registry_row(row: dict, manager: DataAnalyzeManager) -> dict:
     record["introduction_json"] = intro_raw
     _, refs_raw = _read_json(os.path.join(manager.references_subfolder, f"{uuid}_References.json"))
     record["references_json"] = refs_raw
+    
+    # Append any pre-loaded enrichment data (DOI, Evaluation, Classification)
+    if enrichment_data and uuid in enrichment_data:
+        for col, value in enrichment_data[uuid].items():
+            if col in ENRICHMENT_COLUMNS:
+                record[col] = value
 
     return record
 
 
-def sync_storage_to_sql(manager_or_folder, db_path=DB_PATH) -> int:
-    """
-    Import every processed document from a DataAnalyzeManager storage folder into
-    the SQLite store. Accepts either a DataAnalyzeManager or a folder path.
-    Returns the number of documents synced.
-    """
-    import pandas as pd  # light dependency, already required
+def sync_storage_to_sql(manager_or_folder, db_path=DB_PATH,progress_callback=None) -> int:
+    import pandas as pd
+    import glob
+    import os
 
     if isinstance(manager_or_folder, DataAnalyzeManager):
         manager = manager_or_folder
@@ -500,16 +503,64 @@ def sync_storage_to_sql(manager_or_folder, db_path=DB_PATH) -> int:
         print(f"Could not read registry {registry}: {e}")
         return 0
 
+    # --- NEW: Pre-load Enrichment Data ---
+    enrichment_map = {}
+    
+    # 1. Load latest DOI Metadata
+    doi_files = glob.glob(os.path.join(manager.doi_metadata_subfolder, "*_DOI_Metadata.xlsx"))
+    if doi_files:
+        latest_doi = max(doi_files, key=os.path.getctime)
+        try:
+            doi_df = pd.read_excel(latest_doi)
+            for _, row in doi_df.iterrows():
+                uuid = str(row.get("UUID") or "").strip()
+                if uuid:
+                    if uuid not in enrichment_map:
+                        enrichment_map[uuid] = {}
+                    # Map workbook columns to SQL ENRICHMENT_COLUMNS
+                    enrichment_map[uuid]["doi_link"] = row.get("DOI") 
+                    enrichment_map[uuid]["publisher"] = row.get("Publisher")
+                    enrichment_map[uuid]["publication_year"] = row.get("Year")
+                    # Add other DOI columns as needed...
+        except Exception as e:
+            print(f"Could not read DOI file {latest_doi}: {e}")
+
+    # 2. Load latest Evaluation Data (example using Abstract Evaluation)
+    # You will need to adapt the file path based on how your evaluation workbooks are named
+    eval_files = glob.glob(os.path.join(manager.folder, "10_Vector_DBs", "Abstract_DB", "Abstract_Overview_folder", "*_Abstract_Eval_Overview.xlsx"))
+    if eval_files:
+        latest_eval = max(eval_files, key=os.path.getctime)
+        try:
+            eval_df = pd.read_excel(latest_eval)
+            for _, row in eval_df.iterrows():
+                uuid = str(row.get("UUID") or "").strip()
+                if uuid:
+                    if uuid not in enrichment_map:
+                        enrichment_map[uuid] = {}
+                    enrichment_map[uuid]["evaluation_score"] = row.get("Score") 
+                    # Add other Eval columns as needed...
+        except Exception as e:
+            print(f"Could not read Evaluation file {latest_eval}: {e}")
+    # ---------------------------------------
+
     store = AnalyzedDataStore(db_path)
     synced = 0
-    for _, row in df.iterrows():
-        row_dict = row.to_dict()
-        if not str(row_dict.get("UUID") or "").strip():
-            continue
-        store.upsert_document(_record_from_registry_row(row_dict, manager))
-        synced += 1
+    total_docs = len(df) # Get total number of documents to sync
 
-    print(f"Synced {synced} document(s) into {store.db_path}")
+    for index, row in df.iterrows():
+        row_dict = row.to_dict()
+        uuid = str(row_dict.get("UUID") or "").strip()
+        
+        if not uuid:
+            continue
+            
+        store.upsert_document(_record_from_registry_row(row_dict, manager, enrichment_map))
+        synced += 1
+        
+        # --- NEW: Trigger the callback ---
+        if progress_callback:
+            progress_callback(synced, total_docs, uuid)
+
     return synced
 
 
