@@ -506,24 +506,53 @@ def sync_storage_to_sql(manager_or_folder, db_path=DB_PATH,progress_callback=Non
     # --- NEW: Pre-load Enrichment Data ---
     enrichment_map = {}
     
-    # 1. Load latest DOI Metadata
+    # 1. Load latest DOI or Publications Metadata
+    # Find both DOI metadata files and publications_metadata files
     doi_files = glob.glob(os.path.join(manager.doi_metadata_subfolder, "*_DOI_Metadata.xlsx"))
-    if doi_files:
-        latest_doi = max(doi_files, key=os.path.getctime)
+    
+    # Adjust this path if publications_metadata.xlsx lives in a specific subfolder
+    pub_files = glob.glob(os.path.join(manager.folder, "**", "*publications_metadata.xlsx"), recursive=True) 
+    
+    all_meta_files = doi_files + pub_files
+    
+    if all_meta_files:
+        # Sort and get the most recently modified file to ensure we use the freshest data
+        latest_meta = max(all_meta_files, key=os.path.getctime)
         try:
-            doi_df = pd.read_excel(latest_doi)
-            for _, row in doi_df.iterrows():
+            meta_df = pd.read_excel(latest_meta)
+            for _, row in meta_df.iterrows():
                 uuid = str(row.get("UUID") or "").strip()
-                if uuid:
+                if uuid and uuid != "nan":
                     if uuid not in enrichment_map:
                         enrichment_map[uuid] = {}
+                    
+                    # Helper to safely extract non-NaN values
+                    def safe_get(col_name):
+                        val = row.get(col_name)
+                        return val if pd.notna(val) and str(val).strip() != "" else None
+
                     # Map workbook columns to SQL ENRICHMENT_COLUMNS
-                    enrichment_map[uuid]["doi_link"] = row.get("DOI") 
-                    enrichment_map[uuid]["publisher"] = row.get("Publisher")
-                    enrichment_map[uuid]["publication_year"] = row.get("Year")
-                    # Add other DOI columns as needed...
+                    # Only assign if the value actually exists to prevent wiping existing SQL data
+                    doi = safe_get("DOI")
+                    if doi: enrichment_map[uuid]["doi_link"] = doi
+                    
+                    publisher = safe_get("Publisher")
+                    if publisher: enrichment_map[uuid]["publisher"] = publisher
+                    
+                    year = safe_get("Year") or safe_get("Publication Year")
+                    if year: enrichment_map[uuid]["publication_year"] = str(year).split(".")[0] # Fix float years like 2024.0
+                    
+                    authors = safe_get("Authors")
+                    if authors: enrichment_map[uuid]["authors"] = authors
+                    
+                    first_author = safe_get("First_Author") or safe_get("First Author")
+                    if first_author: enrichment_map[uuid]["first_author"] = first_author
+                    
+                    link = safe_get("Link")
+                    if link: enrichment_map[uuid]["link"] = link
+                    
         except Exception as e:
-            print(f"Could not read DOI file {latest_doi}: {e}")
+            print(f"Could not read metadata file {latest_meta}: {e}")
 
     # 2. Load latest Evaluation Data (example using Abstract Evaluation)
     # You will need to adapt the file path based on how your evaluation workbooks are named
