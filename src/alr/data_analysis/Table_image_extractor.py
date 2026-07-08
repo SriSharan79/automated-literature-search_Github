@@ -41,6 +41,19 @@ def build_doc_converter(enable_ocr: bool = True, image_resolution_scale: float =
     pipeline_options.generate_page_images = False
     pipeline_options.generate_picture_images = True
 
+    # Pick the compute device by availability: CUDA when present, else Apple
+    # MPS, else CPU. AUTO is Docling's default, but set it explicitly and log
+    # the decision so runs on different machines show what they used.
+    try:
+        from docling.datamodel.pipeline_options import AcceleratorOptions, AcceleratorDevice
+        from docling.utils.accelerator_utils import decide_device
+        pipeline_options.accelerator_options = AcceleratorOptions(device=AcceleratorDevice.AUTO)
+        device = decide_device(AcceleratorDevice.AUTO.value)
+        logger.info(f"Docling accelerator device: {device}")
+        print(f"ℹ Info: Docling running on device: {device}")
+    except Exception as e:  # older docling without accelerator options
+        logger.warning(f"Could not configure accelerator device (using docling defaults): {e}")
+
     # Use RapidOCR (ONNX Runtime backend) as the OCR engine. Unlike the EasyOCR
     # default it is lightweight and bundles cleanly into a standalone build; its
     # models are fetched on first use. Fall back to the default engine if
