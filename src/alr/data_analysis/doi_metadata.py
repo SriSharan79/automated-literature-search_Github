@@ -577,6 +577,18 @@ def enrich_space_with_doi(manager, db_path=None, should_cancel=None, input_path=
     scan_target = input_path if input_path else str(manager.pdf_subfolder)
     output_excel = manager.doi_metadata_excel
 
+    # Snapshot the live workbook BEFORE extraction: process_input_to_excel /
+    # _save_to_excel fully overwrite ``output_excel`` with only this run's
+    # rows, so rows for files outside the current scan target would otherwise
+    # be lost. These prior rows are merged back in below (dedup by File_Name,
+    # freshly extracted rows take precedence).
+    prior_rows = []
+    if os.path.exists(output_excel):
+        try:
+            prior_rows = pd.read_excel(output_excel).to_dict("records")
+        except Exception:
+            prior_rows = []
+
     store = AnalyzedDataStore(db_path or DB_PATH)
     docs_by_filename = {d.get("filename"): d for d in store.list_documents() if d.get("filename")}
 
@@ -602,8 +614,10 @@ def enrich_space_with_doi(manager, db_path=None, should_cancel=None, input_path=
     meta_logic.process_input_to_excel(scan_target, output_excel, should_cancel=should_cancel,
                                       skip_filenames=skip_filenames)
 
-    # Merge carried-forward rows into today's workbook (dedup by File_Name).
-    if carry_rows:
+    # Merge carried-forward rows AND the pre-run workbook snapshot into
+    # today's workbook (dedup by File_Name; new extraction rows win, then
+    # carry rows, then prior workbook rows).
+    if carry_rows or prior_rows:
         existing = []
         if os.path.exists(output_excel):
             try:
@@ -611,8 +625,15 @@ def enrich_space_with_doi(manager, db_path=None, should_cancel=None, input_path=
             except Exception:
                 existing = []
         existing_names = {str(r.get("File_Name")) for r in existing}
-        merged = existing + [r for r in carry_rows if str(r.get("File_Name")) not in existing_names]
-        pd.DataFrame(merged).reindex(columns=DOI_EXCEL_COLUMNS).to_excel(output_excel, index=False)
+        merged = list(existing)
+        for r in list(carry_rows) + list(prior_rows):
+            name = str(r.get("File_Name"))
+            if not name or name == "nan" or name in existing_names:
+                continue
+            merged.append({c: r.get(c, "") for c in DOI_EXCEL_COLUMNS})
+            existing_names.add(name)
+        if merged:
+            pd.DataFrame(merged).reindex(columns=DOI_EXCEL_COLUMNS).to_excel(output_excel, index=False)
 
     if not os.path.exists(output_excel):
         return 0
