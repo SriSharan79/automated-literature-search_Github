@@ -900,7 +900,7 @@ class AutomatedLiteratureUI(tk.Tk):
         self.query_scope_var.set("All sections")
         self.query_scope_var.pack(side="left", padx=5)
 
-        btn_run_query = ttk.Button(v_frame, text="Generate DB Framework & Query Report", command=self._run_visualization_query_action)
+        btn_run_query = ttk.Button(v_frame, text="Generate Query Report", command=self._run_visualization_query_action)
         btn_run_query.pack(pady=20, ipadx=10, ipady=5)
 
     def _run_visualization_query_action(self):
@@ -912,7 +912,7 @@ class AutomatedLiteratureUI(tk.Tk):
             return
 
         print("\n[RAG Database Architecture Step] Synchronizing local vector storage mapping structures...")
-        generate_databases(storage_choice)
+        # generate_databases(storage_choice)
 
         ra_kc_only = self.query_scope_var.get().startswith("Research-Area")
         print(f"[Query Pipeline Dispatch] Running query text profiling execution match targeting expression: '{query_text}'")
