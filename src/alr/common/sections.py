@@ -255,6 +255,13 @@ def build_sections_map_ra_kc(vdb) -> dict[str, tuple]:
         fields=(SectionField.EXCEL, SectionField.JSON, SectionField.BIN),
         only=("Research Areas", "Key Concepts"),
     )
+    
+
+def build_sections_map_vdb_excel(vdb) -> dict[str, tuple]:
+    """(BIN, EXCEL) variant of build_sections_map_vdb: the vector sync now
+    embeds the same positional Content column the query executor aligns
+    against, instead of the section JSON which could drift ahead of it."""
+    return get_sections_map(vdb, fields=(SectionField.BIN, SectionField.EXCEL))
 
 
 def build_sections_master_map(vdb, master_excel_path) -> dict[str, tuple]:
@@ -317,7 +324,6 @@ METRIC_WORKBOOK_ATTRS = {
         "overview": "Introduction_Metrics_Overview",
     },
 }
-
 
 def build_metric_workbooks_map(vdb, target="abstract") -> dict[str, "object"]:
     """
