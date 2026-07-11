@@ -14,6 +14,7 @@ from alr.data_analysis.title_extracter import get_title_in_the_file
 from alr.data_analysis.LLM_Reference_Extractor import process_references_from_chunks_from_Sec_JSON
 from alr.data_analysis.Refrences_log_utils import log_Ref_data_extracted, save_references_to_json
 from alr.data_analysis.Abstract_Analyzer import analyze_abstract, get_abstract_text
+from alr.data_analysis.Results_Conclusion_Analyzer import analyze_results_conclusion
 
 from colorama import Fore, Style
 from datetime import datetime as dt      # Alias avoids conflicts
@@ -196,6 +197,21 @@ def _load_registry(excel_success):
 
     return processed_files, processed_titles, processed_ids
 
+def _ensure_registry_column(excel_path, column, default=""):
+    """Add a column to the processed-file registry when older registries lack it."""
+    try:
+        p = Path(excel_path)
+        if not p.exists():
+            return
+        df = pd.read_excel(p)
+        if column not in df.columns:
+            df[column] = default
+            df.to_excel(p, index=False)
+            logger.info(f"🧾 Registry updated with new column: {column}")
+    except Exception as e:
+        logger.warning(f"⚠️ Could not ensure registry column '{column}': {e}")
+
+
 def _recheck_title_(excel_success,file_path,llm_service):
 
     default_title = "Title Not Found"
@@ -264,7 +280,8 @@ def _register_success(new_success, uniq_id, file_path, current_title, formatted_
         'sectioning': completed_steps['sectioning'],  # Individual key for sectioning
         'references': completed_steps['references'],  # Individual key for references
         'abstract': completed_steps['abstract'],  # Individual key for abstract
-        'Introduction': completed_steps['Introduction']  # Individual key for abstract
+        'Introduction': completed_steps['Introduction'],  # Individual key for abstract
+        'Results_Conclusion': completed_steps['Results_Conclusion']  # Individual key for results & conclusion
     })
 
 
@@ -288,7 +305,7 @@ def _register_failure(new_failed, file_path, error_Msg, failed_dest_root):
 
 def process_pdf_sections(file, storage_path="", doc_converter=None):
 
-    completed_steps = {"sectioning": 'Failed', "references": 'Failed', "abstract": 'Failed', "Introduction": 'Failed'}
+    completed_steps = {"sectioning": 'Failed', "references": 'Failed', "abstract": 'Failed', "Introduction": 'Failed', "Results_Conclusion": 'Failed'}
     file_path = Path(file)    
     pdf_name = file_path.name
     MF, pdf_dest_root, failed_dest_root, excel_success, excel_failed = _init_manager(storage_path)
@@ -570,6 +587,48 @@ def process_pdf_intro(file, storage_path=""):
         traceback.print_exc()       
         return 'F'   
 
+def process_pdf_results_conclusion(file, storage_path=""):
+    file_path = Path(file)
+    pdf_name = file_path.name
+    MF, _, _, excel_success, _ = _init_manager(storage_path)
+
+    UUID = get_corresponding_value(excel_success, "filename", pdf_name, "UUID")
+    if not UUID:
+        return 'F'
+
+    # Older registries predate the Results_Conclusion column; add it so the
+    # pass/fail status below can actually be recorded.
+    _ensure_registry_column(excel_success, "Results_Conclusion")
+
+    try:
+        # Check if the log exists BEFORE calling get_corresponding_value
+        log_path = Path(MF.AD_ResCon_log_path) if MF.AD_ResCon_log_path else None
+        MF.update_id_files(UUID)
+        if log_path and log_path.exists():
+            already_done = get_corresponding_value(str(log_path), "UUID", UUID, "file_path")
+            if already_done:
+                logger.info(f"⏩ Results & Conclusion already processed for {pdf_name} :-: {UUID}")
+                analyzed = get_corresponding_value(str(log_path), "UUID", UUID, "Sections_Analyzed")
+                if analyzed:
+                    logger.info(f"   Sections analyzed: {analyzed}")
+                logger.info("\nIdentifid Results & Conclusion Data:")
+                print_json_file(MF.rescon_json_path)
+                update_corresponding_value(excel_success, "UUID", UUID, "Results_Conclusion", 'Passed')
+                return 'P'
+
+        # If file doesn't exist or entry not found, run analysis
+        res=analyze_results_conclusion(UUID, MF)
+        if res=='P':
+            update_corresponding_value(excel_success, "UUID", UUID, "Results_Conclusion", 'Passed')
+            return 'P'
+        else:
+            update_corresponding_value(excel_success, "UUID", UUID, "Results_Conclusion", 'Failed')
+            return 'F'
+    except Exception as e:
+        logger.error(f"❌ Results & Conclusion Error: {e}")
+        traceback.print_exc()
+        return 'F'
+
 def process_pdf_file(file, storage_path=""):
     file_path = Path(file)   
     logger.info(f"🚀 Analyzing source: {file_path}")
@@ -627,29 +686,30 @@ def process_pdf_file(file, storage_path=""):
 def _resolve_components(mode, components):
     """
     Resolve which per-document components to run. Sectioning (incl. tables/images)
-    is always ensured separately; this controls abstract/intro/references.
+    is always ensured separately; this controls abstract/intro/results/references.
 
-    ``components`` (an iterable of 'abstract'/'intro'/'references'), when given,
-    takes precedence over ``mode`` so callers can pick exactly what to extract.
+    ``components`` (an iterable of 'abstract'/'intro'/'results'/'references'),
+    when given, takes precedence over ``mode`` so callers can pick exactly what
+    to extract.
     """
     if components is not None:
-        return {c for c in components if c in ("abstract", "intro", "references")}
+        return {c for c in components if c in ("abstract", "intro", "results", "references")}
     if mode == 'a':
-        return {"abstract", "intro"}
+        return {"abstract", "intro", "results"}
     if mode == 'r':
         return {"references"}
-    return {"abstract", "intro", "references"}  # mode is None -> full
+    return {"abstract", "intro", "results", "references"}  # mode is None -> full
 
 
 def process_pdf_mode_file(file, storage_path="", mode=None, components=None, doc_converter=None, eval_mode="generate"):
     """
     Orchestrates the PDF processing.
-    mode='a': Only attempts Abstract (+ Introduction) extraction.
+    mode='a': Only attempts Abstract (+ Introduction + Results & Conclusion) extraction.
     mode='r': Only attempts Reference extraction.
-    mode=None: Runs the full pipeline (Sectioning -> Abstract -> Introduction -> References).
+    mode=None: Runs the full pipeline (Sectioning -> Abstract -> Introduction -> Results & Conclusion -> References).
 
     ``components`` optionally overrides ``mode`` with an explicit selection among
-    ``{'abstract', 'intro', 'references'}``; sectioning is always ensured first.
+    ``{'abstract', 'intro', 'results', 'references'}``; sectioning is always ensured first.
 
     ``doc_converter`` optionally supplies a pre-built (shared) Docling converter so
     batch runs load the model pipeline once and reuse it; when omitted the
@@ -728,8 +788,11 @@ def process_pdf_mode_file(file, storage_path="", mode=None, components=None, doc
         if "intro" in selected:
             logger.info(f"📝 Processing Introduction for {file_path.name}...")
             result = process_pdf_intro(file_path, storage_path)
-        if "abstract" in selected or "intro" in selected:
-            logger.info(f"🏁 Abstract & Introduction Extraction finished ")
+        if "results" in selected:
+            logger.info(f"📝 Processing Results & Conclusion for {file_path.name}...")
+            result = process_pdf_results_conclusion(file_path, storage_path)
+        if "abstract" in selected or "intro" in selected or "results" in selected:
+            logger.info(f"🏁 Abstract, Introduction & Results/Conclusion Extraction finished ")
 
         if "references" in selected:
             logger.info(f"📚 Processing References for {file_path.name}...")

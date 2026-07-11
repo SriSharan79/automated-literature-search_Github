@@ -186,6 +186,10 @@ class DataAnalyzeManager:
         self.AD_Intro.mkdir(exist_ok=True)
         self.AD_Intro_log_path = os.path.join(self.AD_Intro, "Introduction_log.xlsx")
 
+        self.AD_ResCon = self.AD/ "Results_Conclusion_Data_Files"
+        self.AD_ResCon.mkdir(exist_ok=True)
+        self.AD_ResCon_log_path = os.path.join(self.AD_ResCon, "Results_Conclusion_log.xlsx")
+
         # Fixed managed locations for enrichment outputs (DOI metadata,
         # publication classification). Always created inside the storage space.
         self.doi_metadata_subfolder = self.folder / "DOI_Metadata_Files"
@@ -218,6 +222,7 @@ class DataAnalyzeManager:
         self.current_id = None
         self.abstract_json_path = None
         self.intro_json_path = None
+        self.rescon_json_path = None
         self.tables_storage_path=None
         self.image_storage_path=None
         
@@ -237,6 +242,7 @@ class DataAnalyzeManager:
         self.ref_json_path = os.path.join(self.references_subfolder, f"{doc_id}_References.json")
         self.abstract_json_path=os.path.join(self.AD_Abstract, f"{doc_id}_Abstract.json")
         self.intro_json_path=os.path.join(self.AD_Intro, f"{doc_id}_Intro.json")
+        self.rescon_json_path=os.path.join(self.AD_ResCon, f"{doc_id}_Results_Conclusion.json")
         
         # Seperate table folder
         self.tables_storage_path = self.tables_subfolder / f"{doc_id}_Tables_files"

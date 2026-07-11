@@ -104,7 +104,11 @@ def update_corresponding_value(excel_file_path, column_1, value_1, column_2, new
             print(f" '{value_1}' - is being Processed for the 1st time")
             return False
         
-        # Update the corresponding value in column_2
+        # Update the corresponding value in column_2. An all-empty column is
+        # read back as float64 (all NaN) and pandas then refuses a string
+        # assignment, so coerce it to object first.
+        if isinstance(new_value, str) and df[column_2].dtype != object:
+            df[column_2] = df[column_2].astype("object")
         df.at[matching_row_index[0], column_2] = new_value
         
         # Save the updated DataFrame back to the Excel file

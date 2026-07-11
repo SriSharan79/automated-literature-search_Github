@@ -43,7 +43,8 @@ def _is_usable_title(title: str) -> bool:
 
 
 # UI component name -> registry status column.
-_COMPONENT_COLUMN = {"abstract": "abstract", "intro": "Introduction", "references": "references"}
+_COMPONENT_COLUMN = {"abstract": "abstract", "intro": "Introduction",
+                     "results": "Results_Conclusion", "references": "references"}
 
 
 def _load_scan_log(scan_log_path):
@@ -87,7 +88,7 @@ def _components_complete(status_map, components) -> bool:
     """
     True if every requested component is already marked 'Passed' for a document.
 
-    ``components`` is a subset of {'abstract','intro','references'} (sectioning is
+    ``components`` is a subset of {'abstract','intro','results','references'} (sectioning is
     implicit for any registry entry). ``None`` means "no per-component request",
     so any already-analyzed file counts as complete (legacy skip-if-known).
     """

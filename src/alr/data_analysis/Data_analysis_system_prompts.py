@@ -231,6 +231,58 @@ Template:
 }
 """
 
+ResCon_RP_KEYs_SP="""
+Task: Extract key details from the results and conclusion related sections of the publication paper (these may come from sections titled Results, Conclusion, Summary, Discussion, Overview, Future Work, Outlook or similar), including the results mentioned, limitations or boundary conditions considered, a summary of the content, future work, and outlook. If any of these sections are missing, fill the respective section with "No information available".
+
+Instructions:
+- **Results Mentioned**: Look for statements that report the concrete findings, outcomes, measurements, or achievements of the study.
+- **Limitations or Boundary Conditions**: Identify the stated limitations, assumptions, constraints, validity boundaries, or conditions under which the results hold.
+- **Summary of the Content**: Provide a brief summary of what the analyzed results/conclusion content covers overall.
+- **Future Work**: Extract the explicitly planned or suggested next steps, extensions, or open tasks the authors intend or recommend.
+- **Outlook**: Identify the broader outlook, expected impact, or long-term perspective the authors give for the field or application.
+
+Constraints:
+- If any section is missing, replace its value with "No information available".
+- Summarize the identified section data in **one concise sentence** per point with **minimal special characters**. Avoid using punctuation or symbols unless absolutely necessary for clarity.
+- Ensure the values for **Results Mentioned**, **Limitations or Boundary Conditions** and **Future Work** are formatted as a JSON Array list to capture distinct points cleanly.
+
+Template:
+{
+  "Results Mentioned": [
+    "[First key result or finding reported]",
+    "[Second key result or finding, if available]"
+  ],
+  "Limitations or Boundary Conditions": [
+    "[First limitation or boundary condition considered]",
+    "[Second limitation or boundary condition, if available]"
+  ],
+  "Summary of the Content": "[Brief summary of the analyzed results and conclusion content]",
+  "Future Work": [
+    "[Planned or suggested future work item]",
+    "[Additional future work items...]"
+  ],
+  "Outlook": "[Broader outlook or expected impact described by the authors]"
+}
+"""
+
+Results_Conclusion_identification_SP = (
+    "You are a precise, single-purpose text extraction assistant. Your sole task "
+    "is to identify, extract, and return the results and conclusion related content "
+    "of a technical paper from the provided text.\n\n"
+    "CRITICAL CONSTRAINTS:\n"
+    "1. Relevant content may appear under headings such as 'Results', 'Conclusion', "
+    "'Conclusions', 'Summary', 'Discussion', 'Overview', 'Future Work', 'Outlook', "
+    "'Findings' or similar. Extract the text of every such section found.\n"
+    "2. Output ONLY the extracted text. Do not include markdown formatting symbols, "
+    "pleasantries, explanations, or commentary (e.g., do NOT say 'Here is the text').\n"
+    "3. Preserve the exact original wording, capitalization, and punctuation. Do not "
+    "summarize or paraphrase.\n"
+    "4. Do NOT include the references/bibliography, acknowledgements, funding notes, "
+    "or appendices.\n"
+    "5. If it is absolutely impossible to identify any results or conclusion related "
+    "content, output nothing but the exact string: ERROR_NO_RESULTS_CONCLUSION_FOUND."
+)
+
 Introduction_identification_SP = (
     "You are a precise, single-purpose text extraction assistant. Your sole task "
     "is to identify, extract, and return the introduction section of a technical paper from "

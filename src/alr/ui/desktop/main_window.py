@@ -498,6 +498,7 @@ class AutomatedLiteratureUI(tk.Tk):
             "sections": tk.BooleanVar(value=True),
             "abstract": tk.BooleanVar(value=True),
             "intro": tk.BooleanVar(value=True),
+            "results": tk.BooleanVar(value=True),
             "references": tk.BooleanVar(value=False),
             "doi": tk.BooleanVar(value=True),
             "classification": tk.BooleanVar(value=True),
@@ -509,6 +510,7 @@ class AutomatedLiteratureUI(tk.Tk):
                         variable=self.comp_vars["sections"], state="disabled").grid(row=0, column=0, sticky="w", padx=6, pady=3)
         ttk.Checkbutton(comp_frame, text="Abstract", variable=self.comp_vars["abstract"]).grid(row=0, column=1, sticky="w", padx=6, pady=3)
         ttk.Checkbutton(comp_frame, text="Introduction", variable=self.comp_vars["intro"]).grid(row=0, column=2, sticky="w", padx=6, pady=3)
+        ttk.Checkbutton(comp_frame, text="Results & Conclusion", variable=self.comp_vars["results"]).grid(row=0, column=3, sticky="w", padx=6, pady=3)
         ttk.Checkbutton(comp_frame, text="References", variable=self.comp_vars["references"]).grid(row=1, column=0, sticky="w", padx=6, pady=3)
         ttk.Checkbutton(comp_frame, text="DOI / metadata", variable=self.comp_vars["doi"]).grid(row=1, column=1, sticky="w", padx=6, pady=3)
         ttk.Checkbutton(comp_frame, text="Classification", variable=self.comp_vars["classification"]).grid(row=1, column=2, sticky="w", padx=6, pady=3)
@@ -572,13 +574,13 @@ class AutomatedLiteratureUI(tk.Tk):
 
         # Which components the user chose to extract. Sections (incl. tables/images)
         # is always run as the prerequisite; the rest are optional.
-        components = {c for c in ("abstract", "intro", "references") if self.comp_vars[c].get()}
+        components = {c for c in ("abstract", "intro", "results", "references") if self.comp_vars[c].get()}
         do_doi = self.comp_vars["doi"].get()
         do_classify = self.comp_vars["classification"].get()
         do_text_db = self.comp_vars["text_db"].get()
         do_vector_db = self.comp_vars["vector_db"].get()
         print(f"[Selection] Components: sections (required)"
-              + "".join(f", {c}" for c in ("abstract", "intro", "references") if c in components)
+              + "".join(f", {c}" for c in ("abstract", "intro", "results", "references") if c in components)
               + (", doi/metadata" if do_doi else "") + (", classification" if do_classify else "")
               + (", text DB" if do_text_db else "") + (", vector DB" if do_vector_db else ""))
 
