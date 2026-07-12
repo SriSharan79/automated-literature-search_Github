@@ -862,20 +862,30 @@ class AutomatedLiteratureUI(tk.Tk):
     # TAB 3: VISUALIZE & RAG QUERY
     # ==========================================
     def _build_visualize_tab(self):
-        tab = ttk.Frame(self.notebook)
-        self.notebook.add(tab, text="3. Visualize & Query")
+        tab = self._make_scrollable_tab("3. Visualize & Query")
 
         v_frame = tk.LabelFrame(tab, text="RAG Database Query Engine (Vector DB Layout Profiles)")
-        v_frame.pack(fill="both", expand=True, padx=10, pady=10)
+        v_frame.pack(fill="x", padx=10, pady=10)
 
         # Storage Vector Path Layout Selection parameters settings setup
         db_path_frame = ttk.Frame(v_frame)
         db_path_frame.pack(fill="x", padx=5, pady=10)
-        
+
         ttk.Label(db_path_frame, text="Select Data Storage Engine Source Directory Path:").pack(anchor="w", padx=5)
         self.visualize_storage_entry = ttk.Entry(db_path_frame, width=65)
         self.visualize_storage_entry.pack(side="left", padx=5, pady=5)
         ttk.Button(db_path_frame, text="Browse...", command=lambda: self._browse_folder(self.visualize_storage_entry)).pack(side="left", padx=2, pady=5)
+
+        # Query target: the storage space above, or the combined common DB
+        # maintained in the frame below.
+        target_frame = ttk.Frame(v_frame)
+        target_frame.pack(fill="x", padx=5, pady=(0, 5))
+        ttk.Label(target_frame, text="Query target:").pack(side="left", padx=5)
+        self.query_target_var = tk.StringVar(value="space")
+        ttk.Radiobutton(target_frame, text="Selected storage space", value="space",
+                        variable=self.query_target_var).pack(side="left", padx=5)
+        ttk.Radiobutton(target_frame, text="Common database (all combined spaces)", value="common",
+                        variable=self.query_target_var).pack(side="left", padx=5)
 
         # Embedding engine used to build/query the vector DBs (shared session
         # setting - the same selector also appears on the Evaluate & Enrich tab
@@ -905,18 +915,176 @@ class AutomatedLiteratureUI(tk.Tk):
         btn_run_query = ttk.Button(v_frame, text="Generate Query Report", command=self._run_visualization_query_action)
         btn_run_query.pack(pady=20, ipadx=10, ipady=5)
 
+        self._build_common_db_frame(tab)
+
+    def _build_common_db_frame(self, tab):
+        """
+        Common Database frame: combine the text + vector DBs of several
+        storage spaces into ONE queryable location (the RAG counterpart of
+        the app-wide SQL database). The build is incremental — only documents
+        not yet in the common DB (by UUID / Title / optionally Filename) are
+        added — and prefers each space's SQL-linked data over re-reading files.
+        """
+        c_frame = tk.LabelFrame(tab, text="Common Database (combine storage spaces into one queryable DB)")
+        c_frame.pack(fill="x", padx=10, pady=(0, 10))
+
+        path_row = ttk.Frame(c_frame)
+        path_row.pack(fill="x", padx=5, pady=(8, 4))
+        ttk.Label(path_row, text="Common DB folder:").pack(side="left", padx=5)
+        self.common_db_entry = ttk.Entry(path_row, width=55)
+        self.common_db_entry.pack(side="left", padx=5)
+        ttk.Button(path_row, text="Browse...",
+                   command=lambda: self._browse_folder(self.common_db_entry)).pack(side="left", padx=2)
+
+        ttk.Label(c_frame, text="Source storage spaces to combine:").pack(anchor="w", padx=10)
+        list_row = ttk.Frame(c_frame)
+        list_row.pack(fill="x", padx=10, pady=(2, 4))
+        self.common_sources_list = tk.Listbox(list_row, height=5, selectmode="extended")
+        self.common_sources_list.pack(side="left", fill="x", expand=True)
+        list_sb = ttk.Scrollbar(list_row, orient="vertical", command=self.common_sources_list.yview)
+        self.common_sources_list.configure(yscrollcommand=list_sb.set)
+        list_sb.pack(side="left", fill="y")
+        btn_col = ttk.Frame(list_row)
+        btn_col.pack(side="left", fill="y", padx=(6, 0))
+        ttk.Button(btn_col, text="Add space…", command=self._add_common_source).pack(fill="x", pady=1)
+        ttk.Button(btn_col, text="Scan folder for spaces…", command=self._scan_common_sources).pack(fill="x", pady=1)
+        ttk.Button(btn_col, text="Remove selected", command=self._remove_common_sources).pack(fill="x", pady=1)
+
+        opt_row = ttk.Frame(c_frame)
+        opt_row.pack(fill="x", padx=10, pady=(0, 4))
+        self.common_match_filename_var = tk.BooleanVar(value=True)
+        ttk.Checkbutton(opt_row,
+                        text="Also treat matching filenames as duplicates (besides UUID and Title)",
+                        variable=self.common_match_filename_var).pack(side="left")
+
+        ttk.Button(c_frame, text="Build / Update Common DB",
+                   command=self._build_common_db_action).pack(pady=(4, 10), ipadx=10, ipady=4)
+
+        self._load_common_db_config()
+
+    # --- Common DB config persistence (like the fixed SQL DB location) ---
+
+    @staticmethod
+    def _common_db_config_path():
+        from alr.common.file_manager import ALR_main_folder
+        return Path(ALR_main_folder) / "common_db_config.json"
+
+    def _load_common_db_config(self):
+        import json as _json
+        from alr.common.file_manager import ALR_main_folder
+        cfg = {}
+        try:
+            path = self._common_db_config_path()
+            if path.exists():
+                cfg = _json.loads(path.read_text(encoding="utf-8"))
+        except Exception as e:
+            print(f"[Common DB] Could not load saved configuration: {e}")
+        common_path = cfg.get("common_path") or str(Path(ALR_main_folder) / "00_Common_DB")
+        self.common_db_entry.delete(0, "end")
+        self.common_db_entry.insert(0, common_path)
+        self.common_sources_list.delete(0, "end")
+        for src in cfg.get("sources", []):
+            self.common_sources_list.insert("end", src)
+        self.common_match_filename_var.set(bool(cfg.get("match_filename", True)))
+
+    def _save_common_db_config(self):
+        import json as _json
+        try:
+            cfg = {
+                "common_path": self.common_db_entry.get().strip(),
+                "sources": list(self.common_sources_list.get(0, "end")),
+                "match_filename": self.common_match_filename_var.get(),
+            }
+            self._common_db_config_path().write_text(
+                _json.dumps(cfg, indent=2), encoding="utf-8")
+        except Exception as e:
+            print(f"[Common DB] Could not save configuration: {e}")
+
+    # --- Common DB source-list handlers ---
+
+    def _add_common_source(self):
+        path = filedialog.askdirectory(title="Select a storage space to combine")
+        if not path:
+            return
+        existing = set(self.common_sources_list.get(0, "end"))
+        if path not in existing:
+            self.common_sources_list.insert("end", path)
+
+    def _scan_common_sources(self):
+        root = filedialog.askdirectory(title="Select a folder to scan for storage spaces")
+        if not root:
+            return
+        from alr.common.storage_scanner import detect_storage_spaces
+        spaces = detect_storage_spaces(root)
+        existing = set(self.common_sources_list.get(0, "end"))
+        added = 0
+        for space in spaces:
+            if space.path not in existing:
+                self.common_sources_list.insert("end", space.path)
+                added += 1
+        messagebox.showinfo("Scan for storage spaces",
+                            f"Found {len(spaces)} storage space(s); added {added} new one(s) to the list.")
+
+    def _remove_common_sources(self):
+        for idx in reversed(self.common_sources_list.curselection()):
+            self.common_sources_list.delete(idx)
+
+    def _build_common_db_action(self):
+        common_path = clean_folder_path(self.common_db_entry.get().strip())
+        sources = [clean_folder_path(s) for s in self.common_sources_list.get(0, "end")]
+
+        if not common_path:
+            messagebox.showerror("Error", "Please set the Common DB folder first.")
+            return
+        if not sources:
+            messagebox.showerror("Error", "Please add at least one source storage space to combine.")
+            return
+
+        match_filename = self.common_match_filename_var.get()
+        self._save_common_db_config()
+
+        skip_info = {}
+
+        def work(progress, should_cancel):
+            from alr.rag_builders.db_manager import build_common_database
+            added, skipped = build_common_database(
+                sources, common_path, match_filename=match_filename,
+                progress_callback=lambda d, t, txt: progress(done=d, total=t, text=txt),
+                should_cancel=should_cancel,
+            )
+            skip_info["skipped"] = skipped
+            return added
+
+        def on_success(added):
+            messagebox.showinfo(
+                "Common Database",
+                f"Common DB updated: {added or 0} document(s) added, "
+                f"{skip_info.get('skipped', 0)} already-known duplicate(s) skipped.\n\n"
+                f"Location: {common_path}")
+
+        self._run_threaded(work, "Building Common Database", "added", on_success=on_success)
+
     def _run_visualization_query_action(self):
-        storage_choice = self.visualize_storage_entry.get().strip()
+        query_common = getattr(self, "query_target_var", None) and self.query_target_var.get() == "common"
+        if query_common:
+            storage_choice = self.common_db_entry.get().strip()
+        else:
+            storage_choice = self.visualize_storage_entry.get().strip()
         query_text = self.query_entry.get().strip()
 
         if not storage_choice or not query_text:
-            messagebox.showerror("Error", "Please make sure to supply both data engine reference destination parameters and active query statements strings text models templates.")
+            if query_common and not storage_choice:
+                messagebox.showerror("Error", "Query target is the Common DB, but no Common DB folder is set below.")
+            else:
+                messagebox.showerror("Error", "Please make sure to supply both data engine reference destination parameters and active query statements strings text models templates.")
             return
 
         print("\n[RAG Database Architecture Step] Synchronizing local vector storage mapping structures...")
         # generate_databases(storage_choice)
 
+        target_label = "Common DB" if query_common else "storage space"
         ra_kc_only = self.query_scope_var.get().startswith("Research-Area")
+        print(f"[Query Pipeline Dispatch] Querying the {target_label} at: {storage_choice}")
         print(f"[Query Pipeline Dispatch] Running query text profiling execution match targeting expression: '{query_text}'")
         if ra_kc_only:
             from alr.rag_builders.query_executor import generate_query_report_RA_KC

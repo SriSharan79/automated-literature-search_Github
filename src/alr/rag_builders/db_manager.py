@@ -268,6 +268,284 @@ def generate_databases(Storage_path, do_text: bool = True, do_vector: bool = Tru
         _sync_sections_VDB(VDB, secs_VDB, rebuild=rebuild_vector)
 
 
+# ---------------------------------------------------------------------------
+# Common (combined) database: many storage spaces -> one text + vector DB
+# ---------------------------------------------------------------------------
+
+# Per-common-DB record of every document already merged in (UUID, Title,
+# Filename, where it came from). This is what makes re-runs and cross-space
+# duplicates cheap to skip without re-reading every section Excel.
+COMMON_DB_MANIFEST = "Common_DB_manifest.xlsx"
+
+# Titles that must never be used for duplicate matching.
+_UNUSABLE_TITLES = {"", "nan", "none", "title not found", "no metadata title"}
+
+
+def _norm_key(value) -> str:
+    """Normalize a title/filename for duplicate comparison."""
+    return " ".join(str(value or "").strip().lower().split())
+
+
+def _usable_title(title) -> bool:
+    key = _norm_key(title)
+    return key not in _UNUSABLE_TITLES and not key.startswith("title not found")
+
+
+def _usable_filename(filename) -> bool:
+    return _norm_key(filename) not in {"", "nan", "none"}
+
+
+def _load_common_known(common_path, sections):
+    """
+    Load the identity sets of everything already inside the common DB.
+
+    Primary source is the manifest workbook; when it does not exist yet (a
+    common DB built before this feature, or by hand) the identities are
+    adopted from the section Excel DBs' Original_UUID/Title/Filename columns,
+    so an existing combined DB is never re-imported from scratch.
+
+    Returns (known, manifest_rows) where known = {"uuids", "titles",
+    "filenames"} sets and manifest_rows is the list of row dicts the caller
+    appends to and re-saves.
+    """
+    known = {"uuids": set(), "titles": set(), "filenames": set()}
+    manifest_rows = []
+    manifest_path = Path(common_path) / COMMON_DB_MANIFEST
+
+    def register(uuid, title, filename):
+        if uuid:
+            known["uuids"].add(str(uuid))
+        if _usable_title(title):
+            known["titles"].add(_norm_key(title))
+        if _usable_filename(filename):
+            known["filenames"].add(_norm_key(filename))
+
+    if manifest_path.exists() and manifest_path.stat().st_size > 0:
+        try:
+            df = pd.read_excel(manifest_path)
+            for _, row in df.iterrows():
+                r = row.to_dict()
+                register(str(r.get("UUID") or "").strip(), r.get("Title"), r.get("Filename"))
+                manifest_rows.append(r)
+            return known, manifest_rows
+        except Exception as e:
+            print(Fore.YELLOW + f"⚠️ Could not read common-DB manifest ({e}); adopting from section DBs.")
+
+    # No manifest yet: adopt identities from the existing section Excel DBs.
+    seen = set()
+    for key, (ex_path, _j_path) in sections.items():
+        ex_path = Path(ex_path)
+        if not ex_path.exists() or ex_path.stat().st_size == 0:
+            continue
+        try:
+            df = pd.read_excel(ex_path)
+        except Exception:
+            continue
+        if "UUID" not in df.columns:
+            continue
+        for _, row in df.iterrows():
+            uuid = str(row.get("Original_UUID") or row.get("UUID") or "").strip()
+            # List-section rows carry "uuid_idx" in UUID; strip the suffix.
+            if "Original_UUID" not in df.columns and "_" in uuid:
+                uuid = uuid.rsplit("_", 1)[0]
+            if not uuid or uuid in seen:
+                continue
+            seen.add(uuid)
+            title = row.get("Title")
+            filename = row.get("Filename")
+            register(uuid, title, filename)
+            manifest_rows.append({
+                "UUID": uuid, "Title": title, "Filename": filename,
+                "Source_Folder": "", "Data_Origin": "adopted (pre-manifest common DB)",
+                "Added": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            })
+    if manifest_rows:
+        print(Fore.CYAN + f"🧾 Adopted {len(manifest_rows)} existing document(s) from the common DB's section Excels.")
+    return known, manifest_rows
+
+
+def _save_common_manifest(common_path, manifest_rows):
+    manifest_path = Path(common_path) / COMMON_DB_MANIFEST
+    try:
+        pd.DataFrame(manifest_rows).to_excel(manifest_path, index=False)
+    except Exception as e:
+        print(Fore.RED + f"❌ Could not write common-DB manifest: {e}")
+
+
+def _sql_documents_for_space(space_path):
+    """
+    Fetch the analyzed documents of one storage space from the app-wide SQL
+    database (the space is "linked" once sync_storage_to_sql ran for it).
+
+    Returns {uuid: (title, filename, json_data)} where json_data has the same
+    shape as the on-disk abstract JSON (section key -> string or list), or {}
+    when the space has no SQL rows / no DB exists — the caller then falls back
+    to reading the space's files directly.
+    """
+    from alr.common.sql_store import (
+        AnalyzedDataStore, DB_PATH, LIST_SECTIONS, SECTION_COLUMNS,
+    )
+    from alr.common.sections import ALR_SECTIONS
+
+    docs = {}
+    try:
+        if not Path(DB_PATH).exists():
+            return docs
+        store = AnalyzedDataStore(DB_PATH)
+        target = str(Path(space_path))
+        for row in store.list_documents():
+            if str(row.get("source_folder") or "") != target:
+                continue
+            uuid = str(row.get("uuid") or "").strip()
+            if not uuid:
+                continue
+            json_data = {}
+            has_content = False
+            for spec in ALR_SECTIONS:
+                val = row.get(SECTION_COLUMNS[spec.key])
+                if val is None or str(val).strip() == "":
+                    json_data[spec.key] = "No information available"
+                    continue
+                if spec.key in LIST_SECTIONS:
+                    try:
+                        parsed = json.loads(val)
+                        json_data[spec.key] = parsed if isinstance(parsed, list) else [str(parsed)]
+                    except (json.JSONDecodeError, TypeError):
+                        json_data[spec.key] = [str(val)]
+                else:
+                    json_data[spec.key] = str(val)
+                has_content = True
+            if not has_content:
+                continue  # row exists but the abstract was never analyzed
+            docs[uuid] = (row.get("title"), row.get("filename"), json_data)
+    except Exception as e:
+        print(Fore.YELLOW + f"⚠️ SQL lookup failed for {space_path}: {e}")
+        return {}
+    return docs
+
+
+def _file_documents_for_space(space_path):
+    """On-disk fallback: read the space's abstract log + abstract JSONs."""
+    MF = DataAnalyzeManager(space_path)
+    docs = {}
+    for UUID in _load_recorded_abstracts(MF):
+        UUID = str(UUID)
+        MF.update_id_files(UUID)
+        title, file_name = _fetch_metadata(MF, UUID)
+        json_data = _load_abstract_json(MF, UUID)
+        if not json_data:
+            continue
+        docs[UUID] = (title, file_name, json_data)
+    return docs
+
+
+def build_common_database(source_paths, common_path, match_filename: bool = True,
+                          do_vector: bool = True,
+                          progress_callback=None, should_cancel=None):
+    """
+    Merge several storage spaces into ONE common text + vector database
+    (per-section Excel/JSON DBs, master Excel overview, FAISS .bin indexes)
+    living in ``common_path`` — the RAG counterpart of the app-wide SQL DB.
+
+    - Each source space's documents come from the SQL database when the space
+      is already linked (sync_storage_to_sql ran for it); otherwise they are
+      read from the space's files (abstract log + abstract JSONs).
+    - The build is incremental: documents already in the common DB are
+      skipped, matched by UUID, by normalized Title, and (optionally, when
+      ``match_filename``) by Filename. What's inside the common DB is tracked
+      in ``Common_DB_manifest.xlsx``; a pre-manifest common DB is adopted
+      from its section Excels on first run.
+    - The vector sync afterwards only embeds/appends Excel rows not yet in
+      the indexes (see _sync_sections_VDB), never rebuilding from scratch.
+
+    Returns (added, skipped).
+    """
+    if should_cancel is None:
+        should_cancel = lambda: False
+
+    common_path = Path(common_path)
+    VDB = Vec_DB_Manager(common_path)
+    MASTER_EXCEL_FILE = VDB.Abstract_Overview
+    sections = build_sections_map(VDB)
+    Master_map = build_sections_master_map(VDB, MASTER_EXCEL_FILE)
+
+    known, manifest_rows = _load_common_known(common_path, sections)
+    uuid_cache = {}
+    added = skipped = 0
+
+    # Collect every space's documents first so progress can show a real total.
+    space_docs = []
+    for space in source_paths:
+        if should_cancel():
+            break
+        space = Path(space)
+        if space == common_path:
+            print(Fore.YELLOW + f"⏭️ Skipping source '{space}': it IS the common DB folder.")
+            continue
+        docs = _sql_documents_for_space(space)
+        origin = "sql"
+        if docs:
+            print(Fore.GREEN + f"🔗 {space.name}: using {len(docs)} document(s) already linked in the SQL database.")
+        else:
+            origin = "files"
+            docs = _file_documents_for_space(space)
+            print(Fore.CYAN + f"📄 {space.name}: reading {len(docs)} document(s) from the storage space files.")
+        space_docs.append((space, origin, docs))
+
+    total = sum(len(docs) for _, _, docs in space_docs)
+    done = 0
+
+    for space, origin, docs in space_docs:
+        for uuid, (title, filename, json_data) in docs.items():
+            if should_cancel():
+                break
+            done += 1
+            if progress_callback:
+                progress_callback(done, total, f"[{space.name}] {filename or uuid}")
+
+            duplicate = (
+                uuid in known["uuids"]
+                or (_usable_title(title) and _norm_key(title) in known["titles"])
+                or (match_filename and _usable_filename(filename)
+                    and _norm_key(filename) in known["filenames"])
+            )
+            if duplicate:
+                skipped += 1
+                continue
+
+            _sync_sections_for_uuid(
+                UUID=uuid, title=title, file_name=filename,
+                json_data=json_data, sections=sections, uuid_cache=uuid_cache,
+            )
+            _sync_sections_master_for_uuid(uuid, title, filename, json_data, Master_map)
+
+            known["uuids"].add(uuid)
+            if _usable_title(title):
+                known["titles"].add(_norm_key(title))
+            if _usable_filename(filename):
+                known["filenames"].add(_norm_key(filename))
+            manifest_rows.append({
+                "UUID": uuid, "Title": title, "Filename": filename,
+                "Source_Folder": str(space), "Data_Origin": origin,
+                "Added": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            })
+            added += 1
+        if should_cancel():
+            break
+
+    _save_common_manifest(common_path, manifest_rows)
+    print(Fore.GREEN + Style.BRIGHT
+          + f"--- Common text DB: {added} added, {skipped} duplicate/known skipped ---" + Style.RESET_ALL)
+
+    if do_vector and not should_cancel():
+        if progress_callback:
+            progress_callback(done, total, "Syncing vector indexes (new entries only)…")
+        secs_VDB = build_sections_map_vdb_excel(VDB)
+        _sync_sections_VDB(VDB, secs_VDB, rebuild=False)
+
+    return added, skipped
+
+
 def generate_combined_databases(Source_path, Storage_path, rebuild_vector: bool = False):
     MF = DataAnalyzeManager(Source_path)
     VDB = Vec_DB_Manager(Storage_path)
