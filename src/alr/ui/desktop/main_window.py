@@ -912,6 +912,12 @@ class AutomatedLiteratureUI(tk.Tk):
         self.query_scope_var.set("All sections")
         self.query_scope_var.pack(side="left", padx=5)
 
+        # Top-k: how many best matches to fetch per section index.
+        ttk.Label(scope_frame, text="Top matches per section (top-k):").pack(side="left", padx=(15, 5))
+        self.query_topk_var = tk.StringVar(value="50")
+        ttk.Spinbox(scope_frame, from_=1, to=1000, increment=1, width=6,
+                    textvariable=self.query_topk_var).pack(side="left", padx=5)
+
         btn_run_query = ttk.Button(v_frame, text="Generate Query Report", command=self._run_visualization_query_action)
         btn_run_query.pack(pady=20, ipadx=10, ipady=5)
 
@@ -1079,19 +1085,28 @@ class AutomatedLiteratureUI(tk.Tk):
                 messagebox.showerror("Error", "Please make sure to supply both data engine reference destination parameters and active query statements strings text models templates.")
             return
 
+        try:
+            top_k = int(self.query_topk_var.get().strip())
+            if top_k < 1:
+                raise ValueError
+        except (ValueError, AttributeError):
+            messagebox.showerror("Error", "Top-k must be a whole number of 1 or more "
+                                          "(how many best matches to fetch per section).")
+            return
+
         print("\n[RAG Database Architecture Step] Synchronizing local vector storage mapping structures...")
         # generate_databases(storage_choice)
 
         target_label = "Common DB" if query_common else "storage space"
         ra_kc_only = self.query_scope_var.get().startswith("Research-Area")
         print(f"[Query Pipeline Dispatch] Querying the {target_label} at: {storage_choice}")
-        print(f"[Query Pipeline Dispatch] Running query text profiling execution match targeting expression: '{query_text}'")
+        print(f"[Query Pipeline Dispatch] Running query text profiling execution match targeting expression: '{query_text}' (top-k={top_k})")
         if ra_kc_only:
             from alr.rag_builders.query_executor import generate_query_report_RA_KC
             print("[Query Scope] Restricting to Research-Area & Key-Concept sections.")
-            generate_query_report_RA_KC([query_text], storage_choice)
+            generate_query_report_RA_KC([query_text], storage_choice, top_k=top_k)
         else:
-            generate_query_report([query_text], storage_choice)
+            generate_query_report([query_text], storage_choice, top_k=top_k)
         print("Query Generation Suite Logging Executed successfully.")
 
     # ==========================================

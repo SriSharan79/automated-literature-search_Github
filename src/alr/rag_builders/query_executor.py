@@ -64,7 +64,7 @@ def batch_enrich_reports(base_storage_path):
 
     print(f"\n{Fore.CYAN}{Style.BRIGHT}--- Batch Processing Complete ---")
 
-def generate_query_report_RA_KC(query_list, Storage_path):
+def generate_query_report_RA_KC(query_list, Storage_path, top_k: int = 20):
     import faiss
 
     VDB = Vec_DB_Manager(Storage_path)
@@ -89,12 +89,14 @@ def generate_query_report_RA_KC(query_list, Storage_path):
                 continue
             
             # Perform similarity search
-            scores, ids = search_similar(bin_path, query, top_k=20)
-            
+            scores, ids = search_similar(bin_path, query, top_k=top_k)
+
             # Prepare results
             print("Top matches:")
             result_data = []
             for s, i in zip(scores, ids):
+                if i < 0:
+                    continue  # FAISS pads with -1 when top_k > indexed vectors
                 matched_text = strings[i] if i < len(strings) else '(newly added item)'
                 print(f"idx={i}  cosine={s:.4f}  text={matched_text}")
                 
@@ -142,7 +144,7 @@ def generate_query_report_RA_KC(query_list, Storage_path):
         print(f"Report saved at: {VDB.query_storage}")        
 
 
-def generate_query_report(query_list, storage_path, search_root='/remotedata/U/DLR+kata_du/ALR DATA'):
+def generate_query_report(query_list, storage_path, search_root='/remotedata/U/DLR+kata_du/ALR DATA', top_k: int = 50):
     print(f"{Fore.CYAN}{Style.BRIGHT}--- Initializing Report Generation for {len(query_list)} queries ---")
     
     vdb = Vec_DB_Manager(storage_path)
@@ -159,7 +161,7 @@ def generate_query_report(query_list, storage_path, search_root='/remotedata/U/D
         # 1. Generate individual attribute reports
         print(f"{Fore.CYAN} > [Step 1] Generating individual attribute reports...")
         for attr, (_ex, _j, bin_path) in sec_map.items():
-            process_attribute_query(query, attr, _ex, bin_path, vdb)
+            process_attribute_query(query, attr, _ex, bin_path, vdb, top_k=top_k)
 
         # 2. Generate the Overview Report
         print(f"{Fore.CYAN} > [Step 2] Aggregating results into Overview Report...")
@@ -178,7 +180,7 @@ def generate_query_report(query_list, storage_path, search_root='/remotedata/U/D
     print(f"\n{Fore.MAGENTA}{Style.BRIGHT}--- ALL TASKS FINISHED ---")
 
 
-def process_attribute_query(query, attr, excel_ref, bin_path, vdb):
+def process_attribute_query(query, attr, excel_ref, bin_path, vdb, top_k: int = 50):
     import faiss
 
     if not bin_path.exists() or bin_path.stat().st_size == 0:
@@ -194,10 +196,12 @@ def process_attribute_query(query, attr, excel_ref, bin_path, vdb):
         print(f"{Fore.RED}{Style.BRIGHT}   [!] Data matching error for {attr}")
         return
 
-    scores, ids = search_similar(bin_path, query, top_k=50)
-    
+    scores, ids = search_similar(bin_path, query, top_k=top_k)
+
     result_data = []
     for s, i in zip(scores, ids):
+        if i < 0:
+            continue  # FAISS pads with -1 when top_k > indexed vectors
         result_data.append({
             "Original_UUID": get_column_value(excel_ref, "Original_UUID", i),
             "Title": get_column_value(excel_ref, "Title", i),
