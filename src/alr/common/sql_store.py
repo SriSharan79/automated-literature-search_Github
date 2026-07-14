@@ -124,6 +124,21 @@ def _read_json(path):
         return None, None
 
 
+def _truthy_classification(val) -> bool:
+    """
+    Interpret one classification cell as a boolean. Classification workbooks
+    store per-topic True/False, but after a round-trip through Excel/pandas a
+    cell may come back as a numpy bool, ``1``/``0``, or a ``"True"``/``"False"``
+    string (blank/NaN for unscored). Treat only affirmative values as true.
+    """
+    if val is None:
+        return False
+    if isinstance(val, bool):
+        return val
+    text = str(val).strip().lower()
+    return text in ("true", "1", "1.0", "yes", "y", "t")
+
+
 class AnalyzedDataStore:
     """CRUD access to the analyzed-document SQLite database."""
 
@@ -621,6 +636,7 @@ def sync_storage_to_sql(manager_or_folder, db_path=DB_PATH,progress_callback=Non
     # populates enrichment when a space is linked into a fresh database.
     _merge_space_metadata_files(store, manager)
     _merge_space_evaluation_overviews(store, manager)
+    _merge_space_classification_files(store, manager)
 
     return synced
 
@@ -707,6 +723,101 @@ def _merge_space_evaluation_overviews(store, manager) -> int:
                 updated += cur.rowcount if cur.rowcount > 0 else 0
     if updated:
         print(f"Merged evaluation summaries from overview workbook(s): {updated} row update(s).")
+    return updated
+
+
+def _merge_space_classification_files(store, manager) -> int:
+    """
+    Merge every managed publication-classification workbook in the space's
+    ``Publication_Classification_Files`` folder into SQL -- newest file per
+    target column first, fill-if-empty -- so classification tags recorded on
+    disk populate the database when a space is linked into a fresh DB (mirrors
+    :func:`_merge_space_metadata_files` / :func:`_merge_space_evaluation_overviews`).
+
+    Each workbook row is ``{filename, title, <topic>: bool, ...}`` (written by
+    ``classify_runner._append_classification_row``) and is matched by
+    ``filename`` -> ``documents.filename``. The per-document summary stored in
+    SQL is the comma-joined list of topics whose cell is true, exactly as the
+    classification runner writes it live.
+
+    Three workbook families are handled, by filename:
+      * ``*_Title_Classification.xlsx``    -> ``classification``
+      * ``*_Abstract_Classification.xlsx`` -> ``abstract_classification``
+      * ``*_{Topic}_Classification.xlsx``  -> custom column (registered on demand)
+
+    Question-scored workbooks (``*_Question_Scored_Classification.xlsx``) are
+    skipped: they are multi-sheet per-question scores, not per-document topic
+    tags. Returns the number of row updates applied.
+    """
+    import glob
+    import re
+    import pandas as pd
+
+    folder = str(manager.classification_subfolder)
+    files = glob.glob(os.path.join(folder, "*_Classification.xlsx"))
+    if not files:
+        return 0
+
+    def _target_column(path):
+        """Resolve a workbook path to the SQL column it feeds, or None to skip."""
+        name = os.path.basename(path)
+        if "Question_Scored_Classification" in name:
+            return None
+        if name.endswith("_Title_Classification.xlsx"):
+            return "classification"
+        if name.endswith("_Abstract_Classification.xlsx"):
+            return "abstract_classification"
+        # Custom: {date}_{Topic}_Classification.xlsx -> sanitized topic column.
+        m = re.match(r"^\d{4}-\d{2}-\d{2}_(.+)_Classification\.xlsx$", name)
+        if not m:
+            return None
+        try:
+            # Registers + migrates the column so a fresh DB gains it; matches the
+            # column classify_custom_space records under (sanitize_column_name).
+            return register_custom_column(m.group(1), db_path=store.db_path)
+        except ValueError:
+            return None  # collides with a built-in column; skip.
+
+    # Resolve targets first, newest file first. register_custom_column may ALTER
+    # TABLE, so it must run before the merge connection below is opened.
+    resolved = []
+    for path in sorted(files, key=os.path.getmtime, reverse=True):
+        col = _target_column(path)
+        if col:
+            resolved.append((path, col))
+    if not resolved:
+        return 0
+
+    updated = 0
+    with store._connect() as conn:
+        for path, col in resolved:
+            try:
+                df = pd.read_excel(path)
+            except Exception as e:
+                print(f"Could not read classification file {path}: {e}")
+                continue
+            if "filename" not in df.columns:
+                continue
+            topic_cols = [c for c in df.columns if c not in ("filename", "title")]
+            for _, row in df.iterrows():
+                fname = store._real_value(row.get("filename"))
+                if not fname:
+                    continue
+                doc = conn.execute(
+                    "SELECT uuid FROM documents WHERE filename = ?", (fname,)).fetchone()
+                if not doc:
+                    continue
+                true_topics = [c for c in topic_cols if _truthy_classification(row.get(c))]
+                summary = ", ".join(true_topics)
+                if not summary:
+                    continue  # no true topics for this row; nothing to record.
+                cur = conn.execute(
+                    f"UPDATE documents SET {col} = COALESCE(NULLIF({col}, ''), ?) "
+                    f"WHERE uuid = ?",
+                    (summary, doc[0]))
+                updated += cur.rowcount if cur.rowcount > 0 else 0
+    if updated:
+        print(f"Merged publication classification from workbook(s): {updated} row update(s).")
     return updated
 
 
