@@ -71,6 +71,174 @@ def nl_to_overview_spec(description, fields):
     return spec
 
 
+# ---------------------------------------------------------------------------
+# Data Files tab — discovery / merge helpers (pure functions, no Tk).
+# ---------------------------------------------------------------------------
+
+# Ordered categories, each identified separately in the Data Files tab.
+DATA_FILE_CATEGORIES = (
+    "Publication classification",
+    "DOI metadata",
+    "Processed registry",
+    "Failed registry",
+    "Abstract log",
+    "Introduction log",
+    "Results/Conclusion log",
+    "Evaluation",
+)
+
+# Columns that are never classification topics when summarising true tags.
+_NON_TOPIC_COLS = {
+    "filename", "title", "uuid", "file_name", "original_uuid",
+    "count", "content", "__source_file", "result", "score",
+}
+
+
+def _df_truthy(val) -> bool:
+    """True for affirmative classification cells (bool / 1 / 'True' / 'yes')."""
+    if val is None:
+        return False
+    if isinstance(val, bool):
+        return val
+    text = str(val).strip().lower()
+    return text in ("true", "1", "1.0", "yes", "y", "t")
+
+
+def discover_space_data_files(manager) -> dict:
+    """
+    Return an ordered ``{category: [file paths]}`` mapping for one storage space
+    (a DataAnalyzeManager). Only files that exist are listed. Categories mirror
+    the on-disk enrichment/log layout so each kind can be identified separately.
+    """
+    import glob
+
+    folder = str(manager.folder)
+    cls = getattr(manager, "classification_subfolder",
+                  os.path.join(folder, "Publication_Classification_Files"))
+    doi = getattr(manager, "doi_metadata_subfolder",
+                  os.path.join(folder, "DOI_Metadata_Files"))
+
+    def _existing(paths):
+        return [p for p in paths if p and os.path.exists(p)]
+
+    files = {c: [] for c in DATA_FILE_CATEGORIES}
+    files["Publication classification"] = sorted(
+        glob.glob(os.path.join(str(cls), "*_Classification.xlsx")))
+    files["DOI metadata"] = sorted(
+        glob.glob(os.path.join(str(doi), "*_DOI_Metadata.xlsx")))
+    files["Processed registry"] = _existing([str(manager.excel_success)])
+    files["Failed registry"] = _existing([str(manager.excel_failed)])
+    files["Abstract log"] = _existing([str(manager.AD_Abstract_log_path)])
+    files["Introduction log"] = _existing([str(manager.AD_Intro_log_path)])
+    files["Results/Conclusion log"] = _existing([getattr(manager, "AD_ResCon_log_path", None)])
+    ev = glob.glob(os.path.join(folder, "Abstract_DB", "Abstract_Overview_folder",
+                                "*_Abstract_Eval_Overview.xlsx"))
+    ev += glob.glob(os.path.join(folder, "Introduction_DB", "*_Introduction_Eval_Overview.xlsx"))
+    files["Evaluation"] = sorted(ev)
+    return files
+
+
+def data_file_type_key(path) -> str:
+    """
+    Fine-grained 'same type' key for a data file, used to group files that may
+    safely merge together. Strips a leading date prefix from the filename stem,
+    e.g. '2025-06-12_Title_Classification.xlsx' -> 'Title_Classification', while
+    single, undated files (Processed_file_registry, Abstract_log, …) keep theirs.
+    """
+    import re
+    stem = os.path.splitext(os.path.basename(str(path)))[0]
+    stem = re.sub(r"^\d{4}-\d{2}-\d{2}[_-]", "", stem)
+    stem = re.sub(r"^\d{8}[_-]", "", stem)
+    return stem
+
+
+def _read_table(path):
+    """Read the primary per-document sheet of a workbook as a DataFrame."""
+    import pandas as pd
+    try:
+        xls = pd.ExcelFile(path)
+        for pref in ("Overview", "Summary_Main"):
+            if pref in xls.sheet_names:
+                return pd.read_excel(xls, sheet_name=pref)
+        return pd.read_excel(xls, sheet_name=xls.sheet_names[0])
+    except Exception:
+        return pd.read_excel(path)
+
+
+def pick_key_column(df):
+    """Pick the per-document key column (UUID > File_Name > filename), or None."""
+    lower = {str(c).strip().lower(): c for c in df.columns}
+    for cand in ("uuid", "file_name", "filename"):
+        if cand in lower:
+            return lower[cand]
+    return None
+
+
+def merge_data_files(paths):
+    """
+    Merge several same-type workbooks into one per-document table: concatenate
+    (oldest -> newest) and keep the newest row per document key, so repeated
+    dated runs collapse to one row each -- the SQL-like shape. Adds a
+    ``__source_file`` column. Returns a (possibly empty) DataFrame with string
+    column names.
+    """
+    import pandas as pd
+    frames = []
+    for p in sorted(paths, key=lambda x: os.path.getmtime(x)):
+        try:
+            df = _read_table(p).copy()
+        except Exception:
+            continue
+        df["__source_file"] = os.path.basename(str(p))
+        frames.append(df)
+    if not frames:
+        return pd.DataFrame()
+    merged = pd.concat(frames, ignore_index=True, sort=False)
+    merged.columns = [str(c) for c in merged.columns]
+    key = pick_key_column(merged)
+    if key is not None:
+        merged = merged.drop_duplicates(subset=[key], keep="last").reset_index(drop=True)
+    return merged
+
+
+def classification_topic_columns(df) -> list:
+    """Columns of a classification table that represent topics (booleans)."""
+    return [c for c in df.columns if str(c).strip().lower() not in _NON_TOPIC_COLS]
+
+
+def classification_tags(row, topic_cols) -> str:
+    """Comma-joined list of true topics for one classification row (SQL summary)."""
+    return ", ".join(str(t) for t in topic_cols if _df_truthy(row.get(t)))
+
+
+def sql_target_for_type(type_key):
+    """
+    Map a fine type key to how its merged data lands in SQL:
+      ('metadata', None)      -> DOI/publication metadata (merge_metadata_workbook)
+      ('classification', col) -> a classification summary column (fill-if-empty)
+      ('sync', None)          -> reflected by syncing the space (registry/log/eval)
+      ('skip', None)          -> not a per-document table (question-scored)
+    """
+    from alr.common.sql_store import sanitize_column_name
+
+    low = type_key.lower()
+    if low == "doi_metadata":
+        return ("metadata", None)
+    if low.endswith("classification"):
+        if low == "title_classification":
+            return ("classification", "classification")
+        if low == "abstract_classification":
+            return ("classification", "abstract_classification")
+        if low == "question_scored_classification":
+            return ("skip", None)
+        base = type_key[: -len("_Classification")] if low.endswith("_classification") else type_key
+        try:
+            return ("classification", sanitize_column_name(base))
+        except Exception:
+            return ("skip", None)
+    return ("sync", None)
+
+
 class ProgressDialog:
     """A small modal dialog with a status message, progress bar and Cancel."""
 
@@ -139,6 +307,7 @@ class ReviewApp:
         self._build_documents_tab()
         self._build_database_tab()
         self._build_overviews_tab()
+        self._build_data_files_tab()
         self._build_help_tab()
 
     # ================================================================ Spaces
@@ -1146,6 +1315,24 @@ class ReviewApp:
          "Examples:\n"
          "  'count of documents per publication year for LLM papers'\n"
          "  'title, year and authors of all Risk Assessment papers from 2023'"),
+
+        ("Data Files — identify, merge, export & sync",
+         "Pick a storage space ('Select storage space…', or reuse the one selected in the "
+         "Storage Spaces tab). Every Excel data file in the space is listed separately by "
+         "kind: publication classification, DOI metadata, processed registry, failed "
+         "registry, abstract/introduction/results-conclusion logs, and evaluation overviews.\n"
+         "Tick the files you want and 'Merge selected → folder…'. Files of the SAME type "
+         "(e.g. several dated Title_Classification workbooks) are merged into one "
+         "per-document table — newest run kept per document, the same shape as the SQL "
+         "database — and written as 'merged_<type>.xlsx' into the folder you choose. Pick a "
+         "group to preview it, then 'Export group…' to save it anywhere as Excel or CSV.\n"
+         "'Check & update SQL…' compares each merged group with the database and, where the "
+         "data isn't there yet, offers to add it: DOI and classification data fill their "
+         "columns (fill-if-empty), while registry/log/evaluation data is offered as a full "
+         "space sync. Nothing already in the database is overwritten.\n"
+         "Example: tick two dated DOI_Metadata files + the Title_Classification files -> "
+         "Merge -> merged_DOI_Metadata.xlsx and merged_Title_Classification.xlsx -> "
+         "Check & update SQL -> 'Applied 15 update(s)'."),
     ]
 
     def _build_help_tab(self):
@@ -1172,6 +1359,307 @@ class ReviewApp:
             txt.insert(tk.END, body + "\n", "body")
         txt.config(state="disabled")
         self.help_text = txt
+
+    # ============================================================= Data Files
+    def _build_data_files_tab(self):
+        tab = ttk.Frame(self.notebook)
+        self.notebook.add(tab, text="Data Files")
+
+        self._df_manager = None
+        self._df_space_folder = None
+        self._df_file_vars = {}   # path -> BooleanVar
+        self._df_files = {}       # category -> [paths]
+        self._df_merged = {}      # type_key -> DataFrame
+        self._df_out_dir = None
+
+        bar = ttk.Frame(tab)
+        bar.pack(fill="x", padx=8, pady=6)
+        ttk.Button(bar, text="Select storage space…", command=self._df_select_space).pack(side="left")
+        ttk.Button(bar, text="Use space selected in 'Storage Spaces'",
+                   command=self._df_use_selected_space).pack(side="left", padx=6)
+        self.df_status = ttk.Label(bar, text="Select a storage space to list its data files.")
+        self.df_status.pack(side="left", padx=10)
+
+        # Scrollable, per-category checkbox list (each kind identified separately).
+        files_frame = ttk.LabelFrame(tab, text="Data files in this storage space (tick the ones to merge)")
+        files_frame.pack(fill="both", expand=True, padx=8, pady=4)
+        canvas = tk.Canvas(files_frame, highlightthickness=0, height=200)
+        vsb = ttk.Scrollbar(files_frame, orient="vertical", command=canvas.yview)
+        self._df_inner = ttk.Frame(canvas)
+        canvas.configure(yscrollcommand=vsb.set)
+        vsb.pack(side="right", fill="y")
+        canvas.pack(side="left", fill="both", expand=True)
+        self._df_canvas_window = canvas.create_window((0, 0), window=self._df_inner, anchor="nw")
+        self._df_inner.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
+        canvas.bind("<Configure>", lambda e: canvas.itemconfig(self._df_canvas_window, width=e.width))
+
+        selbar = ttk.Frame(tab)
+        selbar.pack(fill="x", padx=8)
+        ttk.Button(selbar, text="Select all", command=lambda: self._df_toggle_all(True)).pack(side="left")
+        ttk.Button(selbar, text="Clear all", command=lambda: self._df_toggle_all(False)).pack(side="left", padx=6)
+        ttk.Button(selbar, text="Refresh", command=self._df_scan).pack(side="left", padx=6)
+
+        act = ttk.Frame(tab)
+        act.pack(fill="x", padx=8, pady=(6, 2))
+        ttk.Button(act, text="Merge selected → folder…", command=self._df_merge).pack(side="left")
+        ttk.Label(act, text="Preview group:").pack(side="left", padx=(12, 2))
+        self.df_group_var = tk.StringVar()
+        self.df_group_combo = ttk.Combobox(act, textvariable=self.df_group_var, width=28,
+                                            state="readonly", values=[])
+        self.df_group_combo.pack(side="left")
+        self.df_group_combo.bind("<<ComboboxSelected>>", lambda e: self._df_preview_group())
+        ttk.Button(act, text="Export group…", command=self._df_export).pack(side="left", padx=6)
+        ttk.Button(act, text="Check & update SQL…", command=self._df_check_sql).pack(side="left", padx=6)
+
+        prev = ttk.LabelFrame(tab, text="Merged preview (one row per document, newest run kept)")
+        prev.pack(fill="both", expand=True, padx=8, pady=4)
+        self.df_tree = ttk.Treeview(prev, show="headings", height=8)
+        pv = ttk.Scrollbar(prev, orient="vertical", command=self.df_tree.yview)
+        ph = ttk.Scrollbar(prev, orient="horizontal", command=self.df_tree.xview)
+        self.df_tree.configure(yscrollcommand=pv.set, xscrollcommand=ph.set)
+        pv.pack(side="right", fill="y")
+        ph.pack(side="bottom", fill="x")
+        self.df_tree.pack(side="left", fill="both", expand=True)
+        self.df_preview_status = ttk.Label(tab, text="")
+        self.df_preview_status.pack(anchor="w", padx=10, pady=(0, 6))
+
+    def _df_set_space(self, folder):
+        from alr.common.file_manager import DataAnalyzeManager
+        self._df_manager = DataAnalyzeManager(folder)
+        self._df_space_folder = str(self._df_manager.folder)
+        self._df_scan()
+
+    def _df_select_space(self):
+        folder = filedialog.askdirectory(title="Select a storage space folder")
+        if folder:
+            self._df_set_space(folder)
+
+    def _df_use_selected_space(self):
+        s = self._selected_space()
+        if s:
+            self._df_set_space(s.path)
+
+    def _df_scan(self):
+        if not self._df_manager:
+            return
+        self.container.config(cursor="watch")
+        self.container.update()
+        try:
+            self._df_files = discover_space_data_files(self._df_manager)
+        finally:
+            self.container.config(cursor="")
+
+        for w in self._df_inner.winfo_children():
+            w.destroy()
+        self._df_file_vars = {}
+        total = 0
+        for cat in DATA_FILE_CATEGORIES:
+            paths = self._df_files.get(cat, [])
+            lf = ttk.LabelFrame(self._df_inner, text=f"{cat}  ({len(paths)})")
+            lf.pack(fill="x", expand=True, padx=4, pady=3)
+            if not paths:
+                ttk.Label(lf, text="— none found —", foreground="#888").pack(anchor="w", padx=6, pady=2)
+                continue
+            for p in paths:
+                var = tk.BooleanVar(value=True)
+                self._df_file_vars[p] = var
+                note = ("   (question-scored; not merged)"
+                        if data_file_type_key(p).lower() == "question_scored_classification" else "")
+                ttk.Checkbutton(lf, text=os.path.basename(p) + note, variable=var).pack(anchor="w", padx=6)
+                total += 1
+
+        # Clear any stale merged state from a previous space.
+        self._df_merged = {}
+        self.df_group_combo["values"] = []
+        self.df_group_var.set("")
+        self.df_tree.delete(*self.df_tree.get_children())
+        self.df_tree["columns"] = ()
+        self.df_preview_status.config(text="")
+        base = os.path.basename(self._df_space_folder.rstrip("/\\")) or self._df_space_folder
+        self.df_status.config(text=f"{base}: {total} data file(s) found across {len(DATA_FILE_CATEGORIES)} categories.")
+
+    def _df_toggle_all(self, value):
+        for var in self._df_file_vars.values():
+            var.set(value)
+
+    def _df_selected_paths(self):
+        return [p for p, v in self._df_file_vars.items() if v.get()]
+
+    def _df_merge(self):
+        """Merge selected files per fine 'same type' key into a user-chosen folder."""
+        if not self._df_manager:
+            messagebox.showinfo("No storage space", "Select a storage space first.")
+            return
+        selected = self._df_selected_paths()
+        if not selected:
+            messagebox.showinfo("Nothing selected", "Tick at least one data file to merge.")
+            return
+
+        groups = {}
+        for p in selected:
+            groups.setdefault(data_file_type_key(p), []).append(p)
+
+        out_dir = filedialog.askdirectory(title="Choose a folder to write the merged file(s) into")
+        if not out_dir:
+            return
+        self._df_out_dir = out_dir
+
+        self.container.config(cursor="watch")
+        self.container.update()
+        merged, skipped, written = {}, [], []
+        try:
+            for type_key, paths in groups.items():
+                if type_key.lower() == "question_scored_classification":
+                    skipped.append(type_key)
+                    continue
+                df = merge_data_files(paths)
+                if df is None or df.empty:
+                    continue
+                merged[type_key] = df
+                out_path = os.path.join(out_dir, f"merged_{type_key}.xlsx")
+                try:
+                    df.to_excel(out_path, index=False)
+                    written.append(out_path)
+                except Exception as e:
+                    messagebox.showerror("Merge", f"Could not write {out_path}:\n{e}")
+        finally:
+            self.container.config(cursor="")
+
+        self._df_merged = merged
+        self.df_group_combo["values"] = list(merged.keys())
+        if merged:
+            self.df_group_var.set(next(iter(merged)))
+            self._df_preview_group()
+        msg = f"Merged {len(merged)} group(s) of same-type files; wrote {len(written)} file(s) to:\n{out_dir}"
+        if skipped:
+            msg += f"\n\nSkipped (question-scored, multi-sheet — not per-document): {', '.join(skipped)}"
+        if not merged and not skipped:
+            msg = "No mergeable per-document tables were produced from the selected files."
+        messagebox.showinfo("Merge complete", msg)
+
+    def _df_preview_group(self):
+        key = self.df_group_var.get()
+        df = self._df_merged.get(key)
+        if df is None:
+            return
+        cols = [str(c) for c in df.columns]
+        rows = df.to_dict("records")
+        self._fill_tree(self.df_tree, cols, rows, limit=2000)
+        self.df_preview_status.config(
+            text=f"{key}: {len(rows)} document row(s)"
+                 + (" (showing first 2000)" if len(rows) > 2000 else ""))
+
+    def _df_export(self):
+        """Export the currently-previewed merged group (user picks path + format)."""
+        key = self.df_group_var.get()
+        df = self._df_merged.get(key)
+        if df is None or df.empty:
+            messagebox.showinfo("Nothing to export", "Merge some files and pick a group first.")
+            return
+        cols = [str(c) for c in df.columns]
+        rows = df.to_dict("records")
+        self._export_rows(cols, rows, f"merged_{key}")
+
+    def _df_check_sql(self):
+        """
+        Compare each merged group against the SQL database and, where it isn't
+        already reflected, offer to update it. DOI/classification data fills the
+        matching columns (fill-if-empty); registry/log/evaluation data is offered
+        as a full space sync (the canonical path for those).
+        """
+        if not self._df_merged:
+            messagebox.showinfo("Nothing merged", "Merge some files first, then check against SQL.")
+            return
+        if not self._df_space_folder:
+            return
+        from alr.common.sql_store import register_custom_column
+
+        store = self.store
+        space = self._df_space_folder
+        docs = [d for d in store.list_documents() if (d.get("source_folder") or "") == space]
+        by_uuid = {str(d.get("uuid")): d for d in docs}
+        by_fname = {str(d.get("filename")): d for d in docs}
+
+        def _match(val, key_kind):
+            return by_uuid.get(str(val)) if key_kind == "uuid" else by_fname.get(str(val))
+
+        report, pending_meta, pending_class, need_sync = [], [], [], []
+        for type_key, df in self._df_merged.items():
+            kind, col = sql_target_for_type(type_key)
+            if kind == "skip" or df is None or df.empty:
+                continue
+            key_col = pick_key_column(df)
+            key_kind = "uuid" if (key_col and str(key_col).strip().lower() == "uuid") else "filename"
+
+            if kind == "metadata":
+                missing = sum(
+                    1 for _, r in df.iterrows()
+                    if key_col and (_match(r.get(key_col), key_kind) or {}).get("doi_link", "") in (None, "", "nan"))
+                report.append(f"• {type_key}: {missing} document(s) missing DOI/metadata in SQL")
+                if missing:
+                    pending_meta.append(df)
+            elif kind == "classification":
+                topic_cols = classification_topic_columns(df)
+                missing = 0
+                for _, r in df.iterrows():
+                    d = _match(r.get(key_col), key_kind) if key_col else None
+                    if d and classification_tags(r, topic_cols) and not str(d.get(col) or "").strip():
+                        missing += 1
+                report.append(f"• {type_key}: {missing} document(s) missing '{col}' in SQL")
+                if missing:
+                    pending_class.append((df, key_col, key_kind, col, topic_cols))
+            else:  # sync
+                report.append(f"• {type_key}: reflected in SQL by syncing the storage space")
+                need_sync.append(type_key)
+
+        if not report:
+            messagebox.showinfo("Check SQL", "Nothing comparable was found in the merged groups.")
+            return
+
+        body = "Comparison of merged data against the SQL database:\n\n" + "\n".join(report)
+
+        if pending_meta or pending_class:
+            if messagebox.askyesno(
+                    "Update SQL",
+                    body + "\n\nApply the DOI/classification updates above to SQL now?\n"
+                           "(fill-if-empty — values already in the database are never overwritten)"):
+                updated = 0
+                for (_df, _kc, _kk, col, _tc) in pending_class:
+                    try:
+                        register_custom_column(col, db_path=store.db_path)  # no-op for built-ins
+                    except Exception:
+                        pass
+                for df in pending_meta:
+                    try:
+                        updated += store.merge_metadata_workbook(df)
+                    except Exception as e:
+                        messagebox.showerror("Update SQL", f"Metadata merge failed: {e}")
+                for (df, key_col, key_kind, col, topic_cols) in pending_class:
+                    for _, r in df.iterrows():
+                        d = _match(r.get(key_col), key_kind) if key_col else None
+                        if not d:
+                            continue
+                        tags = classification_tags(r, topic_cols)
+                        if tags and not str(d.get(col) or "").strip():
+                            store.update_document(d["uuid"], {col: tags})
+                            updated += 1
+                messagebox.showinfo("Update SQL", f"Applied {updated} update(s) to the SQL database.")
+                self._refresh_all()
+        else:
+            messagebox.showinfo("Check SQL", body)
+
+        if need_sync and messagebox.askyesno(
+                "Sync storage space",
+                "Registry / log / evaluation data is reflected in SQL by syncing the whole "
+                "storage space (it upserts document rows and fills DOI/evaluation/classification, "
+                "never overwriting existing values).\n\nSync this space now?"):
+            folder = space
+
+            def work(progress, should_cancel):
+                progress(text=f"Syncing '{os.path.basename(folder)}' into the database…")
+                return sync_storage_to_sql(folder, db_path=store.db_path)
+
+            self._run_threaded(work, "Sync storage space", "synced")
 
     # ================================================================ shared
     def _refresh_all(self):
