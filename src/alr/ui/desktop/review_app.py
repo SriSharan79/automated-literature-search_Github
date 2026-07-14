@@ -1318,7 +1318,10 @@ class ReviewApp:
 
         ("Data Files — identify, merge, export & sync",
          "Pick a storage space ('Select storage space…', or reuse the one selected in the "
-         "Storage Spaces tab). Every Excel data file in the space is listed separately by "
+         "Storage Spaces tab) — or 'Select folder (scan for spaces)…' to point at a folder "
+         "holding SEVERAL storage spaces: they are recognized exactly like in the Storage "
+         "Spaces tab and the data files of all of them are listed together, each file "
+         "prefixed with its space name. Every Excel data file is listed separately by "
          "kind: publication classification, DOI metadata, processed registry, failed "
          "registry, abstract/introduction/results-conclusion logs, and evaluation overviews.\n"
          "Tick the files you want and 'Merge selected → folder…'. Files of the SAME type "
@@ -1365,23 +1368,27 @@ class ReviewApp:
         tab = ttk.Frame(self.notebook)
         self.notebook.add(tab, text="Data Files")
 
-        self._df_manager = None
-        self._df_space_folder = None
-        self._df_file_vars = {}   # path -> BooleanVar
-        self._df_files = {}       # category -> [paths]
-        self._df_merged = {}      # type_key -> DataFrame
+        self._df_managers = []      # one DataAnalyzeManager per loaded space
+        self._df_space_folders = [] # their folder paths (as str)
+        self._df_scan_root = None   # folder the spaces were scanned from (multi-space mode)
+        self._df_path_space = {}    # file path -> space name (for multi-space labels)
+        self._df_file_vars = {}     # path -> BooleanVar
+        self._df_files = {}         # category -> [paths]
+        self._df_merged = {}        # type_key -> DataFrame
         self._df_out_dir = None
 
         bar = ttk.Frame(tab)
         bar.pack(fill="x", padx=8, pady=6)
         ttk.Button(bar, text="Select storage space…", command=self._df_select_space).pack(side="left")
+        ttk.Button(bar, text="Select folder (scan for spaces)…",
+                   command=self._df_select_folder).pack(side="left", padx=6)
         ttk.Button(bar, text="Use space selected in 'Storage Spaces'",
                    command=self._df_use_selected_space).pack(side="left", padx=6)
-        self.df_status = ttk.Label(bar, text="Select a storage space to list its data files.")
+        self.df_status = ttk.Label(bar, text="Select a storage space, or scan a folder holding several.")
         self.df_status.pack(side="left", padx=10)
 
         # Scrollable, per-category checkbox list (each kind identified separately).
-        files_frame = ttk.LabelFrame(tab, text="Data files in this storage space (tick the ones to merge)")
+        files_frame = ttk.LabelFrame(tab, text="Data files in the loaded storage space(s) (tick the ones to merge)")
         files_frame.pack(fill="both", expand=True, padx=8, pady=4)
         canvas = tk.Canvas(files_frame, highlightthickness=0, height=200)
         vsb = ttk.Scrollbar(files_frame, orient="vertical", command=canvas.yview)
@@ -1423,16 +1430,43 @@ class ReviewApp:
         self.df_preview_status = ttk.Label(tab, text="")
         self.df_preview_status.pack(anchor="w", padx=10, pady=(0, 6))
 
-    def _df_set_space(self, folder):
+    def _df_set_spaces(self, folders, scan_root=None):
+        """Load one or several storage spaces into the Data Files tab."""
         from alr.common.file_manager import DataAnalyzeManager
-        self._df_manager = DataAnalyzeManager(folder)
-        self._df_space_folder = str(self._df_manager.folder)
+        self._df_managers = [DataAnalyzeManager(f) for f in folders]
+        self._df_space_folders = [str(m.folder) for m in self._df_managers]
+        self._df_scan_root = str(scan_root) if scan_root else None
         self._df_scan()
+
+    def _df_set_space(self, folder):
+        self._df_set_spaces([folder])
 
     def _df_select_space(self):
         folder = filedialog.askdirectory(title="Select a storage space folder")
         if folder:
             self._df_set_space(folder)
+
+    def _df_select_folder(self):
+        """
+        Scan a selected folder for storage spaces — same recognition as the
+        Storage Spaces tab — and list the data files of ALL spaces found.
+        """
+        folder = filedialog.askdirectory(title="Select a folder to scan for storage spaces")
+        if not folder:
+            return
+        self.container.config(cursor="watch")
+        self.container.update()
+        try:
+            spaces = detect_storage_spaces(folder)
+        finally:
+            self.container.config(cursor="")
+        if not spaces:
+            messagebox.showinfo(
+                "No storage spaces found",
+                "No storage spaces were recognized under the selected folder.\n"
+                "Use 'Select storage space…' to load a single space directly.")
+            return
+        self._df_set_spaces([s.path for s in spaces], scan_root=folder)
 
     def _df_use_selected_space(self):
         s = self._selected_space()
@@ -1440,15 +1474,24 @@ class ReviewApp:
             self._df_set_space(s.path)
 
     def _df_scan(self):
-        if not self._df_manager:
+        if not self._df_managers:
             return
         self.container.config(cursor="watch")
         self.container.update()
         try:
-            self._df_files = discover_space_data_files(self._df_manager)
+            self._df_files = {c: [] for c in DATA_FILE_CATEGORIES}
+            self._df_path_space = {}
+            for manager in self._df_managers:
+                space_name = os.path.basename(str(manager.folder).rstrip("/\\")) or str(manager.folder)
+                found = discover_space_data_files(manager)
+                for cat in DATA_FILE_CATEGORIES:
+                    for p in found.get(cat, []):
+                        self._df_files[cat].append(p)
+                        self._df_path_space[p] = space_name
         finally:
             self.container.config(cursor="")
 
+        multi = len(self._df_managers) > 1
         for w in self._df_inner.winfo_children():
             w.destroy()
         self._df_file_vars = {}
@@ -1465,7 +1508,10 @@ class ReviewApp:
                 self._df_file_vars[p] = var
                 note = ("   (question-scored; not merged)"
                         if data_file_type_key(p).lower() == "question_scored_classification" else "")
-                ttk.Checkbutton(lf, text=os.path.basename(p) + note, variable=var).pack(anchor="w", padx=6)
+                label = os.path.basename(p) + note
+                if multi:
+                    label = f"[{self._df_path_space.get(p, '?')}]  {label}"
+                ttk.Checkbutton(lf, text=label, variable=var).pack(anchor="w", padx=6)
                 total += 1
 
         # Clear any stale merged state from a previous space.
@@ -1475,8 +1521,12 @@ class ReviewApp:
         self.df_tree.delete(*self.df_tree.get_children())
         self.df_tree["columns"] = ()
         self.df_preview_status.config(text="")
-        base = os.path.basename(self._df_space_folder.rstrip("/\\")) or self._df_space_folder
-        self.df_status.config(text=f"{base}: {total} data file(s) found across {len(DATA_FILE_CATEGORIES)} categories.")
+        if multi:
+            root = os.path.basename((self._df_scan_root or "").rstrip("/\\")) or self._df_scan_root or ""
+            where = f"{len(self._df_managers)} storage space(s)" + (f" under '{root}'" if root else "")
+        else:
+            where = os.path.basename(self._df_space_folders[0].rstrip("/\\")) or self._df_space_folders[0]
+        self.df_status.config(text=f"{where}: {total} data file(s) found across {len(DATA_FILE_CATEGORIES)} categories.")
 
     def _df_toggle_all(self, value):
         for var in self._df_file_vars.values():
@@ -1487,7 +1537,7 @@ class ReviewApp:
 
     def _df_merge(self):
         """Merge selected files per fine 'same type' key into a user-chosen folder."""
-        if not self._df_manager:
+        if not self._df_managers:
             messagebox.showinfo("No storage space", "Select a storage space first.")
             return
         selected = self._df_selected_paths()
@@ -1570,13 +1620,13 @@ class ReviewApp:
         if not self._df_merged:
             messagebox.showinfo("Nothing merged", "Merge some files first, then check against SQL.")
             return
-        if not self._df_space_folder:
+        if not self._df_space_folders:
             return
         from alr.common.sql_store import register_custom_column
 
         store = self.store
-        space = self._df_space_folder
-        docs = [d for d in store.list_documents() if (d.get("source_folder") or "") == space]
+        spaces = set(self._df_space_folders)
+        docs = [d for d in store.list_documents() if (d.get("source_folder") or "") in spaces]
         by_uuid = {str(d.get("uuid")): d for d in docs}
         by_fname = {str(d.get("filename")): d for d in docs}
 
@@ -1648,18 +1698,25 @@ class ReviewApp:
         else:
             messagebox.showinfo("Check SQL", body)
 
+        folders = list(self._df_space_folders)
         if need_sync and messagebox.askyesno(
-                "Sync storage space",
+                "Sync storage space(s)",
                 "Registry / log / evaluation data is reflected in SQL by syncing the whole "
                 "storage space (it upserts document rows and fills DOI/evaluation/classification, "
-                "never overwriting existing values).\n\nSync this space now?"):
-            folder = space
+                "never overwriting existing values).\n\n"
+                f"Sync the {len(folders)} loaded space(s) now?"):
 
             def work(progress, should_cancel):
-                progress(text=f"Syncing '{os.path.basename(folder)}' into the database…")
-                return sync_storage_to_sql(folder, db_path=store.db_path)
+                synced = 0
+                for i, folder in enumerate(folders, 1):
+                    if should_cancel():
+                        break
+                    progress(done=i, total=len(folders),
+                             text=f"[{i}/{len(folders)}] Syncing '{os.path.basename(folder)}' into the database…")
+                    synced += sync_storage_to_sql(folder, db_path=store.db_path)
+                return synced
 
-            self._run_threaded(work, "Sync storage space", "synced")
+            self._run_threaded(work, "Sync storage space(s)", "synced")
 
     # ================================================================ shared
     def _refresh_all(self):
