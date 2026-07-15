@@ -279,7 +279,11 @@ def classify_custom_space(manager, topic, tags, source="title", db_path=None,
     if not isinstance(manager, DataAnalyzeManager):
         manager = DataAnalyzeManager(manager)
 
-    tags = [str(t).strip() for t in tags if str(t).strip()]
+    # Strip whitespace AND surrounding quote characters, so tags pasted as a
+    # quoted list ('"Hybrid Powertrain", "Electric Motor", ...') classify the
+    # same as plain comma-separated ones.
+    tags = [str(t).strip().strip('\'"“”‘’').strip() for t in tags]
+    tags = [t for t in tags if t]
     if not tags:
         print("Custom classification: no tags given; nothing to do.")
         return 0

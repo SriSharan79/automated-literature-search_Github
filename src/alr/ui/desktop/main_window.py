@@ -1455,7 +1455,12 @@ class AutomatedLiteratureUI(tk.Tk):
         if not topic:
             messagebox.showerror("Error", "Enter a Topic tag (it names the output file and the database column).")
             return
-        tags = [t.strip() for t in self.custom_tags_entry.get().split(",") if t.strip()]
+        # Accept pasted lists too: strip surrounding quotes from each tag, so
+        # '"Hybrid Powertrain", "Electric Motor"' works the same as
+        # 'Hybrid Powertrain, Electric Motor'.
+        tags = [t.strip().strip('\'"“”‘’').strip()
+                for t in self.custom_tags_entry.get().split(",")]
+        tags = [t for t in tags if t]
         if not tags:
             messagebox.showerror("Error", "Enter at least one classification tag (comma-separated).")
             return

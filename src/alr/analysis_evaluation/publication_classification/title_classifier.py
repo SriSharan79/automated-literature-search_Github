@@ -38,7 +38,7 @@ Before generating the JSON, internally analyze the Text Content for:
 
 ### Output Format:
 You must return ONLY a JSON object. Do not include conversational filler. 
-The JSON must follow this exact structure, covering all 10 specific topics:
+The JSON must follow this exact structure, covering all 11 specific topics:
 
 {
   "Systems Engineering": boolean,
@@ -243,6 +243,22 @@ The JSON must follow this exact structure, covering all {len(tags)} specific top
 """
 
 
+def _tag_key(tag):
+    """Normalised comparison key for a tag name (case/whitespace-insensitive)."""
+    return re.sub(r"\s+", " ", str(tag)).strip().lower()
+
+
+def _coerce_classifier_bool(val):
+    """
+    Turn an LLM-returned decision into a real boolean. JSON booleans pass
+    through; string forms ("true"/"false"/"yes"/"no") are interpreted instead
+    of being truthiness-tested (bool("false") would be True).
+    """
+    if isinstance(val, str):
+        return val.strip().lower() in ("true", "yes", "y", "1")
+    return bool(val)
+
+
 def classify_custom(text, tags, topic="the given taxonomy", service=None, source_label="Title"):
     """
     Classify a publication text against a **user-defined** tag taxonomy.
@@ -250,10 +266,20 @@ def classify_custom(text, tags, topic="the given taxonomy", service=None, source
     ``tags`` is the list of classification tags collected from the user; the
     system prompt is generated from them via
     :func:`build_custom_classifier_prompt`. ``source_label`` names what
-    ``text`` is ("Title" or "Abstract") in the prompt. Returns
-    ``{tag: bool}`` covering every tag (missing/extra keys from the LLM are
-    normalised away); on failure it falls back to all-False.
+    ``text`` is ("Title" or "Abstract") in the prompt.
+
+    The result is recorded through the same workflow as
+    :func:`classify_title` / :func:`classify_abstract`: the LLM's JSON is
+    parsed and its decisions become the workbook's tag columns. Because the
+    schema here is user-defined (unlike the fixed taxonomy, which models echo
+    verbatim), the parsing is tolerant: the JSON object is extracted from the
+    response even when wrapped in markdown/preamble, the returned keys are
+    matched to the user's tags case/whitespace-insensitively, and string
+    booleans are interpreted properly. Returns ``{tag: bool}`` covering every
+    tag; on failure it falls back to all-False.
     """
+    from alr.common.general_utils import clean_response_json_text
+
     system_prompt = build_custom_classifier_prompt(topic, tags)
     Prompt = f"""{source_label} of publication to be analyzed:
                 - {text}
@@ -268,8 +294,9 @@ def classify_custom(text, tags, topic="the given taxonomy", service=None, source
         print(Fore.CYAN + response + Style.RESET_ALL)
         print(Fore.CYAN + "--- RAW LLM RESPONSE END ---\n" + Style.RESET_ALL)
 
-        result = json.loads(response)
-        return {t: bool(result.get(t)) for t in tags}
+        result = json.loads(clean_response_json_text(response))
+        normalised = {_tag_key(k): v for k, v in result.items()}
+        return {t: _coerce_classifier_bool(normalised.get(_tag_key(t))) for t in tags}
     except Exception as e:
         print(f"Error in custom classification: {e}")
         return {t: False for t in tags}
