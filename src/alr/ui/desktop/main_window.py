@@ -900,28 +900,48 @@ class AutomatedLiteratureUI(tk.Tk):
         self.query_entry = ttk.Entry(query_frame, width=80)
         self.query_entry.pack(fill="x", padx=5, pady=5)
 
-        # Query scope: all sections vs. Research-Area / Key-Concept sections only.
-        scope_frame = ttk.Frame(v_frame)
-        scope_frame.pack(fill="x", padx=5, pady=(0, 5))
-        ttk.Label(scope_frame, text="Query scope:").pack(side="left", padx=5)
-        self.query_scope_var = ttk.Combobox(
-            scope_frame,
-            values=["All sections", "Research-Area & Key-Concept only"],
-            width=32, state="readonly",
-        )
-        self.query_scope_var.set("All sections")
-        self.query_scope_var.pack(side="left", padx=5)
+        # Query scope: pick exactly which analyzed sections to search —
+        # any mix of abstract, Introduction and Results & Conclusion
+        # attributes (their DBs must have been built; missing ones are
+        # skipped with a console warning).
+        ttk.Label(v_frame, text="Sections to query:").pack(anchor="w", padx=10)
+        self.query_section_vars = self._make_section_checkbox_grid(v_frame)
 
         # Top-k: how many best matches to fetch per section index.
-        ttk.Label(scope_frame, text="Top matches per section (top-k):").pack(side="left", padx=(15, 5))
+        topk_frame = ttk.Frame(v_frame)
+        topk_frame.pack(fill="x", padx=5, pady=(0, 5))
+        ttk.Label(topk_frame, text="Top matches per section (top-k):").pack(side="left", padx=5)
         self.query_topk_var = tk.StringVar(value="50")
-        ttk.Spinbox(scope_frame, from_=1, to=1000, increment=1, width=6,
+        ttk.Spinbox(topk_frame, from_=1, to=1000, increment=1, width=6,
                     textvariable=self.query_topk_var).pack(side="left", padx=5)
 
         btn_run_query = ttk.Button(v_frame, text="Generate Query Report", command=self._run_visualization_query_action)
         btn_run_query.pack(pady=20, ipadx=10, ipady=5)
 
         self._build_common_db_frame(tab)
+
+    def _make_section_checkbox_grid(self, parent, default=True):
+        """
+        One checkbox per RAG section (abstract + Introduction + Results &
+        Conclusion attributes), grouped by their analysis source. Returns
+        {section_key: BooleanVar}. Used by both the query-scope selector and
+        the Common Database frame.
+        """
+        from alr.common.sections import ALL_RAG_SECTIONS, RAG_SOURCE_BY_KEY
+        group_labels = (("abstract", "Abstract"), ("intro", "Introduction"),
+                        ("rescon", "Results & Conclusion"))
+        section_vars = {}
+        for source, label in group_labels:
+            keys = [s.key for s in ALL_RAG_SECTIONS if RAG_SOURCE_BY_KEY[s.key] == source]
+            row = ttk.Frame(parent)
+            row.pack(fill="x", padx=10, pady=(0, 2))
+            ttk.Label(row, text=f"{label}:", width=20).grid(row=0, column=0, sticky="nw")
+            for i, key in enumerate(keys):
+                var = tk.BooleanVar(value=default)
+                section_vars[key] = var
+                ttk.Checkbutton(row, text=key, variable=var).grid(
+                    row=i // 4, column=1 + i % 4, sticky="w", padx=4, pady=1)
+        return section_vars
 
     def _build_common_db_frame(self, tab):
         """
@@ -963,6 +983,14 @@ class AutomatedLiteratureUI(tk.Tk):
                         text="Also treat matching filenames as duplicates (besides UUID and Title)",
                         variable=self.common_match_filename_var).pack(side="left")
 
+        # Attributes (sections) to include in the common DB — abstract,
+        # Introduction and Results & Conclusion analysis data. A document
+        # already in the common DB that lacks a newly ticked attribute gets
+        # only that attribute copied on the next build; documents whose
+        # space has no data for a ticked attribute simply skip it.
+        ttk.Label(c_frame, text="Attributes (sections) to include:").pack(anchor="w", padx=10)
+        self.common_section_vars = self._make_section_checkbox_grid(c_frame)
+
         ttk.Button(c_frame, text="Build / Update Common DB",
                    command=self._build_common_db_action).pack(pady=(4, 10), ipadx=10, ipady=4)
 
@@ -992,6 +1020,10 @@ class AutomatedLiteratureUI(tk.Tk):
         for src in cfg.get("sources", []):
             self.common_sources_list.insert("end", src)
         self.common_match_filename_var.set(bool(cfg.get("match_filename", True)))
+        saved_sections = cfg.get("sections")
+        if isinstance(saved_sections, list):
+            for key, var in self.common_section_vars.items():
+                var.set(key in saved_sections)
 
     def _save_common_db_config(self):
         import json as _json
@@ -1000,6 +1032,7 @@ class AutomatedLiteratureUI(tk.Tk):
                 "common_path": self.common_db_entry.get().strip(),
                 "sources": list(self.common_sources_list.get(0, "end")),
                 "match_filename": self.common_match_filename_var.get(),
+                "sections": [k for k, v in self.common_section_vars.items() if v.get()],
             }
             self._common_db_config_path().write_text(
                 _json.dumps(cfg, indent=2), encoding="utf-8")
@@ -1045,6 +1078,10 @@ class AutomatedLiteratureUI(tk.Tk):
         if not sources:
             messagebox.showerror("Error", "Please add at least one source storage space to combine.")
             return
+        section_keys = [k for k, v in self.common_section_vars.items() if v.get()]
+        if not section_keys:
+            messagebox.showerror("Error", "Please select at least one attribute (section) to include.")
+            return
 
         match_filename = self.common_match_filename_var.get()
         self._save_common_db_config()
@@ -1053,19 +1090,25 @@ class AutomatedLiteratureUI(tk.Tk):
 
         def work(progress, should_cancel):
             from alr.rag_builders.db_manager import build_common_database
-            added, skipped = build_common_database(
+            added, skipped, extended = build_common_database(
                 sources, common_path, match_filename=match_filename,
+                section_keys=section_keys,
                 progress_callback=lambda d, t, txt: progress(done=d, total=t, text=txt),
                 should_cancel=should_cancel,
             )
             skip_info["skipped"] = skipped
+            skip_info["extended"] = extended
             return added
 
         def on_success(added):
+            extended = skip_info.get("extended", 0)
+            extended_line = (f"{extended} existing document(s) extended with newly "
+                             f"selected attribute(s).\n" if extended else "")
             messagebox.showinfo(
                 "Common Database",
-                f"Common DB updated: {added or 0} document(s) added, "
-                f"{skip_info.get('skipped', 0)} already-known duplicate(s) skipped.\n\n"
+                f"Common DB updated: {added or 0} new document(s) added, "
+                f"{skip_info.get('skipped', 0)} already in the common DB (skipped, not reprocessed).\n"
+                f"{extended_line}\n"
                 f"Location: {common_path}")
 
         self._run_threaded(work, "Building Common Database", "added", on_success=on_success)
@@ -1094,19 +1137,20 @@ class AutomatedLiteratureUI(tk.Tk):
                                           "(how many best matches to fetch per section).")
             return
 
+        query_sections = [k for k, v in self.query_section_vars.items() if v.get()]
+        if not query_sections:
+            messagebox.showerror("Error", "Please tick at least one section to query.")
+            return
+
         print("\n[RAG Database Architecture Step] Synchronizing local vector storage mapping structures...")
         # generate_databases(storage_choice)
 
         target_label = "Common DB" if query_common else "storage space"
-        ra_kc_only = self.query_scope_var.get().startswith("Research-Area")
         print(f"[Query Pipeline Dispatch] Querying the {target_label} at: {storage_choice}")
         print(f"[Query Pipeline Dispatch] Running query text profiling execution match targeting expression: '{query_text}' (top-k={top_k})")
-        if ra_kc_only:
-            from alr.rag_builders.query_executor import generate_query_report_RA_KC
-            print("[Query Scope] Restricting to Research-Area & Key-Concept sections.")
-            generate_query_report_RA_KC([query_text], storage_choice, top_k=top_k)
-        else:
-            generate_query_report([query_text], storage_choice, top_k=top_k)
+        print(f"[Query Scope] Sections: {', '.join(query_sections)}")
+        generate_query_report([query_text], storage_choice, top_k=top_k,
+                              section_keys=query_sections)
         print("Query Generation Suite Logging Executed successfully.")
 
     # ==========================================

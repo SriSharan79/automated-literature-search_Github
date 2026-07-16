@@ -359,6 +359,70 @@ class Vec_DB_Manager:
         self.Motivation_Eval_excel = self.Introduction_Eval / "Motivation_Eval.xlsx"
         self.Gaps_Limitations_Eval_excel = self.Introduction_Eval / "Gaps_Limitations_Eval.xlsx"
         self.RQs_Scope_Eval_excel = self.Introduction_Eval / "RQs_Scope_Eval.xlsx"
+
+        # Introduction RAG text/vector DBs (see sections.INTRO_RAG_SECTIONS),
+        # mirroring the Abstract_DB Excel/JSON/Vec_bins layout.
+        self.Introduction_DB_Excel = self.Introduction_DB / "Introduction_DB_Excel"
+        self.Introduction_DB_Excel.mkdir(exist_ok=True)
+        self.Introduction_DB_JSON = self.Introduction_DB / "Introduction_DB_JSON"
+        self.Introduction_DB_JSON.mkdir(exist_ok=True)
+        self.Introduction_DB_Vec_bins = self.Introduction_DB / "Introduction_DB_Vec_bins"
+        self.Introduction_DB_Vec_bins.mkdir(exist_ok=True)
+
+        self.Background_DB_excel = self.Introduction_DB_Excel / "Background_DB.xlsx"
+        self.Motivation_DB_excel = self.Introduction_DB_Excel / "Motivation_DB.xlsx"
+        self.Gaps_Limitations_DB_excel = self.Introduction_DB_Excel / "Gaps_Limitations_DB.xlsx"
+        self.RQs_Scope_DB_excel = self.Introduction_DB_Excel / "RQs_Scope_DB.xlsx"
+
+        self.Background_DB_json = self.Introduction_DB_JSON / "Background_DB.json"
+        self.Motivation_DB_json = self.Introduction_DB_JSON / "Motivation_DB.json"
+        self.Gaps_Limitations_DB_json = self.Introduction_DB_JSON / "Gaps_Limitations_DB.json"
+        self.RQs_Scope_DB_json = self.Introduction_DB_JSON / "RQs_Scope_DB.json"
+
+        self.Background_DB_bin = self.Introduction_DB_Vec_bins / "Background_DB.bin"
+        self.Motivation_DB_bin = self.Introduction_DB_Vec_bins / "Motivation_DB.bin"
+        self.Gaps_Limitations_DB_bin = self.Introduction_DB_Vec_bins / "Gaps_Limitations_DB.bin"
+        self.RQs_Scope_DB_bin = self.Introduction_DB_Vec_bins / "RQs_Scope_DB.bin"
+
+        # Results & Conclusion RAG text/vector DBs (see
+        # sections.RESCON_RAG_SECTIONS), same layout again.
+        self.ResCon_DB = self.folder / "Results_Conclusion_DB"
+        self.ResCon_DB.mkdir(exist_ok=True)
+        self.ResCon_DB_Excel = self.ResCon_DB / "Results_Conclusion_DB_Excel"
+        self.ResCon_DB_Excel.mkdir(exist_ok=True)
+        self.ResCon_DB_JSON = self.ResCon_DB / "Results_Conclusion_DB_JSON"
+        self.ResCon_DB_JSON.mkdir(exist_ok=True)
+        self.ResCon_DB_Vec_bins = self.ResCon_DB / "Results_Conclusion_DB_Vec_bins"
+        self.ResCon_DB_Vec_bins.mkdir(exist_ok=True)
+        self.ResCon_Eval = self.ResCon_DB / "Results_Conclusion_LLM_evaluation"
+        self.ResCon_Eval.mkdir(exist_ok=True)
+
+        self.Results_Mentioned_DB_excel = self.ResCon_DB_Excel / "Results_Mentioned_DB.xlsx"
+        self.Limitations_Boundary_DB_excel = self.ResCon_DB_Excel / "Limitations_Boundary_DB.xlsx"
+        self.Content_Summary_DB_excel = self.ResCon_DB_Excel / "Content_Summary_DB.xlsx"
+        self.Future_Work_DB_excel = self.ResCon_DB_Excel / "Future_Work_DB.xlsx"
+        self.Outlook_DB_excel = self.ResCon_DB_Excel / "Outlook_DB.xlsx"
+
+        self.Results_Mentioned_DB_json = self.ResCon_DB_JSON / "Results_Mentioned_DB.json"
+        self.Limitations_Boundary_DB_json = self.ResCon_DB_JSON / "Limitations_Boundary_DB.json"
+        self.Content_Summary_DB_json = self.ResCon_DB_JSON / "Content_Summary_DB.json"
+        self.Future_Work_DB_json = self.ResCon_DB_JSON / "Future_Work_DB.json"
+        self.Outlook_DB_json = self.ResCon_DB_JSON / "Outlook_DB.json"
+
+        self.Results_Mentioned_DB_bin = self.ResCon_DB_Vec_bins / "Results_Mentioned_DB.bin"
+        self.Limitations_Boundary_DB_bin = self.ResCon_DB_Vec_bins / "Limitations_Boundary_DB.bin"
+        self.Content_Summary_DB_bin = self.ResCon_DB_Vec_bins / "Content_Summary_DB.bin"
+        self.Future_Work_DB_bin = self.ResCon_DB_Vec_bins / "Future_Work_DB.bin"
+        self.Outlook_DB_bin = self.ResCon_DB_Vec_bins / "Outlook_DB.bin"
+
+        # Per-rescon-section evaluation workbooks (registered on the
+        # SectionSpecs for uniformity; written once an evaluation pass for
+        # Results & Conclusion data exists).
+        self.Results_Mentioned_Eval_excel = self.ResCon_Eval / "Results_Mentioned_Eval.xlsx"
+        self.Limitations_Boundary_Eval_excel = self.ResCon_Eval / "Limitations_Boundary_Eval.xlsx"
+        self.Content_Summary_Eval_excel = self.ResCon_Eval / "Content_Summary_Eval.xlsx"
+        self.Future_Work_Eval_excel = self.ResCon_Eval / "Future_Work_Eval.xlsx"
+        self.Outlook_Eval_excel = self.ResCon_Eval / "Outlook_Eval.xlsx"
         
         self.results = self.folder/ "Querry_results"
         self.results.mkdir(exist_ok=True)

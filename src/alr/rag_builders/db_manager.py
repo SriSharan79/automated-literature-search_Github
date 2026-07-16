@@ -9,7 +9,51 @@ from alr.common.json_utils import get_key_from_file, get_value_by_pair
 from alr.rag_builders.text_db_updater import _fetch_metadata, _load_abstract_json, _load_recorded_abstracts, _sync_sections_for_uuid
 from alr.rag_builders.vector_db_updater import add_new_strings_to_index, create_faiss_index_cosine, load_index_file, save_index_file, search_similar, vectorize_strings
 from colorama import Fore, Style
-from alr.common.sections import build_sections_map_vdb, build_sections_map_vdb_excel
+from alr.common.sections import (
+    ALL_RAG_SECTIONS, ALR_SECTIONS, RAG_SOURCE_BY_KEY,
+    build_sections_map_vdb, build_sections_map_vdb_excel,
+)
+from alr.common.excel_utils import extract_column
+
+
+def _all_rag_keys() -> tuple:
+    """Every RAG-buildable section key (abstract + intro + rescon), in order."""
+    return tuple(spec.key for spec in ALL_RAG_SECTIONS)
+
+
+def _source_keys(source: str) -> tuple:
+    """The section keys one analysis JSON ('abstract'/'intro'/'rescon') provides."""
+    return tuple(spec.key for spec in ALL_RAG_SECTIONS if RAG_SOURCE_BY_KEY[spec.key] == source)
+
+
+def _read_json_dict(path):
+    """Load a JSON file expected to hold a dict; {} on any failure."""
+    try:
+        p = Path(path)
+        if not p.exists() or p.stat().st_size == 0:
+            return {}
+        with open(p, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def _log_uuids(log_path):
+    """UUID column of an analysis log workbook; [] when it doesn't exist."""
+    if log_path and Path(log_path).exists():
+        try:
+            return [str(u) for u in extract_column(log_path, "UUID")]
+        except Exception:
+            return []
+    return []
+
+
+def _analysis_source_paths(MF, source: str):
+    """(log_path, per-uuid json_path getter) for an intro/rescon source."""
+    if source == "intro":
+        return MF.AD_Intro_log_path, lambda: MF.intro_json_path
+    return MF.AD_ResCon_log_path, lambda: MF.rescon_json_path
 
 def update_VDB_status(VDB, key, str_count, vec_count):
     json_path = VDB.DB_update_logger
@@ -197,10 +241,42 @@ def rebuild_vector_databases(Storage_path):
     incremental sync is append-only and cannot see such changes.
     """
     VDB = Vec_DB_Manager(Storage_path)
-    secs_VDB = build_sections_map_vdb_excel(VDB)
+    secs_VDB = build_sections_map_vdb_excel(VDB, only=_all_rag_keys())
     print(Fore.CYAN + Style.BRIGHT + f"--- Rebuilding all vector DBs from Excel: {Storage_path} ---" + Style.RESET_ALL)
     _sync_sections_VDB(VDB, secs_VDB, rebuild=True)
     print(Fore.GREEN + Style.BRIGHT + "--- Vector DB rebuild complete ---" + Style.RESET_ALL)
+
+
+def _sync_analysis_source_text(MF, VDB, master_excel_file, uuid_cache, source):
+    """
+    Text-DB sync for one non-abstract analysis source ('intro' or 'rescon'):
+    iterate the source's log, load each document's analysis JSON and write
+    its section keys into their own per-section Excel/JSON DBs + master
+    Excel sheets — exactly how the recorded abstracts are synced. No log or
+    no data -> silent no-op, so spaces without that analysis are unaffected.
+    """
+    log_path, json_path_of = _analysis_source_paths(MF, source)
+    uuids = _log_uuids(log_path)
+    if not uuids:
+        return
+
+    keys = list(_source_keys(source))
+    sections = build_sections_map(VDB, only=keys)
+    master_map = build_sections_master_map(VDB, master_excel_file, only=keys)
+
+    label = "Introduction" if source == "intro" else "Results & Conclusion"
+    print(Fore.CYAN + f"--- Syncing {label} data ({len(uuids)} recorded document(s)) ---")
+    for UUID in uuids:
+        MF.update_id_files(UUID)
+        json_data = _read_json_dict(json_path_of())
+        if not json_data:
+            continue
+        title, file_name = _fetch_metadata(MF, UUID)
+        _sync_sections_for_uuid(
+            UUID=UUID, title=title, file_name=file_name,
+            json_data=json_data, sections=sections, uuid_cache=uuid_cache,
+        )
+        _sync_sections_master_for_uuid(UUID, title, file_name, json_data, master_map)
 
 
 def generate_databases(Storage_path, do_text: bool = True, do_vector: bool = True,
@@ -209,7 +285,10 @@ def generate_databases(Storage_path, do_text: bool = True, do_vector: bool = Tru
     Sync the RAG databases for a storage space.
 
     do_text:   sync the text databases (per-section JSON/Excel DBs + master
-               Excel overview) from the recorded abstracts.
+               Excel overview) from the recorded abstracts, PLUS — when the
+               space has Introduction / Results & Conclusion analysis data —
+               those sections into their own DBs (Introduction_DB /
+               Results_Conclusion_DB), see sections.ALL_RAG_SECTIONS.
     do_vector: sync the FAISS vector DBs. The vector sync now reads the
                per-section EXCEL DBs ("Content" column, positionally) written
                by the text sync — the same source the query executor aligns
@@ -232,8 +311,6 @@ def generate_databases(Storage_path, do_text: bool = True, do_vector: bool = Tru
     MASTER_EXCEL_FILE = VDB.Abstract_Overview
 
     recorded_abstracts = _load_recorded_abstracts(MF)
-    if not recorded_abstracts:
-        return
 
     if do_text:
         sections = build_sections_map(VDB)
@@ -263,8 +340,16 @@ def generate_databases(Storage_path, do_text: bool = True, do_vector: bool = Tru
             )
             _sync_sections_master_for_uuid(UUID, title, file_name, json_data, Master_map)
 
+        # Introduction and Results & Conclusion analysis data get their own
+        # section DBs the same way (no-ops when the space has none).
+        _sync_analysis_source_text(MF, VDB, MASTER_EXCEL_FILE, uuid_cache, "intro")
+        _sync_analysis_source_text(MF, VDB, MASTER_EXCEL_FILE, uuid_cache, "rescon")
+
     if do_vector:
-        secs_VDB = build_sections_map_vdb_excel(VDB)
+        # Cover every RAG section; ones whose Excel DB doesn't exist (e.g.
+        # intro/rescon in a space without that analysis) are skipped inside
+        # _sync_sections_VDB without touching anything.
+        secs_VDB = build_sections_map_vdb_excel(VDB, only=_all_rag_keys())
         _sync_sections_VDB(VDB, secs_VDB, rebuild=rebuild_vector)
 
 
@@ -279,6 +364,21 @@ COMMON_DB_MANIFEST = "Common_DB_manifest.xlsx"
 
 # Titles that must never be used for duplicate matching.
 _UNUSABLE_TITLES = {"", "nan", "none", "title not found", "no metadata title"}
+
+
+def _sections_label(keys) -> str:
+    """Canonical comma-joined section list for the manifest 'Sections' column."""
+    keys = set(keys)
+    return ", ".join(k for k in _all_rag_keys() if k in keys)
+
+
+def _parse_sections_label(value) -> set:
+    """Inverse of _sections_label. Rows written before the 'Sections' column
+    existed come from abstract-only builds, so they are credited with the
+    abstract sections (never intro/rescon, which no old build ever copied)."""
+    valid = set(_all_rag_keys())
+    parsed = {k.strip() for k in str(value or "").split(",")} & valid
+    return parsed if parsed else set(_source_keys("abstract"))
 
 
 def _norm_key(value) -> str:
@@ -304,17 +404,22 @@ def _load_common_known(common_path, sections):
     adopted from the section Excel DBs' Original_UUID/Title/Filename columns,
     so an existing combined DB is never re-imported from scratch.
 
-    Returns (known, manifest_rows) where known = {"uuids", "titles",
-    "filenames"} sets and manifest_rows is the list of row dicts the caller
-    appends to and re-saves.
+    Returns (known, manifest_rows, rows_by_uuid) where known = {"uuids":
+    {uuid: set of section keys already copied}, "titles": set, "filenames":
+    set}, manifest_rows is the list of row dicts the caller appends to and
+    re-saves, and rows_by_uuid maps each UUID to its row dict (so the row's
+    'Sections' can be updated in place when a document is extended with
+    newly selected sections). Rows written before the 'Sections' column
+    existed count as having every section (they were always copied whole).
     """
-    known = {"uuids": set(), "titles": set(), "filenames": set()}
+    known = {"uuids": {}, "titles": set(), "filenames": set()}
     manifest_rows = []
+    rows_by_uuid = {}
     manifest_path = Path(common_path) / COMMON_DB_MANIFEST
 
-    def register(uuid, title, filename):
+    def register(uuid, title, filename, section_keys):
         if uuid:
-            known["uuids"].add(str(uuid))
+            known["uuids"][str(uuid)] = set(section_keys)
         if _usable_title(title):
             known["titles"].add(_norm_key(title))
         if _usable_filename(filename):
@@ -325,14 +430,19 @@ def _load_common_known(common_path, sections):
             df = pd.read_excel(manifest_path)
             for _, row in df.iterrows():
                 r = row.to_dict()
-                register(str(r.get("UUID") or "").strip(), r.get("Title"), r.get("Filename"))
+                uuid = str(r.get("UUID") or "").strip()
+                register(uuid, r.get("Title"), r.get("Filename"),
+                         _parse_sections_label(r.get("Sections")))
                 manifest_rows.append(r)
-            return known, manifest_rows
+                if uuid:
+                    rows_by_uuid[uuid] = r
+            return known, manifest_rows, rows_by_uuid
         except Exception as e:
             print(Fore.YELLOW + f"⚠️ Could not read common-DB manifest ({e}); adopting from section DBs.")
 
     # No manifest yet: adopt identities from the existing section Excel DBs.
-    seen = set()
+    # Each document is credited with exactly the sections whose Excel it
+    # appears in, so a later build can still fill in sections it lacks.
     for key, (ex_path, _j_path) in sections.items():
         ex_path = Path(ex_path)
         if not ex_path.exists() or ex_path.stat().st_size == 0:
@@ -348,20 +458,47 @@ def _load_common_known(common_path, sections):
             # List-section rows carry "uuid_idx" in UUID; strip the suffix.
             if "Original_UUID" not in df.columns and "_" in uuid:
                 uuid = uuid.rsplit("_", 1)[0]
-            if not uuid or uuid in seen:
+            if not uuid:
                 continue
-            seen.add(uuid)
+            if uuid in rows_by_uuid:
+                known["uuids"][uuid].add(key)
+                rows_by_uuid[uuid]["Sections"] = _sections_label(known["uuids"][uuid])
+                continue
             title = row.get("Title")
             filename = row.get("Filename")
-            register(uuid, title, filename)
-            manifest_rows.append({
+            register(uuid, title, filename, {key})
+            r = {
                 "UUID": uuid, "Title": title, "Filename": filename,
                 "Source_Folder": "", "Data_Origin": "adopted (pre-manifest common DB)",
+                "Sections": _sections_label({key}),
                 "Added": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            })
+            }
+            manifest_rows.append(r)
+            rows_by_uuid[uuid] = r
     if manifest_rows:
         print(Fore.CYAN + f"🧾 Adopted {len(manifest_rows)} existing document(s) from the common DB's section Excels.")
-    return known, manifest_rows
+    return known, manifest_rows, rows_by_uuid
+
+
+def _identity_dupe(known, title, filename, match_filename) -> bool:
+    """Same publication already in the common DB under ANOTHER UUID?"""
+    if _usable_title(title) and _norm_key(title) in known["titles"]:
+        return True
+    return bool(match_filename and _usable_filename(filename)
+                and _norm_key(filename) in known["filenames"])
+
+
+def _success_metadata_map(MF):
+    """Read the space's success Excel ONCE -> {uuid: (title, filename)}, or
+    None when it can't be read (callers then fall back to per-UUID lookups)."""
+    try:
+        df = pd.read_excel(MF.excel_success)
+        if "UUID" not in df.columns:
+            return None
+        return {str(r.get("UUID")): (r.get("title"), r.get("filename"))
+                for _, r in df.iterrows()}
+    except Exception:
+        return None
 
 
 def _save_common_manifest(common_path, manifest_rows):
@@ -424,23 +561,104 @@ def _sql_documents_for_space(space_path):
     return docs
 
 
-def _file_documents_for_space(space_path):
-    """On-disk fallback: read the space's abstract log + abstract JSONs."""
+def _collect_space_documents(space_path, known, selected_set, match_filename):
+    """
+    One space's documents for the common-DB merge, prefiltered against what
+    the common DB already holds so that NO per-document work happens for
+    already-merged data:
+
+    - Candidate UUIDs come from the SQL rows (when the space is linked) plus
+      the abstract / Introduction / Results & Conclusion analysis logs, so a
+      document that only has intro or rescon data is found too.
+    - A known UUID whose selected sections are all present costs only its
+      log row; a known Title/Filename is caught from the metadata map before
+      any JSON is loaded.
+    - Sections are only planned for sources the document actually HAS
+      (cheap existence checks): a document without intro data is not
+      endlessly re-"extended" with empty introduction sections — once its
+      intro JSON appears, a later build picks exactly those sections up.
+    - Analysis JSONs are loaded only for documents (and sources) that will
+      actually be written. Abstract content prefers the SQL row.
+
+    Returns (docs, prefiltered) with
+    docs = {uuid: (title, filename, json_data, handled_keys, origin)} where
+    handled_keys = the selected sections this document can provide.
+    """
     MF = DataAnalyzeManager(space_path)
+    sql_docs = _sql_documents_for_space(space_path)
+    meta_map = _success_metadata_map(MF)
+
+    candidates = list(sql_docs.keys())
+    seen = set(candidates)
+    for log_path in (MF.AD_Abstract_log_path, MF.AD_Intro_log_path, MF.AD_ResCon_log_path):
+        for u in _log_uuids(log_path):
+            if u not in seen:
+                seen.add(u)
+                candidates.append(u)
+
     docs = {}
-    for UUID in _load_recorded_abstracts(MF):
-        UUID = str(UUID)
-        MF.update_id_files(UUID)
-        title, file_name = _fetch_metadata(MF, UUID)
-        json_data = _load_abstract_json(MF, UUID)
+    prefiltered = 0
+    for uuid in candidates:
+        if uuid in sql_docs:
+            title, filename, _sql_json = sql_docs[uuid]
+        elif meta_map is not None and uuid in meta_map:
+            title, filename = meta_map[uuid]
+        else:
+            MF.update_id_files(uuid)
+            title, filename = _fetch_metadata(MF, uuid)
+
+        have = known["uuids"].get(uuid)
+        if have is None:
+            if _identity_dupe(known, title, filename, match_filename):
+                prefiltered += 1
+                continue
+            needed = selected_set
+        else:
+            needed = selected_set - have
+            if not needed:
+                prefiltered += 1
+                continue
+
+        # Which analysis sources does this document actually have?
+        MF.update_id_files(uuid)
+        avail = set()
+        if uuid in sql_docs or Path(MF.abstract_json_path).exists():
+            avail.add("abstract")
+        if Path(MF.intro_json_path).exists():
+            avail.add("intro")
+        if Path(MF.rescon_json_path).exists():
+            avail.add("rescon")
+
+        handled = {k for k in selected_set if RAG_SOURCE_BY_KEY[k] in avail}
+        copy_keys = handled - (have or set())
+        if not copy_keys:
+            prefiltered += 1
+            continue
+
+        # Load only the sources that contribute sections still to copy.
+        need_sources = {RAG_SOURCE_BY_KEY[k] for k in copy_keys}
+        json_data = {}
+        origin = "files"
+        if "abstract" in need_sources:
+            if uuid in sql_docs:
+                json_data.update(sql_docs[uuid][2])
+                origin = "sql"
+            else:
+                abs_json = _load_abstract_json(MF, uuid)
+                if abs_json:
+                    json_data.update(abs_json)
+        if "intro" in need_sources:
+            json_data.update(_read_json_dict(MF.intro_json_path))
+        if "rescon" in need_sources:
+            json_data.update(_read_json_dict(MF.rescon_json_path))
         if not json_data:
             continue
-        docs[UUID] = (title, file_name, json_data)
-    return docs
+        docs[uuid] = (title, filename, json_data, handled, origin)
+    return docs, prefiltered
 
 
 def build_common_database(source_paths, common_path, match_filename: bool = True,
-                          do_vector: bool = True,
+                          do_vector: bool = True, section_keys=None,
                           progress_callback=None, should_cancel=None):
     """
     Merge several storage spaces into ONE common text + vector database
@@ -451,29 +669,51 @@ def build_common_database(source_paths, common_path, match_filename: bool = True
       is already linked (sync_storage_to_sql ran for it); otherwise they are
       read from the space's files (abstract log + abstract JSONs).
     - The build is incremental: documents already in the common DB are
-      skipped, matched by UUID, by normalized Title, and (optionally, when
-      ``match_filename``) by Filename. What's inside the common DB is tracked
-      in ``Common_DB_manifest.xlsx``; a pre-manifest common DB is adopted
-      from its section Excels on first run.
+      filtered out BEFORE any per-document work — matched by UUID, by
+      normalized Title, and (optionally, when ``match_filename``) by
+      Filename — so an update run only collects, iterates and embeds what is
+      actually new. What's inside the common DB (and which sections were
+      copied for each document) is tracked in ``Common_DB_manifest.xlsx``;
+      a pre-manifest common DB is adopted from its section Excels on first
+      run, never re-imported.
+    - ``section_keys`` restricts the build to a subset of the RAG sections
+      (default: every section of ALL_RAG_SECTIONS — abstract, Introduction
+      and Results & Conclusion attributes). Each document contributes only
+      the sections its analysis data actually provides; a document that is
+      already in the common DB but lacks some of the selected sections gets
+      ONLY those missing sections copied ("extended"), nothing is rewritten.
     - The vector sync afterwards only embeds/appends Excel rows not yet in
       the indexes (see _sync_sections_VDB), never rebuilding from scratch.
 
-    Returns (added, skipped).
+    Returns (added, skipped, extended).
     """
     if should_cancel is None:
         should_cancel = lambda: False
 
+    all_keys = _all_rag_keys()
+    selected = [k for k in all_keys if k in set(section_keys)] if section_keys else list(all_keys)
+    if not selected:
+        raise ValueError(f"section_keys matched no known section. Valid keys: {list(all_keys)}")
+    selected_set = set(selected)
+
     common_path = Path(common_path)
     VDB = Vec_DB_Manager(common_path)
     MASTER_EXCEL_FILE = VDB.Abstract_Overview
-    sections = build_sections_map(VDB)
-    Master_map = build_sections_master_map(VDB, MASTER_EXCEL_FILE)
+    # The FULL map is what the manifest adoption scans (a pre-manifest common
+    # DB may hold sections outside the current selection); writes go through
+    # the selection-restricted maps only.
+    sections_full = build_sections_map(VDB, only=all_keys)
+    sections = {k: sections_full[k] for k in selected}
+    Master_map_full = build_sections_master_map(VDB, MASTER_EXCEL_FILE, only=all_keys)
+    Master_map = {k: Master_map_full[k] for k in selected}
 
-    known, manifest_rows = _load_common_known(common_path, sections)
+    known, manifest_rows, rows_by_uuid = _load_common_known(common_path, sections_full)
     uuid_cache = {}
-    added = skipped = 0
+    added = skipped = extended = 0
 
-    # Collect every space's documents first so progress can show a real total.
+    # Collect every space's NEW documents first (already-known ones are
+    # filtered out here, before any per-document work) so the merge loop and
+    # its progress bar only cover what actually has to be copied.
     space_docs = []
     for space in source_paths:
         if should_cancel():
@@ -482,68 +722,84 @@ def build_common_database(source_paths, common_path, match_filename: bool = True
         if space == common_path:
             print(Fore.YELLOW + f"⏭️ Skipping source '{space}': it IS the common DB folder.")
             continue
-        docs = _sql_documents_for_space(space)
-        origin = "sql"
+        if progress_callback:
+            progress_callback(0, 1, f"Checking '{space.name}' for documents not yet in the common DB…")
+        docs, prefiltered = _collect_space_documents(space, known, selected_set, match_filename)
+        print(Fore.CYAN + f"📄 {space.name}: {len(docs)} document(s) with new data to add, "
+                          f"{prefiltered} already in the common DB — skipped without reprocessing.")
+        skipped += prefiltered
         if docs:
-            print(Fore.GREEN + f"🔗 {space.name}: using {len(docs)} document(s) already linked in the SQL database.")
-        else:
-            origin = "files"
-            docs = _file_documents_for_space(space)
-            print(Fore.CYAN + f"📄 {space.name}: reading {len(docs)} document(s) from the storage space files.")
-        space_docs.append((space, origin, docs))
+            space_docs.append((space, docs))
 
-    total = sum(len(docs) for _, _, docs in space_docs)
+    total = sum(len(docs) for _, docs in space_docs)
     done = 0
 
-    for space, origin, docs in space_docs:
-        for uuid, (title, filename, json_data) in docs.items():
+    for space, docs in space_docs:
+        for uuid, (title, filename, json_data, handled, origin) in docs.items():
             if should_cancel():
                 break
             done += 1
             if progress_callback:
                 progress_callback(done, total, f"[{space.name}] {filename or uuid}")
 
-            duplicate = (
-                uuid in known["uuids"]
-                or (_usable_title(title) and _norm_key(title) in known["titles"])
-                or (match_filename and _usable_filename(filename)
-                    and _norm_key(filename) in known["filenames"])
-            )
-            if duplicate:
+            # Re-check against the LIVE identity sets: a duplicate between two
+            # new spaces in the same run only becomes visible once the first
+            # copy of it has been added.
+            have = known["uuids"].get(uuid)
+            if have is None and _identity_dupe(known, title, filename, match_filename):
+                skipped += 1
+                continue
+            copy_keys = handled - (have or set())
+            if not copy_keys:
                 skipped += 1
                 continue
 
+            sec_sub = {k: sections[k] for k in selected if k in copy_keys}
+            master_sub = {k: Master_map[k] for k in selected if k in copy_keys}
             _sync_sections_for_uuid(
                 UUID=uuid, title=title, file_name=filename,
-                json_data=json_data, sections=sections, uuid_cache=uuid_cache,
+                json_data=json_data, sections=sec_sub, uuid_cache=uuid_cache,
             )
-            _sync_sections_master_for_uuid(uuid, title, filename, json_data, Master_map)
+            _sync_sections_master_for_uuid(uuid, title, filename, json_data, master_sub)
 
-            known["uuids"].add(uuid)
+            if have is not None:
+                # Known document extended with sections it was missing.
+                known["uuids"][uuid] = have | copy_keys
+                row = rows_by_uuid.get(uuid)
+                if row is not None:
+                    row["Sections"] = _sections_label(known["uuids"][uuid])
+                extended += 1
+                continue
+
+            known["uuids"][uuid] = set(copy_keys)
             if _usable_title(title):
                 known["titles"].add(_norm_key(title))
             if _usable_filename(filename):
                 known["filenames"].add(_norm_key(filename))
-            manifest_rows.append({
+            row = {
                 "UUID": uuid, "Title": title, "Filename": filename,
                 "Source_Folder": str(space), "Data_Origin": origin,
+                "Sections": _sections_label(copy_keys),
                 "Added": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            })
+            }
+            manifest_rows.append(row)
+            rows_by_uuid[uuid] = row
             added += 1
         if should_cancel():
             break
 
     _save_common_manifest(common_path, manifest_rows)
     print(Fore.GREEN + Style.BRIGHT
-          + f"--- Common text DB: {added} added, {skipped} duplicate/known skipped ---" + Style.RESET_ALL)
+          + f"--- Common text DB: {added} added, {extended} extended with missing sections, "
+          + f"{skipped} already-known skipped ---" + Style.RESET_ALL)
 
     if do_vector and not should_cancel():
         if progress_callback:
             progress_callback(done, total, "Syncing vector indexes (new entries only)…")
-        secs_VDB = build_sections_map_vdb_excel(VDB)
+        secs_VDB = build_sections_map_vdb_excel(VDB, only=all_keys)
         _sync_sections_VDB(VDB, secs_VDB, rebuild=False)
 
-    return added, skipped
+    return added, skipped, extended
 
 
 def generate_combined_databases(Source_path, Storage_path, rebuild_vector: bool = False):

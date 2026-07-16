@@ -144,14 +144,22 @@ def generate_query_report_RA_KC(query_list, Storage_path, top_k: int = 20):
         print(f"Report saved at: {VDB.query_storage}")        
 
 
-def generate_query_report(query_list, storage_path, search_root='/remotedata/U/DLR+kata_du/ALR DATA', top_k: int = 50):
+def generate_query_report(query_list, storage_path, search_root='/remotedata/U/DLR+kata_du/ALR DATA', top_k: int = 50,
+                          section_keys=None):
+    """
+    section_keys: optional iterable of section keys to query (any mix of
+    abstract, Introduction and Results & Conclusion attributes — see
+    sections.ALL_RAG_SECTIONS). Defaults to the abstract sections. Sections
+    whose vector DB doesn't exist in this storage location are skipped with
+    a warning (see process_attribute_query).
+    """
     print(f"{Fore.CYAN}{Style.BRIGHT}--- Initializing Report Generation for {len(query_list)} queries ---")
-    
+
     vdb = Vec_DB_Manager(storage_path)
     mf = DataAnalyzeManager(storage_path)
-    
+
     print(f"{Fore.YELLOW}Building sections map...")
-    sec_map = build_sections_map_full(vdb)
+    sec_map = build_sections_map_full(vdb, only=section_keys)
     print(f"{Fore.GREEN}Sections map built with {len(sec_map)} attributes.")
 
     for idx, query in enumerate(query_list, 1):        

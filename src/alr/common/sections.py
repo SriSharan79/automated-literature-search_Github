@@ -151,7 +151,106 @@ ALR_SECTIONS: tuple[SectionSpec, ...] = (
     ),
 )
 
-_SECTIONS_BY_KEY = {spec.key: spec for spec in ALR_SECTIONS}
+# ---------------------------------------------------------------------------
+# RAG sections for the OTHER analysis JSONs: the Introduction analysis
+# ({uuid}_Intro.json) and the Results & Conclusion analysis
+# ({uuid}_Results_Conclusion.json). Registered exactly like ALR_SECTIONS so
+# the text/vector DB builders and the query executor can treat every
+# analyzed attribute uniformly; ALR_SECTIONS itself stays abstract-only for
+# backward compatibility (every map builder defaults to it).
+# ---------------------------------------------------------------------------
+INTRO_RAG_SECTIONS: tuple[SectionSpec, ...] = (
+    SectionSpec(
+        key="Background",
+        excel_attr="Background_DB_excel",
+        json_attr="Background_DB_json",
+        bin_attr="Background_DB_bin",
+        master_sheet="Background",
+        eval_excel_attr="Background_Eval_excel",
+    ),
+    SectionSpec(
+        key="Motivation",
+        excel_attr="Motivation_DB_excel",
+        json_attr="Motivation_DB_json",
+        bin_attr="Motivation_DB_bin",
+        master_sheet="Motivation",
+        eval_excel_attr="Motivation_Eval_excel",
+    ),
+    SectionSpec(
+        key="Gaps & Limitations",
+        excel_attr="Gaps_Limitations_DB_excel",
+        json_attr="Gaps_Limitations_DB_json",
+        bin_attr="Gaps_Limitations_DB_bin",
+        master_sheet="Gaps_Limitations",
+        eval_excel_attr="Gaps_Limitations_Eval_excel",
+    ),
+    SectionSpec(
+        key="RQs & Scope",
+        excel_attr="RQs_Scope_DB_excel",
+        json_attr="RQs_Scope_DB_json",
+        bin_attr="RQs_Scope_DB_bin",
+        master_sheet="RQs_Scope",
+        eval_excel_attr="RQs_Scope_Eval_excel",
+    ),
+)
+
+RESCON_RAG_SECTIONS: tuple[SectionSpec, ...] = (
+    SectionSpec(
+        key="Results Mentioned",
+        excel_attr="Results_Mentioned_DB_excel",
+        json_attr="Results_Mentioned_DB_json",
+        bin_attr="Results_Mentioned_DB_bin",
+        master_sheet="Results_Mentioned",
+        eval_excel_attr="Results_Mentioned_Eval_excel",
+    ),
+    SectionSpec(
+        key="Limitations or Boundary Conditions",
+        excel_attr="Limitations_Boundary_DB_excel",
+        json_attr="Limitations_Boundary_DB_json",
+        bin_attr="Limitations_Boundary_DB_bin",
+        # Excel sheet names are capped at 31 characters.
+        master_sheet="Limitations_Boundary_Conditions",
+        eval_excel_attr="Limitations_Boundary_Eval_excel",
+    ),
+    SectionSpec(
+        key="Summary of the Content",
+        excel_attr="Content_Summary_DB_excel",
+        json_attr="Content_Summary_DB_json",
+        bin_attr="Content_Summary_DB_bin",
+        master_sheet="Content_Summary",
+        eval_excel_attr="Content_Summary_Eval_excel",
+    ),
+    SectionSpec(
+        key="Future Work",
+        excel_attr="Future_Work_DB_excel",
+        json_attr="Future_Work_DB_json",
+        bin_attr="Future_Work_DB_bin",
+        master_sheet="Future_Work",
+        eval_excel_attr="Future_Work_Eval_excel",
+    ),
+    SectionSpec(
+        key="Outlook",
+        excel_attr="Outlook_DB_excel",
+        json_attr="Outlook_DB_json",
+        bin_attr="Outlook_DB_bin",
+        master_sheet="Outlook",
+        eval_excel_attr="Outlook_Eval_excel",
+    ),
+)
+
+# Every RAG-queryable section, in canonical display/build order.
+ALL_RAG_SECTIONS: tuple[SectionSpec, ...] = (
+    ALR_SECTIONS + INTRO_RAG_SECTIONS + RESCON_RAG_SECTIONS
+)
+
+# Which analysis JSON provides each section key.
+RAG_SOURCE_BY_KEY: dict[str, str] = {
+    **{spec.key: "abstract" for spec in ALR_SECTIONS},
+    **{spec.key: "intro" for spec in INTRO_RAG_SECTIONS},
+    **{spec.key: "rescon" for spec in RESCON_RAG_SECTIONS},
+}
+
+_SECTIONS_BY_KEY = {spec.key: spec for spec in ALL_RAG_SECTIONS}
 
 _FIELD_TO_ATTR = {
     SectionField.EXCEL: "excel_attr",
@@ -206,15 +305,18 @@ def get_sections_map(
     return result
 
 
-def get_master_sections_map(vdb, master_excel_path) -> dict[str, tuple]:
+def get_master_sections_map(vdb, master_excel_path, only: Optional[Iterable[str]] = None) -> dict[str, tuple]:
     """
     Replacement for Master_excel_DB_Builder._build_sections_Master_map(VDB, master_excel_path).
 
     Returns {section_key: (master_excel_path, sheet_name, json_path)}.
+    ``only`` restricts (or extends, with intro/rescon keys) the sections;
+    defaults to the abstract sections like everything else.
     """
+    specs = ALR_SECTIONS if only is None else tuple(_SECTIONS_BY_KEY[k] for k in only)
     return {
         spec.key: (master_excel_path, spec.master_sheet, getattr(vdb, spec.json_attr))
-        for spec in ALR_SECTIONS
+        for spec in specs
     }
 
 
@@ -233,9 +335,9 @@ def get_eval_sections_map(vdb) -> dict[str, tuple]:
 # change and no other edits.
 # ---------------------------------------------------------------------------
 
-def build_sections_map(vdb) -> dict[str, tuple]:
+def build_sections_map(vdb, only: Optional[Iterable[str]] = None) -> dict[str, tuple]:
     """Was: RAG_BUILDERs/Text_DB_updater.py :: _build_sections_map(VDB)"""
-    return get_sections_map(vdb, fields=(SectionField.EXCEL, SectionField.JSON))
+    return get_sections_map(vdb, fields=(SectionField.EXCEL, SectionField.JSON), only=only)
 
 
 def build_sections_map_vdb(vdb) -> dict[str, tuple]:
@@ -243,9 +345,9 @@ def build_sections_map_vdb(vdb) -> dict[str, tuple]:
     return get_sections_map(vdb, fields=(SectionField.BIN, SectionField.JSON))
 
 
-def build_sections_map_full(vdb) -> dict[str, tuple]:
+def build_sections_map_full(vdb, only: Optional[Iterable[str]] = None) -> dict[str, tuple]:
     """Was: RAG_BUILDERs/querry_excecuter.py :: _build_sections_map_full(VDB)"""
-    return get_sections_map(vdb, fields=(SectionField.EXCEL, SectionField.JSON, SectionField.BIN))
+    return get_sections_map(vdb, fields=(SectionField.EXCEL, SectionField.JSON, SectionField.BIN), only=only)
 
 
 def build_sections_map_ra_kc(vdb) -> dict[str, tuple]:
@@ -257,16 +359,16 @@ def build_sections_map_ra_kc(vdb) -> dict[str, tuple]:
     )
     
 
-def build_sections_map_vdb_excel(vdb) -> dict[str, tuple]:
+def build_sections_map_vdb_excel(vdb, only: Optional[Iterable[str]] = None) -> dict[str, tuple]:
     """(BIN, EXCEL) variant of build_sections_map_vdb: the vector sync now
     embeds the same positional Content column the query executor aligns
     against, instead of the section JSON which could drift ahead of it."""
-    return get_sections_map(vdb, fields=(SectionField.BIN, SectionField.EXCEL))
+    return get_sections_map(vdb, fields=(SectionField.BIN, SectionField.EXCEL), only=only)
 
 
-def build_sections_master_map(vdb, master_excel_path) -> dict[str, tuple]:
+def build_sections_master_map(vdb, master_excel_path, only: Optional[Iterable[str]] = None) -> dict[str, tuple]:
     """Was: RAG_BUILDERs/Master_excel_DB_Builder.py :: _build_sections_Master_map(VDB, master_excel_path)"""
-    return get_master_sections_map(vdb, master_excel_path)
+    return get_master_sections_map(vdb, master_excel_path, only=only)
 
 
 def build_sections_eval_map(vdb) -> dict[str, tuple]:
