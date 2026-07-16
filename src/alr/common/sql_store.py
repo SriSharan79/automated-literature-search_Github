@@ -53,7 +53,8 @@ ENRICHMENT_COLUMNS = [
     "doi_link", "publisher", "container", "publication_year",
     "authors", "first_author", "publication_type", "classification",
     "abstract_classification", "evaluation_json", "evaluation_score",
-    "intro_evaluation_json", "intro_evaluation_score", "metrics_json",
+    "intro_evaluation_json", "intro_evaluation_score",
+    "rescon_evaluation_json", "rescon_evaluation_score", "metrics_json",
     "link",
 ]
 
@@ -686,6 +687,9 @@ def _merge_space_evaluation_overviews(store, manager) -> int:
         (os.path.join(manager.folder, "Introduction_DB",
                       "*_Introduction_Eval_Overview.xlsx"),
          "intro_evaluation_json", "intro_evaluation_score"),
+        (os.path.join(manager.folder, "Results_Conclusion_DB",
+                      "*_Results_Conclusion_Eval_Overview.xlsx"),
+         "rescon_evaluation_json", "rescon_evaluation_score"),
     ]
     updated = 0
     with store._connect() as conn:

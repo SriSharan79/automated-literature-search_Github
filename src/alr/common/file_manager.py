@@ -334,6 +334,8 @@ class Vec_DB_Manager:
         self.Abstract_Distance_Metrics = self.Abstract_Overview_folder / f"{current_date}_Abstract_Distance_Metrics.xlsx"
         self.Abstract_Cosine_Metrics = self.Abstract_Overview_folder / f"{current_date}_Abstract_Cosine_Metrics.xlsx"
         self.Abstract_Metrics_Overview = self.Abstract_Overview_folder / f"{current_date}_Abstract_Metrics_Overview.xlsx"
+        # Per-document sentence-level metric detail JSONs ({uuid}_..._Sentence_Metrics.json).
+        self.Abstract_Metric_Details = self.Abstract_Overview_folder / "Metric_Sentence_Details"
 
         self.Abstract_Eval = self.Abstract_DB / "Abstract_LLM_evaluation"
         self.Abstract_Eval.mkdir(exist_ok=True)
@@ -353,6 +355,7 @@ class Vec_DB_Manager:
         self.Introduction_Distance_Metrics = self.Introduction_DB / f"{current_date}_Introduction_Distance_Metrics.xlsx"
         self.Introduction_Cosine_Metrics = self.Introduction_DB / f"{current_date}_Introduction_Cosine_Metrics.xlsx"
         self.Introduction_Metrics_Overview = self.Introduction_DB / f"{current_date}_Introduction_Metrics_Overview.xlsx"
+        self.Introduction_Metric_Details = self.Introduction_DB / "Metric_Sentence_Details"
 
         # Per-intro-section evaluation workbooks (see sections.INTRO_SECTIONS).
         self.Background_Eval_excel = self.Introduction_Eval / "Background_Eval.xlsx"
@@ -396,6 +399,15 @@ class Vec_DB_Manager:
         self.ResCon_DB_Vec_bins.mkdir(exist_ok=True)
         self.ResCon_Eval = self.ResCon_DB / "Results_Conclusion_LLM_evaluation"
         self.ResCon_Eval.mkdir(exist_ok=True)
+
+        # Results & Conclusion evaluation overview + batch metric workbooks
+        # (mirroring the abstract/introduction evaluation structure).
+        self.ResCon_Eval_Overview = self.ResCon_DB / f"{current_date}_Results_Conclusion_Eval_Overview.xlsx"
+        self.ResCon_Lexical_Metrics = self.ResCon_DB / f"{current_date}_Results_Conclusion_Lexical_Metrics.xlsx"
+        self.ResCon_Distance_Metrics = self.ResCon_DB / f"{current_date}_Results_Conclusion_Distance_Metrics.xlsx"
+        self.ResCon_Cosine_Metrics = self.ResCon_DB / f"{current_date}_Results_Conclusion_Cosine_Metrics.xlsx"
+        self.ResCon_Metrics_Overview = self.ResCon_DB / f"{current_date}_Results_Conclusion_Metrics_Overview.xlsx"
+        self.ResCon_Metric_Details = self.ResCon_DB / "Metric_Sentence_Details"
 
         self.Results_Mentioned_DB_excel = self.ResCon_DB_Excel / "Results_Mentioned_DB.xlsx"
         self.Limitations_Boundary_DB_excel = self.ResCon_DB_Excel / "Limitations_Boundary_DB.xlsx"

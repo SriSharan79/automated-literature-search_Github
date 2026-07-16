@@ -274,6 +274,7 @@ def _eval_score(stats):
 _EVAL_SQL_COLUMNS = {
     "abstract": ("evaluation_json", "evaluation_score"),
     "intro": ("intro_evaluation_json", "intro_evaluation_score"),
+    "rescon": ("rescon_evaluation_json", "rescon_evaluation_score"),
 }
 
 
@@ -352,6 +353,31 @@ def _load_recorded_intros(MF):
     return []
 
 
+def _load_rescon_json(MF, uuid):
+    """Load {uuid}_Results_Conclusion.json from the space's Results & Conclusion folder (or None)."""
+    import json as _json
+
+    path = Path(os.path.join(MF.AD_ResCon, f"{uuid}_Results_Conclusion.json"))
+    if not path.exists():
+        return None
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return _json.load(f)
+    except (OSError, _json.JSONDecodeError) as e:
+        print(Fore.YELLOW + f"⚠️ Could not read Results & Conclusion JSON for {uuid}: {e}")
+        return None
+
+
+def _load_recorded_rescons(MF):
+    """UUIDs with a recorded Results & Conclusion analysis."""
+    from alr.common.excel_utils import extract_column
+
+    if MF.AD_ResCon_log_path and Path(MF.AD_ResCon_log_path).exists():
+        return extract_column(MF.AD_ResCon_log_path, "UUID")
+    print(Fore.RED + "Results & Conclusion Log is not Available")
+    return []
+
+
 def evaluate_document(storage_path, uuid, db_path=None, push_sql=True, mode="generate", target="abstract"):
     """
     Evaluate one analyzed document (by ``uuid``): write its per-section evaluation
@@ -363,7 +389,11 @@ def evaluate_document(storage_path, uuid, db_path=None, push_sql=True, mode="gen
     ``evaluation_json`` / ``evaluation_score``); ``"intro"`` grounds the analyzed
     introduction keys (Background, Motivation, Gaps & Limitations, RQs & Scope)
     against the identified introduction text (SQL columns
-    ``intro_evaluation_json`` / ``intro_evaluation_score``).
+    ``intro_evaluation_json`` / ``intro_evaluation_score``); ``"rescon"``
+    grounds the Results & Conclusion keys (Results Mentioned, Limitations or
+    Boundary Conditions, Summary of the Content, Future Work, Outlook) against
+    the identified results & conclusion text (SQL columns
+    ``rescon_evaluation_json`` / ``rescon_evaluation_score``).
 
     ``mode="copy"`` reuses a prior evaluation when one already exists in SQL
     (skips recomputation; unevaluated documents are still computed);
@@ -373,7 +403,10 @@ def evaluate_document(storage_path, uuid, db_path=None, push_sql=True, mode="gen
     Returns the per-section stats dict, or ``None`` if the source JSON is missing.
     Safe to call repeatedly: the Excel writes upsert per UUID (no duplicates).
     """
-    from alr.common.sections import build_intro_sections_eval_map, INTRO_TEXT_KEY, ABSTRACT_TEXT_KEY
+    from alr.common.sections import (
+        build_intro_sections_eval_map, build_rescon_sections_eval_map,
+        INTRO_TEXT_KEY, ABSTRACT_TEXT_KEY, RESCON_TEXT_KEY,
+    )
 
     if mode == "copy":
         prior = _existing_evaluation(uuid, db_path, target=target)
@@ -389,6 +422,11 @@ def evaluate_document(storage_path, uuid, db_path=None, push_sql=True, mode="gen
         text_key = INTRO_TEXT_KEY
         overview_path = VDB.Introduction_Eval_Overview
         loader = _load_intro_json
+    elif target == "rescon":
+        sections = build_rescon_sections_eval_map(VDB)
+        text_key = RESCON_TEXT_KEY
+        overview_path = VDB.ResCon_Eval_Overview
+        loader = _load_rescon_json
     else:
         sections = build_sections_eval_map(VDB)
         text_key = ABSTRACT_TEXT_KEY
@@ -422,7 +460,8 @@ def evaluate_space(storage_path, db_path=None, progress_callback=None, should_ca
     DBs and sync the summary into SQLite). Returns the number of documents evaluated.
 
     ``target`` selects the data evaluated: ``"abstract"`` (default, documents from
-    the abstract log) or ``"intro"`` (documents from the introduction log).
+    the abstract log), ``"intro"`` (documents from the introduction log) or
+    ``"rescon"`` (documents from the Results & Conclusion log).
     ``mode="copy"`` reuses prior evaluations already recorded in SQL (skips
     recompute); ``mode="generate"`` (default) recomputes. ``progress_callback(done,
     total)`` is called after each document if given, and ``should_cancel`` is
@@ -430,7 +469,8 @@ def evaluate_space(storage_path, db_path=None, progress_callback=None, should_ca
     """
     MF = storage_path if isinstance(storage_path, DataAnalyzeManager) else DataAnalyzeManager(storage_path)
 
-    recorded = _load_recorded_intros(MF) if target == "intro" else _load_recorded_abstracts(MF)
+    recorded = {"intro": _load_recorded_intros,
+                "rescon": _load_recorded_rescons}.get(target, _load_recorded_abstracts)(MF)
     if not recorded:
         return 0
 

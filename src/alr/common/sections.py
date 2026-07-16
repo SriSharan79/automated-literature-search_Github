@@ -340,9 +340,9 @@ def build_sections_map(vdb, only: Optional[Iterable[str]] = None) -> dict[str, t
     return get_sections_map(vdb, fields=(SectionField.EXCEL, SectionField.JSON), only=only)
 
 
-def build_sections_map_vdb(vdb) -> dict[str, tuple]:
+def build_sections_map_vdb(vdb, only: Optional[Iterable[str]] = None) -> dict[str, tuple]:
     """Was: RAG_BUILDERs/DB_Manager.py :: _build_sections_map_VDB(VDB)"""
-    return get_sections_map(vdb, fields=(SectionField.BIN, SectionField.JSON))
+    return get_sections_map(vdb, fields=(SectionField.BIN, SectionField.JSON), only=only)
 
 
 def build_sections_map_full(vdb, only: Optional[Iterable[str]] = None) -> dict[str, tuple]:
@@ -386,6 +386,7 @@ def build_sections_eval_map(vdb) -> dict[str, tuple]:
 # The key store_to_json_with_text writes for the raw texts.
 ABSTRACT_TEXT_KEY = "Abstract Text identified:"
 INTRO_TEXT_KEY = "Introduction Text identified:"
+RESCON_TEXT_KEY = "Results & Conclusion Text identified:"
 
 # Intro JSON key -> Vec_DB_Manager eval-workbook attribute.
 INTRO_SECTIONS: tuple[tuple[str, str], ...] = (
@@ -393,6 +394,15 @@ INTRO_SECTIONS: tuple[tuple[str, str], ...] = (
     ("Motivation", "Motivation_Eval_excel"),
     ("Gaps & Limitations", "Gaps_Limitations_Eval_excel"),
     ("RQs & Scope", "RQs_Scope_Eval_excel"),
+)
+
+# Results & Conclusion JSON key -> Vec_DB_Manager eval-workbook attribute.
+RESCON_SECTIONS: tuple[tuple[str, str], ...] = (
+    ("Results Mentioned", "Results_Mentioned_Eval_excel"),
+    ("Limitations or Boundary Conditions", "Limitations_Boundary_Eval_excel"),
+    ("Summary of the Content", "Content_Summary_Eval_excel"),
+    ("Future Work", "Future_Work_Eval_excel"),
+    ("Outlook", "Outlook_Eval_excel"),
 )
 
 
@@ -404,6 +414,14 @@ def build_intro_sections_eval_map(vdb) -> dict[str, tuple]:
     return {key: (getattr(vdb, attr), key) for key, attr in INTRO_SECTIONS}
 
 
+def build_rescon_sections_eval_map(vdb) -> dict[str, tuple]:
+    """
+    Results & Conclusion counterpart of :func:`build_sections_eval_map`:
+    ``{rescon_section_key: (eval_excel_path, rescon_section_key)}``.
+    """
+    return {key: (getattr(vdb, attr), key) for key, attr in RESCON_SECTIONS}
+
+
 # ---------------------------------------------------------------------------
 # Batch metric-evaluation workbooks (lexical / distance / cosine): each metric
 # kind records into its own dated workbook per target, and a combined overview
@@ -411,26 +429,38 @@ def build_intro_sections_eval_map(vdb) -> dict[str, tuple]:
 # Vec_DB_Manager attribute each (target, kind) pair maps to.
 # ---------------------------------------------------------------------------
 
-# target -> {metric kind or "overview": Vec_DB_Manager attribute}
+# target -> {metric kind, "overview" or "details": Vec_DB_Manager attribute}
+# ("details" is the folder holding the per-document sentence-level metric
+# JSON files written by metric_evaluator).
 METRIC_WORKBOOK_ATTRS = {
     "abstract": {
         "lexical": "Abstract_Lexical_Metrics",
         "distance": "Abstract_Distance_Metrics",
         "cosine": "Abstract_Cosine_Metrics",
         "overview": "Abstract_Metrics_Overview",
+        "details": "Abstract_Metric_Details",
     },
     "intro": {
         "lexical": "Introduction_Lexical_Metrics",
         "distance": "Introduction_Distance_Metrics",
         "cosine": "Introduction_Cosine_Metrics",
         "overview": "Introduction_Metrics_Overview",
+        "details": "Introduction_Metric_Details",
+    },
+    "rescon": {
+        "lexical": "ResCon_Lexical_Metrics",
+        "distance": "ResCon_Distance_Metrics",
+        "cosine": "ResCon_Cosine_Metrics",
+        "overview": "ResCon_Metrics_Overview",
+        "details": "ResCon_Metric_Details",
     },
 }
 
 def build_metric_workbooks_map(vdb, target="abstract") -> dict[str, "object"]:
     """
-    Return ``{metric_kind_or_"overview": workbook_path}`` for a target
-    ("abstract" or "intro"), resolved against a Vec_DB_Manager instance.
+    Return ``{metric_kind, "overview" or "details": path}`` for a target
+    ("abstract", "intro" or "rescon"), resolved against a Vec_DB_Manager
+    instance.
     """
     attrs = METRIC_WORKBOOK_ATTRS[target if target in METRIC_WORKBOOK_ATTRS else "abstract"]
     return {kind: getattr(vdb, attr) for kind, attr in attrs.items()}

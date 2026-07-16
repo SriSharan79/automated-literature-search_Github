@@ -739,13 +739,21 @@ class AutomatedLiteratureUI(tk.Tk):
             except Exception as e:
                 print(f"[Evaluation] Skipped/failed: {e}")
 
-            # Introduction evaluation keeps pace with the abstract evaluation.
+            # Introduction and Results & Conclusion evaluation keep pace with
+            # the abstract evaluation.
             progress(text="Finalizing: introduction evaluation sweep…")
             try:
                 from alr.analysis_evaluation.data_evaluator import evaluate_space
                 evaluate_space(MF, should_cancel=should_cancel, mode=eval_mode, target="intro")
             except Exception as e:
                 print(f"[Intro Evaluation] Skipped/failed: {e}")
+
+            progress(text="Finalizing: results & conclusion evaluation sweep…")
+            try:
+                from alr.analysis_evaluation.data_evaluator import evaluate_space
+                evaluate_space(MF, should_cancel=should_cancel, mode=eval_mode, target="rescon")
+            except Exception as e:
+                print(f"[Results & Conclusion Evaluation] Skipped/failed: {e}")
 
             if do_doi:
                 progress(text="Matching metadata from download logs…")
@@ -1271,21 +1279,25 @@ class AutomatedLiteratureUI(tk.Tk):
         target_row = ttk.Frame(eval_frame)
         target_row.pack(fill="x", padx=5, pady=(2, 2))
         ttk.Label(target_row, text="Evaluate:").pack(side="left", padx=6)
-        self.eval_target_var = tk.StringVar(value="abstract")
-        ttk.Radiobutton(target_row, text="Abstract data", value="abstract",
-                        variable=self.eval_target_var).pack(side="left", padx=4)
-        ttk.Radiobutton(target_row, text="Introduction data", value="intro",
-                        variable=self.eval_target_var).pack(side="left", padx=4)
-        ttk.Radiobutton(target_row, text="Both", value="both",
-                        variable=self.eval_target_var).pack(side="left", padx=4)
+        self.eval_target_vars = {
+            "abstract": tk.BooleanVar(value=True),
+            "intro": tk.BooleanVar(value=False),
+            "rescon": tk.BooleanVar(value=False),
+        }
+        ttk.Checkbutton(target_row, text="Abstract data",
+                        variable=self.eval_target_vars["abstract"]).pack(side="left", padx=4)
+        ttk.Checkbutton(target_row, text="Introduction data",
+                        variable=self.eval_target_vars["intro"]).pack(side="left", padx=4)
+        ttk.Checkbutton(target_row, text="Results & Conclusion data",
+                        variable=self.eval_target_vars["rescon"]).pack(side="left", padx=4)
         ttk.Button(target_row, text="Run Evaluation", command=self._run_evaluation_action).pack(side="left", padx=16)
 
         ttk.Label(eval_frame,
-                  text="(Each selected metric compares every extracted section item against the document's "
-                       "identified abstract/introduction text. Results: per-section evaluation workbooks, one dated "
-                       "workbook per metric kind plus a combined metrics-overview workbook in the space, and summary "
-                       "columns in the review database. Tip: run 'Build Text DB' + 'Build Vector DB' (Analyze tab) first so cosine "
-                       "reuses the stored vectors.)",
+                  text="(The identified abstract/introduction/results&conclusion text is split into sentences and "
+                       "every extracted item is measured against each sentence: the full sentence-level record goes "
+                       "to a per-document JSON in 'Metric_Sentence_Details', the dated metric workbooks keep the "
+                       "best value per item, and the review database gets only the workbook summary. Tip: run "
+                       "'Build Text DB' + 'Build Vector DB' (Analyze tab) first so cosine reuses the stored vectors.)",
                   wraplength=860, justify="left").pack(anchor="w", padx=8, pady=(0, 6))
 
         # --- Manual text comparison (kept from the standalone metrics panel) ---
@@ -1443,8 +1455,11 @@ class AutomatedLiteratureUI(tk.Tk):
             messagebox.showerror("Error", "Select at least one evaluation type.")
             return
 
-        choice = self.eval_target_var.get()
-        targets = ["abstract", "intro"] if choice == "both" else [choice]
+        targets = [t for t in ("abstract", "intro", "rescon") if self.eval_target_vars[t].get()]
+        if not targets:
+            messagebox.showerror("Error", "Select at least one data target "
+                                          "(Abstract / Introduction / Results & Conclusion).")
+            return
         eval_mode = self.eval_mode_var.get()
         print(f"[Evaluation] types: "
               + ", ".join((["substring"] if do_substring else []) + sorted(metric_kinds))
@@ -1462,8 +1477,10 @@ class AutomatedLiteratureUI(tk.Tk):
                 print(f"[Database Sync] Skipped/failed: {e}")
 
             n = 0
+            target_labels = {"abstract": "abstract", "intro": "introduction",
+                             "rescon": "results & conclusion"}
             for t in targets:
-                label = "introduction" if t == "intro" else "abstract"
+                label = target_labels[t]
                 if should_cancel():
                     break
                 if do_substring:

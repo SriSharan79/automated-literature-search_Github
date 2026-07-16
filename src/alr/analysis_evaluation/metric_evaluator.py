@@ -6,9 +6,13 @@ Batch metric evaluation over a storage space -- the batch counterpart of the
 manual two-text comparison panel, following the same space-wide pattern as
 :mod:`data_evaluator` (which handles the substring/grounding check).
 
-For every analyzed document it compares each extracted section item against the
-document's identified reference text (abstract or introduction) using the
-selected metric kinds:
+For every analyzed document the identified reference text (abstract,
+introduction or results & conclusion) is split into individual sentences and
+each extracted section item is measured against EVERY sentence: the complete
+sentence-level record goes to a per-document JSON detail file
+(``Metric_Sentence_Details/{uuid}_{target}_Sentence_Metrics.json``), the
+workbooks keep the best value per item and metric, and SQL keeps only the
+workbook-level summary. The selected metric kinds:
 
 * ``"lexical"``  -- Jaccard, ROUGE-1/2/L, BLEU (:mod:`Lexical_Overlap_Metrics`).
 * ``"distance"`` -- Levenshtein distance/ratio + word error rate
@@ -34,19 +38,21 @@ Workbook locations come from :func:`alr.common.sections.build_metric_workbooks_m
 from __future__ import annotations
 
 import importlib
+import re
 from pathlib import Path
 
 from colorama import Fore
 
 from alr.common.file_manager import DataAnalyzeManager, Vec_DB_Manager
 from alr.common.sections import (
-    ALR_SECTIONS, INTRO_SECTIONS, ABSTRACT_TEXT_KEY, INTRO_TEXT_KEY,
+    ALR_SECTIONS, INTRO_SECTIONS, RESCON_SECTIONS,
+    ABSTRACT_TEXT_KEY, INTRO_TEXT_KEY, RESCON_TEXT_KEY,
     build_sections_map_vdb, build_metric_workbooks_map,
 )
 from alr.analysis_evaluation.data_evaluator import (
     _write_section_sheet_flat, _fetch_metadata,
-    _load_abstract_json, _load_intro_json,
-    _load_recorded_abstracts, _load_recorded_intros,
+    _load_abstract_json, _load_intro_json, _load_rescon_json,
+    _load_recorded_abstracts, _load_recorded_intros, _load_recorded_rescons,
 )
 
 METRIC_KINDS = ("lexical", "distance", "cosine")
@@ -57,6 +63,33 @@ _KIND_COLUMNS = {
     "distance": ("levenshtein_distance", "similarity_ratio", "word_error_rate"),
     "cosine": ("cosine_similarity",),
 }
+
+# For these metrics a SMALLER value means a better match; every other metric
+# column is a similarity where bigger is better. Used to pick the per-item
+# best value across the reference sentences.
+_LOWER_IS_BETTER = {"levenshtein_distance", "word_error_rate"}
+
+
+def _split_sentences(text) -> list[str]:
+    """
+    Split a reference text into individual sentences (regex-based on ./!/?
+    boundaries — deliberately not nltk, whose punkt data may be unavailable).
+    Returns [] for empty input; a text without any boundary comes back as one
+    "sentence", so every caller can treat the result uniformly.
+    """
+    parts = re.split(r"(?<=[.!?])\s+", str(text or "").strip())
+    return [p.strip() for p in parts if p.strip()]
+
+
+def _best_value(col, values):
+    """Best non-None value of one metric column across the sentences (min for
+    distance-like columns, max otherwise). Returns (value, sentence_number)
+    with 1-based sentence numbering, or (None, None) when nothing usable."""
+    scored = [(v, i) for i, v in enumerate(values, 1) if isinstance(v, (int, float))]
+    if not scored:
+        return None, None
+    pick = min(scored) if col in _LOWER_IS_BETTER else max(scored)
+    return pick[0], pick[1]
 
 _punkt_ready = None  # tri-state: None = unchecked, True/False = usable
 
@@ -128,10 +161,15 @@ class _CosineContext:
     (same functions and index/metadata handling as query_executor).
     """
 
-    def __init__(self, vdb, target):
-        # {section_key: (bin_path, json_path)} -- abstract sections only; the
-        # intro target has no vector DBs, so it always embeds directly.
-        self.section_paths = build_sections_map_vdb(vdb) if target == "abstract" else {}
+    def __init__(self, vdb, section_keys):
+        # {section_key: (bin_path, json_path)} for the target's sections —
+        # every target (abstract, intro, rescon) has RAG vector DB paths now;
+        # sections whose DBs were never built simply fall back to direct
+        # embedding inside _section_index.
+        try:
+            self.section_paths = build_sections_map_vdb(vdb, only=section_keys)
+        except Exception:
+            self.section_paths = {}
         self._cache = {}  # section_key -> (index, contents) or None
 
     @staticmethod
@@ -144,6 +182,15 @@ class _CosineContext:
     def embed(self, text):
         from alr.rag_builders.vector_db_updater import vectorize_strings
         return self._normalize(vectorize_strings([str(text)])[0])
+
+    def embed_many(self, texts):
+        """Embed several texts in ONE call; returns a (n, dim) row-normalized matrix."""
+        import numpy as np
+        from alr.rag_builders.vector_db_updater import vectorize_strings
+        mat = np.asarray(vectorize_strings([str(t) for t in texts]), dtype="float32")
+        norms = np.linalg.norm(mat, axis=1, keepdims=True)
+        norms[norms == 0] = 1.0
+        return mat / norms
 
     def _section_index(self, section_key):
         """Load (index, contents) for a section; create the index if missing."""
@@ -187,13 +234,16 @@ class _CosineContext:
                 pass  # item not in the text DB (e.g. never synced) -> embed directly
         return self.embed(item_text)
 
-    def similarity(self, section_key, item_text, ref_vec):
+    def sentence_similarities(self, section_key, item_text, sent_mat):
+        """Cosine of one item against EVERY reference sentence (one value per
+        sentence, in order); the item vector is looked up/reconstructed once."""
         import numpy as np
         try:
-            return round(float(np.dot(self.item_vector(section_key, item_text), ref_vec)), 4)
+            item_vec = self.item_vector(section_key, item_text)
+            return [round(float(v), 4) for v in np.dot(sent_mat, item_vec)]
         except Exception as e:
             print(Fore.YELLOW + f"⚠️ Cosine failed for '{section_key}': {e}")
-            return None
+            return [None] * len(sent_mat)
 
 
 def _target_config(MF, VDB, target):
@@ -208,6 +258,15 @@ def _target_config(MF, VDB, target):
             "recorded": _load_recorded_intros(MF),
             "sql_label": "introduction",
         }
+    if target == "rescon":
+        return {
+            "section_keys": [key for key, _ in RESCON_SECTIONS],
+            "loader": _load_rescon_json,
+            "text_key": RESCON_TEXT_KEY,
+            "workbooks": workbooks,
+            "recorded": _load_recorded_rescons(MF),
+            "sql_label": "results_conclusion",
+        }
     return {
         "section_keys": [spec.key for spec in ALR_SECTIONS],
         "loader": _load_abstract_json,
@@ -218,16 +277,43 @@ def _target_config(MF, VDB, target):
     }
 
 
-def _metric_row(kinds, cosine_ctx, section_key, reference, candidate, ref_vec) -> dict:
-    """Compute the selected metric columns for one item."""
-    row = {}
+def _sentence_metric_rows(kinds, cosine_ctx, section_key, sentences, candidate, sent_mat) -> list[dict]:
+    """
+    Compute the selected metric columns for one extracted item against EVERY
+    reference sentence. Returns one dict per sentence (same order).
+    """
+    rows = [{} for _ in sentences]
     if "lexical" in kinds:
-        row.update(_lexical_metrics(reference, candidate))
+        for row, sentence in zip(rows, sentences):
+            row.update(_lexical_metrics(sentence, candidate))
     if "distance" in kinds:
-        row.update(_distance_metrics(reference, candidate))
-    if "cosine" in kinds and cosine_ctx is not None and ref_vec is not None:
-        row["cosine_similarity"] = cosine_ctx.similarity(section_key, candidate, ref_vec)
-    return row
+        for row, sentence in zip(rows, sentences):
+            row.update(_distance_metrics(sentence, candidate))
+    if "cosine" in kinds and cosine_ctx is not None and sent_mat is not None:
+        sims = cosine_ctx.sentence_similarities(section_key, candidate, sent_mat)
+        for row, sim in zip(rows, sims):
+            row["cosine_similarity"] = sim
+    return rows
+
+
+def _write_sentence_detail_json(details_dir, uuid, sql_label, payload) -> None:
+    """
+    Write the per-document sentence-level metric detail file
+    (``{uuid}_{target}_Sentence_Metrics.json``). This is the full record of
+    every metric value for every (reference sentence, attribute value) pair;
+    the workbooks keep only the best value per pair, and SQL only the
+    workbook-level summary.
+    """
+    import json
+
+    try:
+        details_dir = Path(details_dir)
+        details_dir.mkdir(parents=True, exist_ok=True)
+        path = details_dir / f"{uuid}_{sql_label}_Sentence_Metrics.json"
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        print(Fore.YELLOW + f"⚠️ Could not write sentence-metric details for {uuid}: {e}")
 
 
 def _push_metrics_to_sql(uuid, averages, sql_label, db_path=None) -> bool:
@@ -286,7 +372,20 @@ def evaluate_space_metrics(storage_path, kinds, target="abstract", db_path=None,
     """
     Batch-compute the selected metric ``kinds`` (subset of :data:`METRIC_KINDS`)
     for every analyzed document in a storage space, against the ``target`` data
-    ("abstract" or "intro"). Returns the number of documents evaluated.
+    ("abstract", "intro" or "rescon"). Returns the number of documents evaluated.
+
+    The document's identified reference text is split into individual
+    sentences and every extracted attribute value is measured against EACH
+    sentence:
+
+    * the full sentence-level record (every metric value for every
+      sentence/attribute-value pair) goes to a per-document JSON file,
+      ``Metric_Sentence_Details/{uuid}_{target}_Sentence_Metrics.json``;
+    * the workbooks store only the BEST value per attribute value and metric
+      (minimum for Levenshtein distance / word error rate, maximum for all
+      similarity metrics), plus which sentence produced it in the JSON;
+    * SQL (``metrics_json``) gets only the workbook-level summary (averages
+      of the best values) — never the sentence-level detail.
 
     ``mode="copy"`` reuses prior metrics: documents whose SQL ``metrics_json``
     already covers every selected metric column are skipped (only new/partially
@@ -313,7 +412,7 @@ def evaluate_space_metrics(storage_path, kinds, target="abstract", db_path=None,
         print(f"No recorded {target} analyses found; nothing to evaluate.")
         return 0
 
-    cosine_ctx = _CosineContext(VDB, target) if "cosine" in kinds else None
+    cosine_ctx = _CosineContext(VDB, cfg["section_keys"]) if "cosine" in kinds else None
     metric_cols = [c for k in ("lexical", "distance", "cosine") if k in kinds for c in _KIND_COLUMNS[k]]
 
     count = 0
@@ -341,17 +440,23 @@ def evaluate_space_metrics(storage_path, kinds, target="abstract", db_path=None,
             if not reference.strip():
                 continue
 
-            ref_vec = None
+            # Sentence-level references: every attribute value is measured
+            # against each sentence; the workbooks keep the best value.
+            sentences = _split_sentences(reference) or [reference.strip()]
+
+            sent_mat = None
             if cosine_ctx is not None:
                 try:
-                    ref_vec = cosine_ctx.embed(reference)
+                    sent_mat = cosine_ctx.embed_many(sentences)
                 except Exception as e:
-                    print(Fore.YELLOW + f"⚠️ Reference embedding failed for {uuid}: {e}")
+                    print(Fore.YELLOW + f"⚠️ Reference sentence embedding failed for {uuid}: {e}")
 
-            # Per-metric running sums for the document-level averages.
+            # Per-metric running sums of the BEST values, for the
+            # document-level averages.
             sums = {c: [0.0, 0] for c in metric_cols}  # col -> [total, n]
-            workbooks = cfg["workbooks"]  # {kind: per-kind workbook, "overview": combined}
+            workbooks = cfg["workbooks"]  # {kind: workbook, "overview": combined, "details": JSON folder}
             base = {"UUID": str(uuid), "Title": title, "Filename": file_name}
+            detail_sections = {}
 
             for key in cfg["section_keys"]:
                 value = json_data.get(key, None)
@@ -363,22 +468,46 @@ def evaluate_space_metrics(storage_path, kinds, target="abstract", db_path=None,
                 # workbook, and a combined entry carrying all metric data.
                 kind_entries = {k: dict(base) for k in kinds}
                 combined_entry = dict(base)
+                detail_items = []
                 for n, item in enumerate(items, 1):
-                    metrics = _metric_row(kinds, cosine_ctx, key, reference, item, ref_vec)
+                    sentence_rows = _sentence_metric_rows(
+                        kinds, cosine_ctx, key, sentences, item, sent_mat)
                     prefix = f"Item {n} " if len(items) > 1 else ""
                     combined_entry[f"{prefix}Content"] = item
+                    best_detail = {}
                     for kind in kinds:
                         kind_entries[kind][f"{prefix}Content"] = item
                         for col in _KIND_COLUMNS[kind]:
-                            val = metrics.get(col)
+                            val, sent_no = _best_value(col, [r.get(col) for r in sentence_rows])
+                            best_detail[col] = {"value": val, "sentence": sent_no}
                             kind_entries[kind][f"{prefix}{col}"] = val
                             combined_entry[f"{prefix}{col}"] = val
                             if isinstance(val, (int, float)):
                                 sums[col][0] += float(val)
                                 sums[col][1] += 1
+                    detail_items.append({
+                        "Item": n,
+                        "Content": item,
+                        "Best": best_detail,
+                        "Per sentence": [
+                            {"Sentence": i, **row}
+                            for i, row in enumerate(sentence_rows, 1)
+                        ],
+                    })
                 for kind in kinds:
                     _write_section_sheet_flat(workbooks[kind], key, kind_entries[kind])
                 _write_section_sheet_flat(workbooks["overview"], key, combined_entry)
+                detail_sections[key] = detail_items
+
+            _write_sentence_detail_json(workbooks["details"], uuid, cfg["sql_label"], {
+                **base,
+                "Target": target,
+                "Metric kinds": sorted(kinds),
+                "Reference sentences": [
+                    {"Sentence": i, "Text": s} for i, s in enumerate(sentences, 1)
+                ],
+                "Sections": detail_sections,
+            })
 
             averages = {col: (round(t / n, 4) if n else None) for col, (t, n) in sums.items()}
             # Per-kind Overview sheets carry that kind's averages; the combined
