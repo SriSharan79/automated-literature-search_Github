@@ -1,5 +1,6 @@
 import os
 import json
+import time
 from pathlib import Path
 import numpy as np
 from colorama import Fore, Style, init
@@ -177,6 +178,8 @@ def vectorize_strings(
     model: str = None,
     max_length: int = 512,
     batch_size: int = 32,
+    max_retries: int = 3,
+    retry_wait: float = 10.0,
 ) -> np.ndarray:
     """
     Get embedding vectors for a list of strings.
@@ -218,17 +221,52 @@ def vectorize_strings(
         service_code = "B" if service == "BlaBla" else "O"
         all_embeddings = []
         actual_service, actual_model = service, model
+        # (service, model) of the FIRST successful batch. Every later batch
+        # must come from the SAME backend: vectors from a cross-service
+        # fallback live in a different embedding space and must never be
+        # mixed into the same array / FAISS index.
+        pinned = None
         for i in range(0, len(input_strings), batch_size):
             batch = input_strings[i:i + batch_size]
-            # Timeout + cross-service fallback (mirrors llm_call); returns None
-            # only when the requested service AND its fallback both failed.
-            result = embedding_call(batch, service_code, model=model)
-            if not result or not result.get("embeddings"):
+            batch_label = f"batch {i}-{i + len(batch)} of {len(input_strings)} strings"
+            result = None
+            for attempt in range(1, max_retries + 1):
+                # Timeout + cross-service fallback (mirrors llm_call); returns
+                # None only when the requested service AND its fallback failed.
+                candidate = embedding_call(batch, service_code, model=model)
+                if candidate and candidate.get("embeddings"):
+                    got = (candidate.get("service", service), candidate.get("model", model))
+                    if pinned is not None and got != pinned:
+                        # A fallback answered with a different backend than the
+                        # batches already collected -> reject and retry rather
+                        # than silently mixing embedding spaces.
+                        print(Fore.YELLOW
+                              + f"\u26a0\ufe0f {batch_label}: got vectors from {got} but this run is "
+                              + f"pinned to {pinned}; discarding batch and retrying "
+                              + f"(attempt {attempt}/{max_retries})."
+                              + Style.RESET_ALL)
+                    else:
+                        result = candidate
+                        break
+                else:
+                    print(Fore.YELLOW
+                          + f"\u26a0\ufe0f Embedding call failed for {batch_label} "
+                          + f"(attempt {attempt}/{max_retries}); see errors above."
+                          + Style.RESET_ALL)
+                if attempt < max_retries:
+                    wait = retry_wait * attempt  # 10s, 20s, ... linear backoff
+                    print(f"   \u23f3 Waiting {wait:.0f}s before retrying...")
+                    time.sleep(wait)
+            if result is None:
                 raise RuntimeError(
                     f"Embedding call failed for service '{service}' and its fallback "
-                    f"(batch {i}-{i + len(batch)} of {len(input_strings)} strings).")
+                    f"({batch_label}) after {max_retries} attempts. The FAISS index "
+                    f"was NOT modified; re-run the sync once the service is reachable "
+                    f"and it will resume from the current index count.")
             actual_service = result.get("service", service)
             actual_model = result.get("model", model)
+            if pinned is None:
+                pinned = (actual_service, actual_model)
             all_embeddings.extend(result["embeddings"])
 
         vectors = np.array(all_embeddings, dtype=np.float32)

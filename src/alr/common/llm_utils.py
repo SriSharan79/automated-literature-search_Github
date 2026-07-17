@@ -232,10 +232,20 @@ def set_embedding_backend(method: str = None, service: str = None) -> None:
         if service not in ("BlaBla", "DLR Ollama"):
             raise ValueError(f"Unknown service '{service}'. Expected 'BlaBla' or 'DLR Ollama'.")
         SELECTED_EMBEDDING_BACKEND["service"] = service
-    print(Fore.GREEN
-          + f"✅ Embedding backend set to: method={SELECTED_EMBEDDING_BACKEND['method']}, "
-          + f"service={SELECTED_EMBEDDING_BACKEND['service']}"
-          + Style.RESET_ALL)
+    if SELECTED_EMBEDDING_BACKEND["method"] == "local":
+        # 'service' is irrelevant for local embeddings; it is kept only as the
+        # emergency API fallback if the local model fails to load. Printing it
+        # as the active backend was misleading.
+        print(Fore.GREEN
+              + f"✅ Embedding backend set to: method=local "
+              + f"(local model: {embedding_model_repo_id}; "
+              + f"API service '{SELECTED_EMBEDDING_BACKEND['service']}' used only as fallback)"
+              + Style.RESET_ALL)
+    else:
+        print(Fore.GREEN
+              + f"✅ Embedding backend set to: method={SELECTED_EMBEDDING_BACKEND['method']}, "
+              + f"service={SELECTED_EMBEDDING_BACKEND['service']}"
+              + Style.RESET_ALL)
 
 
 def get_embedding_backend() -> dict:
