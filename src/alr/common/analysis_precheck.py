@@ -185,6 +185,144 @@ def document_status(MF, uuid, filename, doc_row=None) -> dict:
     return status
 
 
+# ---------------------------------------------------------------------------
+# Space-wide completeness ("what is still missing, and can it be reused?")
+# ---------------------------------------------------------------------------
+
+# Human labels for the stages reported by :func:`compute_space_gaps`, in the
+# order the finalization dialog should show them.
+GAP_STAGES: tuple[tuple[str, str], ...] = (
+    ("title_class", "Title classification"),
+    ("abstract_class", "Abstract classification"),
+    ("eval_abstract", "Abstract evaluation"),
+    ("eval_intro", "Introduction evaluation"),
+    ("eval_rescon", "Results & Conclusion evaluation"),
+    ("doi", "DOI / metadata"),
+    ("intro_extract", "Introduction extraction"),
+    ("references_extract", "References extraction"),
+)
+
+
+def _eval_overview_folders(MF):
+    """(folder, name_contains) per evaluation target, or {} if unavailable."""
+    try:
+        from alr.common.file_manager import Vec_DB_Manager
+        VDB = Vec_DB_Manager(MF.folder)
+    except Exception:
+        return {}
+    return {
+        "eval_abstract": (VDB.Abstract_Overview_folder, "Abstract_Eval_Overview"),
+        "eval_intro": (VDB.Introduction_DB, "Introduction_Eval_Overview"),
+        "eval_rescon": (VDB.ResCon_DB, "Results_Conclusion_Eval_Overview"),
+    }
+
+
+def compute_space_gaps(MF, db_path=None) -> dict:
+    """
+    Report, for a whole storage space, which enrichment stages are **missing from
+    SQL** and which of those could be filled by data that already exists on disk
+    (a prior dated workbook, or an analysis JSON that simply hasn't been synced).
+
+    Returns ``{stage: {"possible": [uuid, ...], "missing": [uuid, ...],
+    "reusable": [uuid, ...], "label": str}}`` for the stages in :data:`GAP_STAGES`,
+    **omitting** any stage with nothing missing. ``reusable`` is always a subset of
+    ``missing``: those are the documents whose gap can be closed by copying instead
+    of re-running an LLM/extraction.
+
+    Drives the finalization dialog: the user picks, per stage, whether to reuse the
+    existing data, run the stage fresh, or skip it. Read-only and defensive --
+    unreadable files count as "not present".
+    """
+    from alr.common.file_manager import DataAnalyzeManager
+    from alr.common.excel_utils import extract_column, get_corresponding_value
+    from alr.common.sql_store import AnalyzedDataStore, DB_PATH
+
+    if not isinstance(MF, DataAnalyzeManager):
+        MF = DataAnalyzeManager(MF)
+
+    if not Path(MF.excel_success).exists():
+        return {}
+    try:
+        uuids = extract_column(MF.excel_success, "UUID")
+    except Exception:
+        return {}
+
+    try:
+        store = AnalyzedDataStore(db_path or DB_PATH)
+        rows = {str(d.get("uuid")): d for d in store.list_documents()
+                if d.get("source_folder") == str(MF.folder)}
+    except Exception:
+        rows = {}
+
+    eval_folders = _eval_overview_folders(MF)
+    gaps = {stage: {"possible": [], "missing": [], "reusable": [], "label": label}
+            for stage, label in GAP_STAGES}
+
+    for uuid in uuids:
+        uuid = str(uuid)
+        row = rows.get(uuid, {})
+        try:
+            title = get_corresponding_value(MF.excel_success, "UUID", uuid, "title")
+            filename = get_corresponding_value(MF.excel_success, "UUID", uuid, "filename")
+        except Exception:
+            title, filename = None, None
+        fname = str(filename) if filename is not None else ""
+
+        MF.update_id_files(uuid)
+        has_abstract = _abstract_json_ok(MF.abstract_json_path) or _nonempty(row.get("abstract_text"))
+        has_intro = _json_present(MF.intro_json_path)
+        has_rescon = _json_present(MF.rescon_json_path)
+        has_refs = _json_present(MF.ref_json_path)
+
+        # (stage, prerequisite present, SQL value, reuse probe)
+        checks = (
+            ("title_class", _nonempty(title) and str(title).strip() != "Title Not Found",
+             row.get("classification"),
+             lambda: bool(find_dated_files_with(MF.classification_subfolder,
+                                                "Title_Classification", "filename", fname))),
+            ("abstract_class", has_abstract, row.get("abstract_classification"),
+             lambda: bool(find_dated_files_with(MF.classification_subfolder,
+                                                "Abstract_Classification", "filename", fname))),
+            ("eval_abstract", has_abstract, row.get("evaluation_score"),
+             lambda: _eval_reusable(eval_folders, "eval_abstract", uuid)),
+            ("eval_intro", has_intro, row.get("intro_evaluation_score"),
+             lambda: _eval_reusable(eval_folders, "eval_intro", uuid)),
+            ("eval_rescon", has_rescon, row.get("rescon_evaluation_score"),
+             lambda: _eval_reusable(eval_folders, "eval_rescon", uuid)),
+            ("doi", True, row.get("doi_link"),
+             lambda: bool(find_dated_files_with(MF.doi_metadata_subfolder,
+                                                "DOI_Metadata", "File_Name", fname))),
+            # Extraction gaps are reusable when the analysis JSON is already on
+            # disk -- the final sync alone closes them, no re-analysis needed.
+            ("intro_extract", True, row.get("introduction_json"), lambda: has_intro),
+            ("references_extract", True, row.get("references_json"), lambda: has_refs),
+        )
+
+        for stage, possible, sql_value, reuse_probe in checks:
+            if not possible:
+                continue
+            gaps[stage]["possible"].append(uuid)
+            if _nonempty(sql_value):
+                continue
+            gaps[stage]["missing"].append(uuid)
+            try:
+                if reuse_probe():
+                    gaps[stage]["reusable"].append(uuid)
+            except Exception:
+                pass
+
+    return {stage: info for stage, info in gaps.items() if info["missing"]}
+
+
+def _eval_reusable(eval_folders, stage, uuid) -> bool:
+    """True if a dated evaluation overview for ``stage`` already records ``uuid``."""
+    entry = eval_folders.get(stage)
+    if not entry:
+        return False
+    folder, name_contains = entry
+    return bool(find_dated_files_with(folder, name_contains, "UUID", uuid, sheet_name="Overview"))
+
+
 def locate_document_data(MF, uuid, filename):
     """
     List, per enrichment kind, the dated workbooks in the storage space that hold

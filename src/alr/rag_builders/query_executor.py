@@ -145,13 +145,17 @@ def generate_query_report_RA_KC(query_list, Storage_path, top_k: int = 20):
 
 
 def generate_query_report(query_list, storage_path, search_root='/remotedata/U/DLR+kata_du/ALR DATA', top_k: int = 50,
-                          section_keys=None):
+                          section_keys=None, enrich_keys=None):
     """
     section_keys: optional iterable of section keys to query (any mix of
     abstract, Introduction and Results & Conclusion attributes — see
     sections.ALL_RAG_SECTIONS). Defaults to the abstract sections. Sections
     whose vector DB doesn't exist in this storage location are skipped with
     a warning (see process_attribute_query).
+
+    enrich_keys: optional iterable of section keys to add as **columns** on the
+    overview report (independent of which sections were searched). Defaults to
+    the abstract attributes.
     """
     print(f"{Fore.CYAN}{Style.BRIGHT}--- Initializing Report Generation for {len(query_list)} queries ---")
 
@@ -180,7 +184,7 @@ def generate_query_report(query_list, storage_path, search_root='/remotedata/U/D
 
         # 3. Harvest associated files
         print(f"{Fore.CYAN} > [Step 3] Harvesting associated resources (PDFs/JSONs)...")
-        harvest_query_resources(overview_path, search_root, vdb, mf)
+        harvest_query_resources(overview_path, search_root, vdb, mf, enrich_keys=enrich_keys)
 
         print(f"{Fore.GREEN}{Style.BRIGHT}Workflow complete for: '{query}'")
         print(f"{Fore.LIGHTBLACK_EX}Path: {vdb.query_storage}")
@@ -227,73 +231,140 @@ def process_attribute_query(query, attr, excel_ref, bin_path, vdb, top_k: int = 
         save_path = sanitize_path_length(save_path)
         df.to_excel(save_path, index=False, engine="openpyxl")
 
-def enrich_overview_with_abstracts(overview_path, json_folder):
+# Which harvested JSON file holds each analysis source, and the folder attribute
+# on Vec_DB_Manager the harvest step copies it into.
+_ENRICH_SOURCES = {
+    "abstract": ("_Abstract.json", "querry_storage_Abs_jsons"),
+    "intro": ("_Intro.json", "querry_storage_Intro_jsons"),
+    "rescon": ("_Results_Conclusion.json", "querry_storage_ResCon_jsons"),
+}
+
+
+def _remove_if_empty(folder) -> bool:
+    """Delete ``folder`` when it exists and holds nothing. True if it was removed."""
+    folder = Path(folder)
+    try:
+        if folder.is_dir() and not any(folder.iterdir()):
+            folder.rmdir()
+            return True
+    except OSError:
+        pass
+    return False
+
+
+def _enrich_keys_by_source(enrich_keys=None):
     """
-    Reads the overview Excel, fetches details from local JSON files based on UUID,
-    and updates the Excel with research-specific columns.
+    Group the requested attribute keys by the analysis JSON they come from.
+    Defaults to the abstract attributes. Returns ``{source: [section_key, ...]}``
+    holding only sources that actually have keys selected.
     """
-    print(f"{Fore.YELLOW}Updating Overview with Abstract details...")
-    
+    from alr.common.sections import ALR_SECTIONS, RAG_SOURCE_BY_KEY
+
+    keys = list(enrich_keys) if enrich_keys is not None else [s.key for s in ALR_SECTIONS]
+    grouped = {}
+    for key in keys:
+        source = RAG_SOURCE_BY_KEY.get(key)
+        if source:
+            grouped.setdefault(source, []).append(key)
+    return grouped
+
+
+def enrich_overview_with_abstracts(overview_path, json_folders, enrich_keys=None):
+    """
+    Add one column per selected analyzed attribute to the query overview Excel,
+    reading each document's analysis JSONs by ``Original_UUID``.
+
+    ``json_folders`` maps an analysis source ("abstract" / "intro" / "rescon") to
+    the folder its harvested JSONs were copied into; a bare path is accepted as
+    the abstract folder for backward compatibility. ``enrich_keys`` selects the
+    attributes (any mix of abstract, Introduction and Results & Conclusion keys
+    from ``sections.ALL_RAG_SECTIONS``); it defaults to the abstract attributes.
+
+    The section key **is** the JSON field name, so the registry is the single
+    source of truth for both the column header and the lookup.
+    """
+    print(f"{Fore.YELLOW}Updating Overview with analyzed attributes...")
+
+    if not isinstance(json_folders, dict):  # legacy call: just the abstract folder
+        json_folders = {"abstract": json_folders}
+
+    grouped = _enrich_keys_by_source(enrich_keys)
+    if not grouped:
+        print(f"{Fore.YELLOW}   - No attributes selected; overview left unchanged.")
+        return
+
     df = pd.read_excel(overview_path)
-    
-    # Define the fields we want to extract from the JSON
-    abstract_fields = ["Research Problem","Research_Areas","Key_Concepts", "Objective", "Methodology", "Results", "Conclusion"]
-    
-    # Initialize columns if they don't exist
-    for field in abstract_fields:
-        if field not in df.columns:
-            df[field] = None
+    for keys in grouped.values():
+        for field in keys:
+            if field not in df.columns:
+                df[field] = None
 
     updated_count = 0
 
     for index, row in df.iterrows():
         uuid = str(row['Original_UUID'])
-        json_file = Path(json_folder) / f"{uuid}_Abstract.json"
-        
-        if json_file.exists():
+        found_any = False
+
+        for source, keys in grouped.items():
+            folder = json_folders.get(source)
+            if not folder:
+                continue
+            suffix, _ = _ENRICH_SOURCES[source]
+            json_file = Path(folder) / f"{uuid}{suffix}"
+            if not json_file.exists():
+                continue
             try:
                 with open(json_file, 'r', encoding='utf-8') as f:
                     data = json.load(f)
-                
-                for field in abstract_fields:
-                    # Get data; handle lists by joining them into a single string
-                    val = data.get(field, "")
-                    if isinstance(val, list):
-                        val = "\n •  ".join(val)
-                    df.at[index, field] = val
-                
-                updated_count += 1
             except Exception as e:
-                print(f"{Fore.RED}   [!] Error reading JSON for UUID {uuid}: {e}")
-        else:
-            # Optional: Log missing JSONs if needed
-            pass
+                print(f"{Fore.RED}   [!] Error reading {source} JSON for UUID {uuid}: {e}")
+                continue
+
+            for field in keys:
+                # Get data; handle lists by joining them into a single string
+                val = data.get(field, "")
+                if isinstance(val, list):
+                    val = "\n •  ".join(str(v) for v in val)
+                df.at[index, field] = val
+            found_any = True
+
+        if found_any:
+            updated_count += 1
 
     # Save the enriched dataframe back to the same path
     df.to_excel(overview_path, index=False, engine="openpyxl")
-    print(f"{Fore.GREEN}   - Enrichment complete. {updated_count} rows updated with Abstract data.")
+    print(f"{Fore.GREEN}   - Enrichment complete. {updated_count} rows updated "
+          f"across {len(grouped)} analysis source(s).")
 
-def harvest_query_resources(overview_path, search_root, vdb, mf):
+def harvest_query_resources(overview_path, search_root, vdb, mf, enrich_keys=None):
+    """
+    Copy the analysis JSONs behind the matched documents next to the query report
+    and merge the selected attributes into the overview Excel. Only the JSON kinds
+    the selected attributes need are harvested (see :func:`_enrich_keys_by_source`).
+    """
     df_overview = pd.read_excel(overview_path)
 
-    def abs_json_file_list_formulator(UUID_list):
-        return [s + "_Abstract.json" for s in UUID_list]
-    
-    unique_filenames = df_overview['Filename'].unique().tolist()
     org_uuids = df_overview['Original_UUID'].unique().tolist()
-    UUID_abs_json_files = abs_json_file_list_formulator(org_uuids)
+    grouped = _enrich_keys_by_source(enrich_keys)
 
     # print(f"{Fore.LIGHTBLACK_EX}     * Copying {len(unique_filenames)} PDFs...")
     # copy_matching_pdfs(unique_filenames, search_root, Path(vdb.querry_storage_pdfs))
 
-    print(f"{Fore.LIGHTBLACK_EX}     * Copying {len(UUID_abs_json_files)} Abstract JSONs...")
-    abs_json_dest = Path(vdb.querry_storage_Abs_jsons)
-    abs_json_dest.mkdir(parents=True, exist_ok=True)
-    copy_matching_jsons(UUID_abs_json_files, search_root, abs_json_dest)
+    json_folders = {}
+    for source in grouped:
+        suffix, folder_attr = _ENRICH_SOURCES[source]
+        dest = Path(getattr(vdb, folder_attr))
+        wanted = [f"{uuid}{suffix}" for uuid in org_uuids]
+        print(f"{Fore.LIGHTBLACK_EX}     * Copying {len(wanted)} {source} JSONs...")
+        # copy_matching_jsons creates the destination itself; drop it again when
+        # the search turned up nothing, so a query never leaves an empty folder.
+        copy_matching_jsons(wanted, search_root, dest)
+        if not _remove_if_empty(dest):
+            json_folders[source] = dest
 
     # 3. New Step: Enrich Excel with data from those JSONs
     print(f"{Fore.CYAN} > [Step 4] Merging JSON metadata into Excel...")
-    enrich_overview_with_abstracts(overview_path, abs_json_dest)
+    enrich_overview_with_abstracts(overview_path, json_folders, enrich_keys=enrich_keys)
 
 
 

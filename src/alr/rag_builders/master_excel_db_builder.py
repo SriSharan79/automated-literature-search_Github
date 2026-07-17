@@ -162,6 +162,36 @@ def _load_abstract_json(MF, UUID):
         print(Fore.RED + f"Error loading {UUID}: {e}")
         return None
 
+
+def _load_json_file(path, UUID, label):
+    """Load one analysis JSON; returns {} when absent/unreadable (and prints)."""
+    if not (path and Path(path).exists()):
+        return {}
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except Exception as e:
+        print(Fore.RED + f"Error loading {label} for {UUID}: {e}")
+        return {}
+
+
+def _load_analysis_json(MF, UUID, sources):
+    """
+    Merge the analysis JSONs named in ``sources`` (any of "abstract" / "intro" /
+    "rescon") into one ``{section_key: value}`` dict. Section keys are unique
+    across the three files, so a plain merge is unambiguous and lets the existing
+    per-section writer stay source-agnostic. Returns {} when nothing loads.
+    """
+    merged = {}
+    if "abstract" in sources:
+        merged.update(_load_abstract_json(MF, UUID) or {})
+    if "intro" in sources:
+        merged.update(_load_json_file(MF.intro_json_path, UUID, "Introduction JSON"))
+    if "rescon" in sources:
+        merged.update(_load_json_file(MF.rescon_json_path, UUID, "Results & Conclusion JSON"))
+    return merged
+
 def _sync_sections_master_for_uuid(UUID, title, file_name, json_data, sections):
     """Iterate sections and save either list items or a single string entry."""
     for key, (ex_path, sheet_name, j_path) in sections.items():
@@ -249,28 +279,43 @@ def _save_single_section(UUID, key, content_value, ex_path, sheet_name, j_path, 
     except Exception as e:
         print(Fore.RED + f"Error saving {key} for {UUID}: {e}")
 
-def build_master_excel_db(storage_path, master_excel_path=None, progress_callback=None, should_cancel=None):
+def build_master_excel_db(storage_path, master_excel_path=None, progress_callback=None,
+                          should_cancel=None, section_keys=None):
     """
     Consolidate the per-section analyzed data of a storage space into a single
     master Excel workbook (one "Overview" sheet + one sheet per section).
 
     ``storage_path`` is a DataAnalyzeManager storage folder. ``master_excel_path``
     defaults to the managed ``Vec_DB_Manager.Abstract_Overview`` location. UUIDs are
-    read from the space's ``Processed_file_registry.xlsx``; each document's abstract
-    JSON is mapped across the section sheets via :func:`build_sections_master_map`.
+    read from the space's ``Processed_file_registry.xlsx``; each document's analysis
+    JSONs are mapped across the section sheets via :func:`build_sections_master_map`.
+
+    ``section_keys`` selects which analyzed attributes to write -- any mix of the
+    abstract, Introduction and Results & Conclusion attributes registered in
+    ``sections.ALL_RAG_SECTIONS``. It defaults to the abstract attributes, which is
+    what this builder wrote before the other two analyses existed. Only the JSONs
+    actually needed by the selection are read.
 
     ``progress_callback(done, total)`` is called after each document if given.
     ``should_cancel`` is an optional callable checked before each document for
     cooperative cancellation (partial results are preserved). Returns the number of
     documents written to the master workbook and the path of that workbook.
     """
+    from alr.common.sections import RAG_SOURCE_BY_KEY
+
     MF = DataAnalyzeManager(folder_path=storage_path)
     VDB = Vec_DB_Manager(folder_path=storage_path)
 
     master_excel_path = Path(master_excel_path) if master_excel_path else Path(VDB.Abstract_Overview)
 
     # Map sections onto the single master file + their specific sheets.
-    sections_map = build_sections_master_map(VDB, master_excel_path)
+    sections_map = build_sections_master_map(VDB, master_excel_path, only=section_keys)
+    if not sections_map:
+        print(Fore.RED + "⚠️ No attributes selected. Nothing to consolidate.")
+        return 0, master_excel_path
+
+    # Only load the analysis JSONs the selected attributes actually come from.
+    sources = {RAG_SOURCE_BY_KEY[key] for key in sections_map if key in RAG_SOURCE_BY_KEY}
 
     # UUIDs to process come from the processed-file registry.
     if not Path(MF.excel_success).exists():
@@ -288,10 +333,10 @@ def build_master_excel_db(storage_path, master_excel_path=None, progress_callbac
 
         MF.update_id_files(uuid)
         title, file_name = _fetch_metadata(MF, uuid)
-        abstract_json = _load_abstract_json(MF, uuid)
+        json_data = _load_analysis_json(MF, uuid, sources)
 
-        if abstract_json:
-            _sync_sections_master_for_uuid(uuid, title, file_name, abstract_json, sections_map)
+        if json_data:
+            _sync_sections_master_for_uuid(uuid, title, file_name, json_data, sections_map)
             written += 1
 
         if progress_callback:

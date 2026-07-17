@@ -482,6 +482,8 @@ class Vec_DB_Manager:
 
         self.querry_storage_pdfs=None
         self.querry_storage_Abs_jsons=None
+        self.querry_storage_Intro_jsons=None
+        self.querry_storage_ResCon_jsons=None
 
     def update_key_folder(self, key):
         self.key_folder=self.results/key
@@ -502,8 +504,13 @@ class Vec_DB_Manager:
         self.query_storage = date_folder / query_name
         self.query_storage.mkdir(exist_ok=True)
 
+        # Harvest destinations. These are paths only -- none of them is created
+        # here, because a query needs at most the ones its selected attributes
+        # actually harvest into (copy_matching_jsons/_pdfs create the destination
+        # themselves, and the harvest step removes any that stay empty). Creating
+        # them eagerly left an empty Pdf_files + Abstract_Json_files behind for
+        # every single query.
         self.querry_storage_pdfs = self.query_storage / 'Pdf_files'
-        self.querry_storage_pdfs.mkdir(exist_ok=True)
-
         self.querry_storage_Abs_jsons = self.query_storage / 'Abstract_Json_files'
-        self.querry_storage_Abs_jsons.mkdir(exist_ok=True)
+        self.querry_storage_Intro_jsons = self.query_storage / 'Introduction_Json_files'
+        self.querry_storage_ResCon_jsons = self.query_storage / 'Results_Conclusion_Json_files'

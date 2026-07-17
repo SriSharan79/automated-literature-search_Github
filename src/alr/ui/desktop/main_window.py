@@ -1,3 +1,4 @@
+import inspect
 import os
 import re
 import sys
@@ -584,52 +585,20 @@ class AutomatedLiteratureUI(tk.Tk):
               + (", doi/metadata" if do_doi else "") + (", classification" if do_classify else "")
               + (", text DB" if do_text_db else "") + (", vector DB" if do_vector_db else ""))
 
-        # Classification & Evaluation copy-vs-generate decision. When prior dated
-        # data already exists for this storage space, ask ONCE per category (on the
-        # main thread, before the worker starts, since it may pop a modal dialog)
-        # whether to copy the previous data or generate fresh data into today's
-        # dated file. A brand-new batch has no prior data and defaults to generate.
-        class_mode = "generate"
-        eval_mode = "generate"
-
-        if do_classify:
-            from alr.analysis_evaluation.publication_classification.classify_runner import has_existing_classification
-            existing_class = has_existing_classification(MF, kind="title") + has_existing_classification(MF, kind="abstract")
-            if existing_class:
-                choice = messagebox.askyesnocancel(
-                    "Existing classification found",
-                    f"{existing_class} classification record(s) already exist for this storage space.\n\n"
-                    "Yes = generate NEW classification (write today's dated file; prior files kept)\n"
-                    "No = COPY the existing classification from the previous dated file(s)\n"
-                    "Cancel = abort")
-                if choice is None:
-                    return
-                class_mode = "generate" if choice else "copy"
-
-        # Evaluation prior data lives in the dated Abstract_Eval_Overview workbooks.
-        from alr.common.file_manager import Vec_DB_Manager
-        try:
-            eval_overview_folder = Vec_DB_Manager(MF.folder).Abstract_Overview_folder
-            existing_eval = any(eval_overview_folder.glob("*Abstract_Eval_Overview*.xlsx"))
-        except Exception:
-            existing_eval = False
-        if existing_eval:
-            choice = messagebox.askyesnocancel(
-                "Existing evaluation found",
-                "Evaluation data already exists for this storage space.\n\n"
-                "Yes = generate NEW evaluation\n"
-                "No = COPY the existing evaluation\n"
-                "Cancel = abort")
-            if choice is None:
-                return
-            eval_mode = "generate" if choice else "copy"
+        # The per-document pass reuses whatever a previous dated file already holds
+        # (falling back to a fresh run when there is nothing to copy), so a re-run
+        # never silently pays for the same LLM call twice. The real copy-vs-generate
+        # decision is made at the END, by the finalization dialog, which can look at
+        # what actually landed in SQL instead of guessing up front.
+        class_mode = "copy"
+        eval_mode = "copy"
 
         # The whole analysis + enrichment chain runs on a background thread with a
         # progress dialog so the UI stays responsive and cancellable. Each document
         # is taken through ALL selected steps before moving to the next one (rather
         # than stage-by-stage), and every step is precheck-driven: existing data is
         # copied across storage/SQL instead of recomputed.
-        def work(progress, should_cancel):
+        def work(progress, should_cancel, ask):
             from alr.data_analysis.batch_dedup import find_new_and_duplicate_pdfs
             from alr.common.sql_store import sync_one_document, AnalyzedDataStore, DB_PATH
 
@@ -723,8 +692,9 @@ class AutomatedLiteratureUI(tk.Tk):
             if should_cancel():
                 return processed
 
-            # --- Finalization: full SQL refresh + completeness sweeps for anything
-            # the per-document pass skipped (all idempotent). ---
+            # --- Finalization: refresh SQL, then work out what is still missing and
+            # let the user decide, per stage, whether to reuse data an earlier dated
+            # file already holds, run the stage fresh, or skip it. ---
             progress(text="Finalizing: syncing the review database…")
             try:
                 synced = sync_storage_to_sql(MF)
@@ -732,48 +702,95 @@ class AutomatedLiteratureUI(tk.Tk):
             except Exception as e:
                 print(f"[Database Sync] Skipped/failed: {e}")
 
-            progress(text="Finalizing: evaluation sweep…")
+            progress(text="Finalizing: checking the database for missing data…")
             try:
-                from alr.analysis_evaluation.data_evaluator import evaluate_space
-                evaluate_space(MF, should_cancel=should_cancel, mode=eval_mode)
+                from alr.common.analysis_precheck import compute_space_gaps
+                gaps = compute_space_gaps(MF)
             except Exception as e:
-                print(f"[Evaluation] Skipped/failed: {e}")
+                print(f"[Completeness Check] Skipped/failed: {e}")
+                gaps = {}
 
-            # Introduction and Results & Conclusion evaluation keep pace with
-            # the abstract evaluation.
-            progress(text="Finalizing: introduction evaluation sweep…")
-            try:
-                from alr.analysis_evaluation.data_evaluator import evaluate_space
-                evaluate_space(MF, should_cancel=should_cancel, mode=eval_mode, target="intro")
-            except Exception as e:
-                print(f"[Intro Evaluation] Skipped/failed: {e}")
+            decisions = {}
+            if gaps and not should_cancel():
+                for stage, info in gaps.items():
+                    print(f"[Completeness Check] {info['label']}: {len(info['missing'])} missing"
+                          f" ({len(info['reusable'])} reusable from previous files).")
+                # Modal on the main thread; the worker blocks until the user answers.
+                decisions = ask(lambda app: app._finalization_gap_dialog(gaps)) or {}
+            else:
+                print("[Completeness Check] The review database is already up to date.")
 
-            progress(text="Finalizing: results & conclusion evaluation sweep…")
-            try:
-                from alr.analysis_evaluation.data_evaluator import evaluate_space
-                evaluate_space(MF, should_cancel=should_cancel, mode=eval_mode, target="rescon")
-            except Exception as e:
-                print(f"[Results & Conclusion Evaluation] Skipped/failed: {e}")
+            def mode_for(stage):
+                """copy/generate for a stage the user wants filled, else None (skip)."""
+                choice = decisions.get(stage, "skip")
+                return {"reuse": "copy", "fresh": "generate"}.get(choice)
 
-            if do_doi:
-                progress(text="Matching metadata from download logs…")
+            for stage, target, label in (("eval_abstract", "abstract", "Evaluation"),
+                                         ("eval_intro", "intro", "Intro Evaluation"),
+                                         ("eval_rescon", "rescon", "Results & Conclusion Evaluation")):
+                mode = mode_for(stage)
+                if not mode or should_cancel():
+                    continue
+                progress(text=f"Finalizing: {label.lower()} sweep…")
                 try:
-                    from alr.common.download_log_enrich import enrich_from_download_logs
-                    from alr.common.file_manager import ALR_main_folder
-                    enrich_from_download_logs(ALR_main_folder, should_cancel=should_cancel)
+                    from alr.analysis_evaluation.data_evaluator import evaluate_space
+                    evaluate_space(MF, should_cancel=should_cancel, mode=mode, target=target)
                 except Exception as e:
-                    print(f"[Download-log Enrichment] Skipped/failed: {e}")
+                    print(f"[{label}] Skipped/failed: {e}")
 
-            if do_classify:
-                progress(text="Finalizing: classification sweep…")
+            if mode_for("doi") and not should_cancel():
+                # Reuse pulls metadata already sitting in the download logs; fresh
+                # re-runs the DOI lookup for the space.
+                progress(text="Finalizing: DOI / metadata…")
                 try:
-                    from alr.analysis_evaluation.publication_classification.classify_runner import (
-                        classify_space, classify_abstract_space,
-                    )
-                    classify_space(MF, should_cancel=should_cancel, service=service, mode=class_mode)
-                    classify_abstract_space(MF, should_cancel=should_cancel, service=service, mode=class_mode)
+                    if decisions.get("doi") == "fresh":
+                        from alr.data_analysis.doi_metadata import enrich_space_with_doi
+                        enrich_space_with_doi(MF, should_cancel=should_cancel)
+                    else:
+                        from alr.common.download_log_enrich import enrich_from_download_logs
+                        from alr.common.file_manager import ALR_main_folder
+                        enrich_from_download_logs(ALR_main_folder, should_cancel=should_cancel)
                 except Exception as e:
-                    print(f"[Classification] Skipped/failed: {e}")
+                    print(f"[DOI Enrichment] Skipped/failed: {e}")
+
+            for stage, kind, fn_name in (("title_class", "title", "classify_space"),
+                                         ("abstract_class", "abstract", "classify_abstract_space")):
+                mode = mode_for(stage)
+                if not mode or should_cancel():
+                    continue
+                progress(text=f"Finalizing: {kind} classification sweep…")
+                try:
+                    from alr.analysis_evaluation.publication_classification import classify_runner
+                    getattr(classify_runner, fn_name)(
+                        MF, should_cancel=should_cancel, service=service, mode=mode)
+                except Exception as e:
+                    print(f"[Classification] {kind}: Skipped/failed: {e}")
+
+            # Extraction gaps: "reuse" means the analysis JSON is already on disk and
+            # only SQL was behind — the closing sync below picks it up. "fresh" has to
+            # re-analyze the PDF, which is only possible while its source file is known.
+            fresh_components = {c for stage, c in (("intro_extract", "intro"),
+                                                   ("references_extract", "references"))
+                                if decisions.get(stage) == "fresh"}
+            if fresh_components and not should_cancel():
+                progress(text=f"Finalizing: re-extracting {', '.join(sorted(fresh_components))}…")
+                for pdf in to_process:
+                    if should_cancel():
+                        break
+                    try:
+                        process_pdf_mode_file(str(pdf), str(MF.folder), components=fresh_components,
+                                              doc_converter=doc_converter, eval_mode=eval_mode)
+                    except Exception as e:
+                        print(f"[Re-extraction] {Path(pdf).name}: {e}")
+                if not to_process:
+                    print("[Re-extraction] No source PDFs in this run to re-extract from.")
+
+            if decisions and not should_cancel():
+                progress(text="Finalizing: saving filled-in data…")
+                try:
+                    sync_storage_to_sql(MF)
+                except Exception as e:
+                    print(f"[Database Sync] Skipped/failed: {e}")
 
             # Build the RAG databases when requested (heavy; last). Text DB and
             # vector DB are separate opt-ins; both syncs are incremental (see
@@ -813,6 +830,12 @@ class AutomatedLiteratureUI(tk.Tk):
         the default "processed N document(s)" message box -- for passes whose
         result isn't a plain document count (e.g. a classification result dict,
         a workbook path, or computed metrics text).
+
+        A worker that declares a third parameter also receives ``ask(handler)``:
+        it runs ``handler(self)`` on the **main** thread (Tk is not thread-safe)
+        and blocks until it returns, so a pass can pop a modal mid-run and act on
+        the answer. Workers with the plain ``(progress, should_cancel)`` signature
+        are called unchanged.
         """
         cancel_event = threading.Event()
         dlg = ProgressDialog(self, title, on_cancel=cancel_event.set)
@@ -822,9 +845,23 @@ class AutomatedLiteratureUI(tk.Tk):
         def progress(**kw):
             q.put(("progress", kw))
 
+        def ask(handler):
+            """Run ``handler(self)`` on the main thread; block for its result."""
+            done = threading.Event()
+            holder = {}
+            q.put(("ask", (handler, holder, done)))
+            done.wait()
+            return holder.get("result")
+
         def worker():
             try:
-                q.put(("done", work(progress, cancel_event.is_set)))
+                args = [progress, cancel_event.is_set]
+                try:
+                    if len(inspect.signature(work).parameters) >= 3:
+                        args.append(ask)
+                except (TypeError, ValueError):
+                    pass
+                q.put(("done", work(*args)))
             except Exception as e:  # noqa: BLE001 - surface any failure to the UI
                 log_path = crash_logger.write_crash_log(
                     *sys.exc_info(), origin=f"background task: {title}")
@@ -851,6 +888,17 @@ class AutomatedLiteratureUI(tk.Tk):
                     kind, payload = q.get_nowait()
                     if kind == "progress":
                         dlg.apply(**payload)
+                    elif kind == "ask":
+                        # Main-thread modal requested by the worker; it is blocked
+                        # on `done` until we hand the answer back.
+                        handler, holder, done = payload
+                        try:
+                            holder["result"] = handler(self)
+                        except Exception as e:  # noqa: BLE001 - never strand the worker
+                            print(f"[Dialog] {e}")
+                            holder["result"] = None
+                        finally:
+                            done.set()
                     elif kind == "done":
                         outcome["n"] = payload
                         finish()
@@ -950,6 +998,117 @@ class AutomatedLiteratureUI(tk.Tk):
                 ttk.Checkbutton(row, text=key, variable=var).grid(
                     row=i // 4, column=1 + i % 4, sticky="w", padx=4, pady=1)
         return section_vars
+
+    def _finalization_gap_dialog(self, gaps):
+        """
+        Ask, in ONE modal, what to do about each enrichment stage that is still
+        missing from the SQL database after a run (see
+        ``analysis_precheck.compute_space_gaps``).
+
+        Per stage the user picks: reuse the data an earlier dated file / analysis
+        JSON already holds (no LLM cost), run the stage fresh, or skip it.
+        "Reuse" is offered only where something is actually reusable, and is the
+        default when it covers every missing document. Returns
+        ``{stage: "reuse"|"fresh"|"skip"}`` -- all "skip" if the user closes or
+        cancels the dialog.
+        """
+        win = tk.Toplevel(self)
+        win.title("Incomplete data found")
+        win.transient(self)
+        win.resizable(False, False)
+
+        ttk.Label(win, text="Some data is missing from the review database.",
+                  font=("TkDefaultFont", 10, "bold")).pack(anchor="w", padx=12, pady=(12, 2))
+        ttk.Label(win, text="Choose what to do for each item. \"Reuse existing\" copies data an\n"
+                            "earlier dated file already holds instead of re-running it.").pack(
+            anchor="w", padx=12, pady=(0, 8))
+
+        choices = {}
+        for stage, info in gaps.items():
+            missing, reusable = len(info["missing"]), len(info["reusable"])
+            row = ttk.LabelFrame(win, text=info["label"])
+            row.pack(fill="x", padx=12, pady=3)
+
+            summary = f"{missing} document(s) missing"
+            if reusable:
+                summary += f" — {reusable} available in a previous file"
+            ttk.Label(row, text=summary).pack(anchor="w", padx=8, pady=(4, 2))
+
+            # Reuse only makes sense when something is reusable, and is the
+            # default only when it closes the whole gap.
+            var = tk.StringVar(value="reuse" if reusable >= missing else "fresh")
+            choices[stage] = var
+            btns = ttk.Frame(row)
+            btns.pack(anchor="w", padx=8, pady=(0, 5))
+            ttk.Radiobutton(btns, text="Reuse existing", value="reuse", variable=var,
+                            state=("normal" if reusable else "disabled")).pack(side="left", padx=(0, 10))
+            ttk.Radiobutton(btns, text="Run fresh", value="fresh", variable=var).pack(side="left", padx=(0, 10))
+            ttk.Radiobutton(btns, text="Skip", value="skip", variable=var).pack(side="left")
+
+        result = {}
+
+        def apply_choices():
+            result.update({stage: var.get() for stage, var in choices.items()})
+            win.destroy()
+
+        action = ttk.Frame(win)
+        action.pack(fill="x", padx=12, pady=(6, 12))
+        ttk.Button(action, text="Continue", command=apply_choices).pack(side="right", padx=4)
+        ttk.Button(action, text="Skip all", command=win.destroy).pack(side="right", padx=4)
+
+        win.grab_set()
+        self.wait_window(win)
+        # Closing the window without confirming means "do nothing".
+        return result or {stage: "skip" for stage in gaps}
+
+    def _pick_attributes_dialog(self, title, default_keys=None):
+        """
+        Modal checkbox picker over every analyzed attribute (abstract +
+        Introduction + Results & Conclusion). Returns the selected section keys,
+        or ``None`` if the user cancels. Used before building the master Excel
+        workbook and before enriching a query report, so only the attributes the
+        user wants are written.
+        """
+        from alr.common.sections import ALR_SECTIONS
+
+        # Default: the abstract attributes (what these builders wrote before).
+        default_keys = set(default_keys) if default_keys is not None else {
+            s.key for s in ALR_SECTIONS}
+
+        win = tk.Toplevel(self)
+        win.title(title)
+        win.transient(self)
+        win.resizable(False, False)
+
+        ttk.Label(win, text="Select the attributes to include:",
+                  font=("TkDefaultFont", 10, "bold")).pack(anchor="w", padx=12, pady=(12, 6))
+
+        body = ttk.Frame(win)
+        body.pack(fill="x", padx=2)
+        section_vars = self._make_section_checkbox_grid(body, default=False)
+        for key, var in section_vars.items():
+            var.set(key in default_keys)
+
+        selected = {}
+
+        def confirm():
+            selected["keys"] = [k for k, v in section_vars.items() if v.get()]
+            win.destroy()
+
+        def toggle_all(value):
+            for var in section_vars.values():
+                var.set(value)
+
+        action = ttk.Frame(win)
+        action.pack(fill="x", padx=12, pady=(8, 12))
+        ttk.Button(action, text="All", width=6, command=lambda: toggle_all(True)).pack(side="left", padx=2)
+        ttk.Button(action, text="None", width=6, command=lambda: toggle_all(False)).pack(side="left", padx=2)
+        ttk.Button(action, text="Cancel", command=win.destroy).pack(side="right", padx=4)
+        ttk.Button(action, text="Build", command=confirm).pack(side="right", padx=4)
+
+        win.grab_set()
+        self.wait_window(win)
+        return selected.get("keys")
 
     def _build_common_db_frame(self, tab):
         """
@@ -1150,6 +1309,18 @@ class AutomatedLiteratureUI(tk.Tk):
             messagebox.showerror("Error", "Please tick at least one section to query.")
             return
 
+        # Which attributes to add as columns on the enriched overview report. This
+        # is independent of what was searched (a match on one section can still be
+        # reported alongside every other attribute), so ask, defaulting to the
+        # sections being queried.
+        enrich_keys = self._pick_attributes_dialog(
+            "Query report — attributes to include", default_keys=query_sections)
+        if enrich_keys is None:
+            return
+        if not enrich_keys:
+            messagebox.showerror("Error", "Please select at least one attribute to include.")
+            return
+
         print("\n[RAG Database Architecture Step] Synchronizing local vector storage mapping structures...")
         # generate_databases(storage_choice)
 
@@ -1157,8 +1328,9 @@ class AutomatedLiteratureUI(tk.Tk):
         print(f"[Query Pipeline Dispatch] Querying the {target_label} at: {storage_choice}")
         print(f"[Query Pipeline Dispatch] Running query text profiling execution match targeting expression: '{query_text}' (top-k={top_k})")
         print(f"[Query Scope] Sections: {', '.join(query_sections)}")
+        print(f"[Query Report] Attributes included: {', '.join(enrich_keys)}")
         generate_query_report([query_text], storage_choice, top_k=top_k,
-                              section_keys=query_sections)
+                              section_keys=query_sections, enrich_keys=enrich_keys)
         print("Query Generation Suite Logging Executed successfully.")
 
     # ==========================================
@@ -1618,6 +1790,19 @@ class AutomatedLiteratureUI(tk.Tk):
                     return
                 overwrite = bool(choice)
 
+        # Ask which analyzed attributes to consolidate before building the master
+        # workbook (abstract + Introduction + Results & Conclusion). Main thread,
+        # before the worker starts.
+        master_section_keys = None
+        if mode == "master_excel":
+            master_section_keys = self._pick_attributes_dialog(
+                "Master Excel — attributes to include")
+            if master_section_keys is None:
+                return
+            if not master_section_keys:
+                messagebox.showerror("Error", "Please select at least one attribute to include.")
+                return
+
         titles = {
             "download_logs": "Enrich from Download Logs",
             "abstract": "Re-run Abstract Analysis",
@@ -1697,7 +1882,8 @@ class AutomatedLiteratureUI(tk.Tk):
                 from alr.rag_builders.master_excel_db_builder import build_master_excel_db
                 progress(text="Consolidating per-section data into the master Excel workbook…")
                 print("[Evaluate] Consolidating per-section data into the master Excel workbook...")
-                written, master_path = build_master_excel_db(clean_path)
+                written, master_path = build_master_excel_db(
+                    clean_path, section_keys=master_section_keys)
                 print(f"[Evaluate] Master Excel workbook ({written} document(s)): {master_path}")
                 return written
 
