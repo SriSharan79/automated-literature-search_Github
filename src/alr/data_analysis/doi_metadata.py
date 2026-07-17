@@ -403,7 +403,8 @@ class MetadataLogic:
                 if filename.lower().endswith(".pdf"):
                     yield os.path.join(dirpath, filename)
 
-    def process_input_to_excel(self, input_path, output_excel, should_cancel=None, skip_filenames=None):
+    def process_input_to_excel(self, input_path, output_excel, should_cancel=None, skip_filenames=None,
+                               progress_callback=None):
         """
         Process a single PDF file OR a folder of PDFs (recursively) and write
         the combined metadata to ``output_excel``. Generalized version of
@@ -412,18 +413,23 @@ class MetadataLogic:
         ``skip_filenames`` is an optional set of basenames to skip entirely
         (files whose DOI metadata already exists and is carried forward by the
         caller), so only genuinely-new PDFs incur PDF reads / network lookups.
+        ``progress_callback(done, total, filename)`` is called once per scanned
+        PDF (skipped ones included, so the bar always reaches the end).
         """
         all_metadata = []
         skip_filenames = skip_filenames or set()
 
         # --- PHASE 1: Initial Processing ---
-        for file_path in self._iter_pdf_files(input_path):
+        pdf_files = list(self._iter_pdf_files(input_path))
+        for i, file_path in enumerate(pdf_files, 1):
             if should_cancel is not None and should_cancel():
                 print("DOI extraction cancelled by user.")
                 self._save_to_excel(all_metadata, output_excel)
                 return
 
             filename = os.path.basename(file_path)
+            if progress_callback:
+                progress_callback(i, len(pdf_files), filename)
             if filename in skip_filenames:
                 print(f"--- Skipping (DOI already present): {filename} ---")
                 continue
@@ -549,7 +555,8 @@ def _doi_row_from_sql(doc) -> dict:
     }
 
 
-def enrich_space_with_doi(manager, db_path=None, should_cancel=None, input_path=None) -> int:
+def enrich_space_with_doi(manager, db_path=None, should_cancel=None, input_path=None,
+                          progress_callback=None) -> int:
     """
     Run DOI/metadata extraction, write the managed ``DOI_Metadata.xlsx``, and
     push the metadata into the SQLite store (matching by File_Name ->
@@ -612,7 +619,8 @@ def enrich_space_with_doi(manager, db_path=None, should_cancel=None, input_path=
 
     meta_logic = MetadataLogic()
     meta_logic.process_input_to_excel(scan_target, output_excel, should_cancel=should_cancel,
-                                      skip_filenames=skip_filenames)
+                                      skip_filenames=skip_filenames,
+                                      progress_callback=progress_callback)
 
     # Merge carried-forward rows AND the pre-run workbook snapshot into
     # today's workbook (dedup by File_Name; new extraction rows win, then

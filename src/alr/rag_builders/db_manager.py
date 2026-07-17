@@ -280,7 +280,7 @@ def _sync_analysis_source_text(MF, VDB, master_excel_file, uuid_cache, source):
 
 
 def generate_databases(Storage_path, do_text: bool = True, do_vector: bool = True,
-                       rebuild_vector: bool = False):
+                       rebuild_vector: bool = False, progress_callback=None):
     """
     Sync the RAG databases for a storage space.
 
@@ -312,6 +312,17 @@ def generate_databases(Storage_path, do_text: bool = True, do_vector: bool = Tru
 
     recorded_abstracts = _load_recorded_abstracts(MF)
 
+    # Progress units: one per recorded abstract plus one each for the intro and
+    # rescon text syncs (when do_text) and one for the whole vector sync.
+    total_units = ((len(recorded_abstracts) + 2) if do_text else 0) + (1 if do_vector else 0)
+    done_units = 0
+
+    def tick(text):
+        nonlocal done_units
+        done_units += 1
+        if progress_callback:
+            progress_callback(done_units, total_units, text)
+
     if do_text:
         sections = build_sections_map(VDB)
         Master_map = build_sections_master_map(VDB, MASTER_EXCEL_FILE)
@@ -323,6 +334,7 @@ def generate_databases(Storage_path, do_text: bool = True, do_vector: bool = Tru
         uuid_cache = {}
 
         for UUID in recorded_abstracts:
+            tick(f"Text DB: {UUID}")
             MF.update_id_files(UUID)
 
             title, file_name = _fetch_metadata(MF, UUID)
@@ -342,10 +354,13 @@ def generate_databases(Storage_path, do_text: bool = True, do_vector: bool = Tru
 
         # Introduction and Results & Conclusion analysis data get their own
         # section DBs the same way (no-ops when the space has none).
+        tick("Text DB: Introduction data")
         _sync_analysis_source_text(MF, VDB, MASTER_EXCEL_FILE, uuid_cache, "intro")
+        tick("Text DB: Results & Conclusion data")
         _sync_analysis_source_text(MF, VDB, MASTER_EXCEL_FILE, uuid_cache, "rescon")
 
     if do_vector:
+        tick("Vector DB: embedding new entries")
         # Cover every RAG section; ones whose Excel DB doesn't exist (e.g.
         # intro/rescon in a space without that analysis) are skipped inside
         # _sync_sections_VDB without touching anything.

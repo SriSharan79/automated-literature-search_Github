@@ -23,7 +23,7 @@ def _as_path(p):
         return 
     return Path(str(p))
 
-def process_abstract(MF):
+def process_abstract(MF, progress_callback=None):
     # 1. Get the list of all successful UUIDs
     # Added a check to ensure the file exists before extracting
     if not MF.excel_success.exists():
@@ -46,17 +46,19 @@ def process_abstract(MF):
         return
 
     print(f"🧠 Analyzing {len(to_be_processed)} new abstracts...")
-    for item_id in to_be_processed:
+    for i, item_id in enumerate(to_be_processed, 1):
         try:
-            # Pass MF if the function needs paths to save the abstract  
+            # Pass MF if the function needs paths to save the abstract
             file_name= get_corresponding_value(MF.excel_success, "UUID", item_id, "filename")
+            if progress_callback:
+                progress_callback(i, len(to_be_processed), file_name)
             print(f"🧠 Analyzing abstract of {file_name}")
-            analyze_abstract(item_id, MF) 
+            analyze_abstract(item_id, MF)
         except Exception as e:
             print(f"❌ Failed to analyze abstract for {item_id}: {e}")
             traceback.print_exc()
 
-def process_references(MF):
+def process_references(MF, progress_callback=None):
     # 1. Get the list of all successful UUIDs
     # Added a check to ensure the file exists before extracting
     if not MF.excel_success.exists():
@@ -79,10 +81,12 @@ def process_references(MF):
         return
 
     print(f"🧠 Analyzing {len(to_be_processed)} new references...")
-    for item_id in to_be_processed:
+    for i, item_id in enumerate(to_be_processed, 1):
         try:
+            if progress_callback:
+                progress_callback(i, len(to_be_processed), str(item_id))
             # Pass MF if the function needs paths to save the abstract
-            start_time = time.time()    
+            start_time = time.time()
             MF.update_id_files(item_id)
             ref_chunks = get_value_by_pair(MF.raw_sec_json_path,"Section Name","references","Chunks")
             chunks=[]

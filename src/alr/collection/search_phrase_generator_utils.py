@@ -391,21 +391,24 @@ def rank_search_phrases(scope, column_name, excel_file, score_column_name='Simil
     
     return matches
 
-def run_scholarly(Input_Phrases,CM, Num_Search_Results):
+def run_scholarly(Input_Phrases,CM, Num_Search_Results, progress_callback=None):
     """
     Loops through the Input_Phrases, scrapes data for each phrase, and updates the Excel file.
     If no publication results are found, it breaks the loop and returns an empty list.
+    ``progress_callback(done, total, phrase)`` is called before each phrase is searched.
     """
 
     print_with_separator("DebugLog",'/')
-    
+
     keywords_list=CM.Keyword_list
-    
+
     PUB_EXCEL_FILE_PATH = Path(CM.publications_list_excel)
 
     publication_results = []  # Store the final list of publications
 
-    for Phrase in Input_Phrases:
+    for i, Phrase in enumerate(Input_Phrases, 1):
+        if progress_callback:
+            progress_callback(i, len(Input_Phrases), str(Phrase))
         # Get the publications for the current search phrase
         publication_results = scrape_scholar_data(Phrase, Num_Search_Results, keywords_list)
         

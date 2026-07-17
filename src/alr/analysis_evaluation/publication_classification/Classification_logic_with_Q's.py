@@ -93,7 +93,8 @@ def save_all_sheets(summary_df: pd.DataFrame, sheets_dict: Dict[str, pd.DataFram
 def classify_excel_data_to_sheets(
     file_path: str,
     column_name: str,
-    output_file_path: Optional[str] = None
+    output_file_path: Optional[str] = None,
+    progress_callback=None
 ) -> Optional[Dict[str, pd.DataFrame]]:
     """
     Evaluates each title in an Excel column against all classification sections.
@@ -148,6 +149,8 @@ def classify_excel_data_to_sheets(
     total_rows = len(input_df)
     
     for row_idx, title in enumerate(input_df[column_name]):
+        if progress_callback:
+            progress_callback(row_idx + 1, total_rows, str(title)[:60])
         print(f"\n🔍 Row {row_idx + 1}/{total_rows}")
         print(f"   Title: {str(title)[:85]}{'...' if len(str(title)) > 85 else ''}")
         print(f"   {'-'*85}")

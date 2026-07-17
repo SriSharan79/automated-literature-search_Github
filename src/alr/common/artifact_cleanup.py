@@ -98,3 +98,50 @@ def prune_empty_artifacts(root, should_cancel=None):
         print(f"🧹 Cleanup: removed {len(removed_files)} empty file(s) and "
               f"{len(removed_dirs)} empty folder(s) from {root}")
     return removed_files, removed_dirs
+
+
+def _top_level_only(folders):
+    """
+    Drop any folder that already sits inside another one in the list -- pruning
+    the parent walks the child anyway, so keeping both would re-walk the tree.
+    """
+    roots = []
+    for folder in sorted(folders, key=len):
+        path = Path(folder)
+        if not any(_is_within(path, Path(kept)) for kept in roots):
+            roots.append(folder)
+    return roots
+
+
+def _is_within(path: Path, parent: Path) -> bool:
+    """True if ``path`` is ``parent`` or lives underneath it."""
+    try:
+        path.relative_to(parent)
+        return True
+    except ValueError:
+        return False
+
+
+def prune_touched_folders(should_cancel=None):
+    """
+    Prune every managed folder tree opened since the last call.
+
+    The managers create their whole folder tree up front, so any pass that opens
+    one can leave empty folders behind. Each manager registers its root
+    (``file_manager.register_managed_folder``); this drains that registry and
+    prunes the top-level roots, which lets **every** run clean up after itself
+    without each pass having to remember to ask for it.
+
+    Returns ``(removed_files, removed_dirs)`` totalled across the roots.
+    """
+    from alr.common.file_manager import take_managed_folders
+
+    files: list[str] = []
+    dirs: list[str] = []
+    for root in _top_level_only(take_managed_folders()):
+        if should_cancel is not None and should_cancel():
+            break
+        f, d = prune_empty_artifacts(root, should_cancel=should_cancel)
+        files.extend(f)
+        dirs.extend(d)
+    return files, dirs

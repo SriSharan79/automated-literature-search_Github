@@ -145,7 +145,7 @@ def generate_query_report_RA_KC(query_list, Storage_path, top_k: int = 20):
 
 
 def generate_query_report(query_list, storage_path, search_root='/remotedata/U/DLR+kata_du/ALR DATA', top_k: int = 50,
-                          section_keys=None, enrich_keys=None):
+                          section_keys=None, enrich_keys=None, progress_callback=None):
     """
     section_keys: optional iterable of section keys to query (any mix of
     abstract, Introduction and Results & Conclusion attributes — see
@@ -156,6 +156,10 @@ def generate_query_report(query_list, storage_path, search_root='/remotedata/U/D
     enrich_keys: optional iterable of section keys to add as **columns** on the
     overview report (independent of which sections were searched). Defaults to
     the abstract attributes.
+
+    progress_callback(done, total, text): optional; called after every unit of
+    work — one per section searched plus the overview aggregation and the
+    resource harvest of each query — so a UI can drive a determinate bar.
     """
     print(f"{Fore.CYAN}{Style.BRIGHT}--- Initializing Report Generation for {len(query_list)} queries ---")
 
@@ -166,14 +170,25 @@ def generate_query_report(query_list, storage_path, search_root='/remotedata/U/D
     sec_map = build_sections_map_full(vdb, only=section_keys)
     print(f"{Fore.GREEN}Sections map built with {len(sec_map)} attributes.")
 
-    for idx, query in enumerate(query_list, 1):        
+    # Work units: each section search + the overview step + the harvest step.
+    total_units = len(query_list) * (len(sec_map) + 2)
+    done_units = 0
+
+    def tick(text):
+        nonlocal done_units
+        done_units += 1
+        if progress_callback:
+            progress_callback(done_units, total_units, text)
+
+    for idx, query in enumerate(query_list, 1):
         print(f"\n{Back.BLUE}{Fore.WHITE}{Style.BRIGHT} [{idx}/{len(query_list)}] Processing query: '{query}' ")
         vdb.update_query_folder(query)
-        
+
         # 1. Generate individual attribute reports
         print(f"{Fore.CYAN} > [Step 1] Generating individual attribute reports...")
         for attr, (_ex, _j, bin_path) in sec_map.items():
             process_attribute_query(query, attr, _ex, bin_path, vdb, top_k=top_k)
+            tick(f"Searched section: {attr}")
 
         # 2. Generate the Overview Report
         print(f"{Fore.CYAN} > [Step 2] Aggregating results into Overview Report...")
@@ -181,10 +196,12 @@ def generate_query_report(query_list, storage_path, search_root='/remotedata/U/D
         overview_path = sanitize_path_length(overview_path)
         aggregate_query_excel_data(vdb.query_storage, "Title", overview_path)
         print(f"{Fore.GREEN}   - Overview saved: {overview_path}")
+        tick("Aggregated the overview report")
 
         # 3. Harvest associated files
         print(f"{Fore.CYAN} > [Step 3] Harvesting associated resources (PDFs/JSONs)...")
         harvest_query_resources(overview_path, search_root, vdb, mf, enrich_keys=enrich_keys)
+        tick("Harvested analysis JSONs and enriched the report")
 
         print(f"{Fore.GREEN}{Style.BRIGHT}Workflow complete for: '{query}'")
         print(f"{Fore.LIGHTBLACK_EX}Path: {vdb.query_storage}")

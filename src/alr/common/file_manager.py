@@ -1,4 +1,5 @@
 import sys
+import threading
 
 from alr.common.general_utils import print_with_separator
 import os
@@ -29,6 +30,41 @@ STORAGE_MARKER_DIRS = (
 )
 
 
+# ---------------------------------------------------------------------------
+# Managed-folder registry
+#
+# Every manager below eagerly creates its whole folder tree on construction, so
+# a run always leaves behind the sub-folders nothing happened to write into.
+# Each manager records its root here, which lets a finished pass clean up
+# exactly the trees it touched (see artifact_cleanup.prune_touched_folders)
+# without having to remember to wire cleanup into each individual pass.
+# ---------------------------------------------------------------------------
+_touched_folders: set[str] = set()
+_touched_lock = threading.Lock()
+
+
+def register_managed_folder(folder) -> None:
+    """Record a folder tree that a manager just created (or re-opened)."""
+    try:
+        resolved = str(Path(folder).resolve())
+    except OSError:
+        return
+    with _touched_lock:
+        _touched_folders.add(resolved)
+
+
+def take_managed_folders() -> list[str]:
+    """
+    Drain and return the folder roots recorded since the last call. Draining
+    keeps each pass's cleanup scoped to the trees that pass actually opened,
+    instead of re-walking every space the session has ever seen.
+    """
+    with _touched_lock:
+        folders = sorted(_touched_folders)
+        _touched_folders.clear()
+    return folders
+
+
 class CollectionManager:
     def __init__(self,Collection_Folder=ALR_colletion_folder):
         """
@@ -39,6 +75,7 @@ class CollectionManager:
         
         # 2. Now you can safely call mkdir
         self.folder.mkdir(parents=True, exist_ok=True)
+        register_managed_folder(self.folder)
 
         # PDF Folders
         self.keywords_list_folder = self.folder / "keywords_lists"
@@ -137,6 +174,7 @@ class DataAnalyzeManager:
         
         # 2. Now you can safely call mkdir
         self.folder.mkdir(parents=True, exist_ok=True)
+        register_managed_folder(self.folder)
         # Core Excel Files
         self.excel_success = self.folder / "Processed_file_registry.xlsx"
         self.excel_failed = self.folder / "failed_files.xlsx"
@@ -307,7 +345,8 @@ class Vec_DB_Manager:
         
         # 2. Now you can safely call mkdir
         self.folder.mkdir(parents=True, exist_ok=True)
-        
+        register_managed_folder(self.folder)
+
         current_date = datetime.now().strftime("%Y-%m-%d")
         # Abstract DBs
         self.Abstract_DB = self.folder / "Abstract_DB"

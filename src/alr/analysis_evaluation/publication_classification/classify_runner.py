@@ -325,7 +325,8 @@ def classify_custom_space(manager, topic, tags, source="title", db_path=None,
     return updated
 
 
-def question_score_space(manager, source="registry", download_log=None, output_excel=None):
+def question_score_space(manager, source="registry", download_log=None, output_excel=None,
+                         progress_callback=None):
     """
     Run the question-scored publication classification for a storage space.
 
@@ -373,6 +374,7 @@ def question_score_space(manager, source="registry", download_log=None, output_e
     output_excel = str(output_excel or manager.question_classification_excel)
     print(f"Question-scored classification: '{column_name}' from {file_path} -> {output_excel}")
     q_logic.classify_excel_data_to_sheets(
-        file_path=file_path, column_name=column_name, output_file_path=output_excel
+        file_path=file_path, column_name=column_name, output_file_path=output_excel,
+        progress_callback=progress_callback
     )
     return output_excel

@@ -331,13 +331,20 @@ class AutomatedLiteratureUI(tk.Tk):
         topic_id = generate_unique_id(ra, extract_column(self.CM.keywords_list_log_path, 'UUID'))
         self.CM.update_topic_files(topic_id)
 
-        print("\n[LLM System Process] Deriving standard research scope limits definitions...")
-        scope_inputs = f"\n1. Research Area/Topic: {ra}\n2. Key Research Questions/Gaps: {rq}"
-        derived_scope = llm_call(scope_inputs, SCOPE_DERIVATOR_PROMPT, service)
-        
-        self.scope_entry.delete(0, tk.END)
-        self.scope_entry.insert(0, derived_scope)
-        print(f"Scope Derived: {derived_scope}")
+        # The LLM call runs on a worker thread so the UI stays responsive; the
+        # derived scope is written back to the entry on the main thread.
+        def work(progress, should_cancel):
+            print("\n[LLM System Process] Deriving standard research scope limits definitions...")
+            progress(text="Deriving the research scope via the LLM…")
+            scope_inputs = f"\n1. Research Area/Topic: {ra}\n2. Key Research Questions/Gaps: {rq}"
+            return llm_call(scope_inputs, SCOPE_DERIVATOR_PROMPT, service)
+
+        def on_success(derived_scope):
+            self.scope_entry.delete(0, tk.END)
+            self.scope_entry.insert(0, derived_scope or "")
+            print(f"Scope Derived: {derived_scope}")
+
+        self._run_threaded(work, "Derive Scope", on_success=on_success)
 
     def _process_keywords_action(self):
         from alr.common.llm_utils import llm_call
@@ -352,33 +359,49 @@ class AutomatedLiteratureUI(tk.Tk):
         service = self.llm_choice_col.get()
         if not self._ensure_api_key(service):
             return
-        keywords_list = []
+        suggest = self.suggest_kw_var.get()
 
-        if self.suggest_kw_var.get():
-            kw_prompt_inputs = f"\n1. Research Area/Topic: {self.CM.Research_Area}\n2. Key Research Questions/Gaps: {self.CM.Research_Question}\n3. Refined Scope: To {refined_scope}"
-            raw_keywords = llm_call(kw_prompt_inputs, KEYWORD_GENERATOR_PROMPT, service)
-            keywords_list = Proccess_string_to_list(raw_keywords)
+        # LLM suggestion + phrase processing run on the worker thread; the
+        # keyword-refinement pop-up / manual-input dialog are Tk modals, so the
+        # worker hands them to the main thread via the ask() round-trip.
+        def work(progress, should_cancel, ask):
+            keywords_list = []
+            if suggest:
+                progress(text="Requesting keyword suggestions from the LLM…")
+                kw_prompt_inputs = f"\n1. Research Area/Topic: {self.CM.Research_Area}\n2. Key Research Questions/Gaps: {self.CM.Research_Question}\n3. Refined Scope: To {refined_scope}"
+                raw_keywords = llm_call(kw_prompt_inputs, KEYWORD_GENERATOR_PROMPT, service)
+                suggested = Proccess_string_to_list(raw_keywords)
+                progress(text="Waiting for the keyword selection…")
+                keywords_list = ask(lambda app: app._prompt_keyword_indices_selection(suggested))
+            else:
+                progress(text="Waiting for the manual keyword input…")
 
-            # Open a pop-up window interface for selecting keyword indices if requested
-            keywords_list = self._prompt_keyword_indices_selection(keywords_list)
-        else:
-            # Custom input manual text fallback dialogue context setup box
-            manual_input = filedialog.SimpleDialog(self, text="Enter comma-separated keywords:", title="Manual Keywords Choice Input")
-            user_string = manual_input.go()
-            if user_string:
-                keywords_list = [item.strip() for item in user_string.split(",") if item.strip()]
+                def manual(app):
+                    manual_input = filedialog.SimpleDialog(
+                        app, text="Enter comma-separated keywords:", title="Manual Keywords Choice Input")
+                    user_string = manual_input.go()
+                    if user_string:
+                        return [item.strip() for item in user_string.split(",") if item.strip()]
+                    return []
+                keywords_list = ask(manual)
 
-        if not keywords_list:
-            print("Action halted or keywords context returned blank frame arrays.")
-            return
+            if not keywords_list:
+                print("Action halted or keywords context returned blank frame arrays.")
+                return 0
 
-        self.CM.update_Keyword_list(keywords_list)
-        log_Keyword_Json(self.CM)
-        self.CM = Keywords_Processing_with_scope(self.CM)
+            progress(text=f"Processing {len(keywords_list)} keyword(s) with the scope…")
+            self.CM.update_Keyword_list(keywords_list)
+            log_Keyword_Json(self.CM)
+            self.CM = Keywords_Processing_with_scope(self.CM)
+            print(f"\nSuccessfully logged structural pipeline setups. Ready to rank/export across {self.CM.Search_phrase_count} expressions.")
+            return self.CM.Search_phrase_count
 
-        print(f"\nSuccessfully logged structural pipeline setups. Ready to rank/export across {self.CM.Search_phrase_count} expressions.")
-        self.btn_scholarly.configure(state="normal")
-        self.btn_save_excel.configure(state="normal")
+        def on_success(count):
+            if count:
+                self.btn_scholarly.configure(state="normal")
+                self.btn_save_excel.configure(state="normal")
+
+        self._run_threaded(work, "Process Keywords", on_success=on_success)
 
     def _prompt_keyword_indices_selection(self, original_list):
         # Mini secondary functional frame pop-up window
@@ -421,25 +444,39 @@ class AutomatedLiteratureUI(tk.Tk):
     def _execute_search_strategy(self, choice_mode):
         strategy_map = {"1": "RA_Rank", "2": "RQ_Rank", "3": "RA+RQ_Rank", "4": "TOTAL_Rank"}
         rank_col = strategy_map.get(self.ranking_var.get(), "TOTAL_Rank")
-        
+
         num_phrases = int(self.phrases_count_spin.get())
-        
+
         phrase_excel_file = Path(self.CM.search_phrase_list_excel)
         sp_sorted_path = Path(self.CM.search_phrase_sorted_list_excel)
 
         sorted_phrases = get_values_from_sorted_numbers(phrase_excel_file, rank_col, 'Phrase', num_phrases)
 
-        if choice_mode == "s":
-            print(f"\nRunning Scholarly search framework profiles matching ranking setup: {rank_col}")
-            results = run_scholarly(sorted_phrases, self.CM, 15)
-            if not results:
-                print("Fallback triggered automatically: Saving calculations into target spreadsheet.")
+        # The Scholarly scrape is slow network work -> worker thread, with a
+        # determinate bar over the phrases. The Excel-only export is quick but
+        # goes through the same funnel so every pass behaves identically.
+        def work(progress, should_cancel):
+            if choice_mode == "s":
+                print(f"\nRunning Scholarly search framework profiles matching ranking setup: {rank_col}")
+                progress(text=f"Searching Scholarly across {len(sorted_phrases)} phrase(s)…")
+                results = run_scholarly(
+                    sorted_phrases, self.CM, 15,
+                    progress_callback=lambda d, t, phrase: progress(
+                        done=d, total=t, text=f"[{d}/{t}] Scholarly: {phrase}"))
+                if not results:
+                    print("Fallback triggered automatically: Saving calculations into target spreadsheet.")
+                    get_values_from_sorted_numbers_and_save(phrase_excel_file, rank_col, 'Phrase', num_phrases, sp_sorted_path)
+            else:
+                print(f"\nExtracting top numerical items context vectors targets to location mapping index matching file: {sp_sorted_path}")
+                progress(text="Saving the ranked phrases to Excel…")
                 get_values_from_sorted_numbers_and_save(phrase_excel_file, rank_col, 'Phrase', num_phrases, sp_sorted_path)
-        else:
-            print(f"\nExtracting top numerical items context vectors targets to location mapping index matching file: {sp_sorted_path}")
-            get_values_from_sorted_numbers_and_save(phrase_excel_file, rank_col, 'Phrase', num_phrases, sp_sorted_path)
-        
-        print("Collection Operations Sequence Completed.")
+
+            print("Collection Operations Sequence Completed.")
+            return len(sorted_phrases)
+
+        title = "Scholarly Search" if choice_mode == "s" else "Save Ranking to Excel"
+        self._run_threaded(work, title, "processed",
+                           on_success=lambda n: print(f"[Collection] {title} finished ({n} phrase(s))."))
 
     # ==========================================
     # TAB 2: LITERATURE ANALYSIS
@@ -734,7 +771,9 @@ class AutomatedLiteratureUI(tk.Tk):
                 progress(text=f"Finalizing: {label.lower()} sweep…")
                 try:
                     from alr.analysis_evaluation.data_evaluator import evaluate_space
-                    evaluate_space(MF, should_cancel=should_cancel, mode=mode, target=target)
+                    evaluate_space(MF, should_cancel=should_cancel, mode=mode, target=target,
+                                   progress_callback=lambda d, t, lab=label: progress(
+                                       done=d, total=t, text=f"{lab} {d}/{t}…"))
                 except Exception as e:
                     print(f"[{label}] Skipped/failed: {e}")
 
@@ -745,11 +784,15 @@ class AutomatedLiteratureUI(tk.Tk):
                 try:
                     if decisions.get("doi") == "fresh":
                         from alr.data_analysis.doi_metadata import enrich_space_with_doi
-                        enrich_space_with_doi(MF, should_cancel=should_cancel)
+                        enrich_space_with_doi(MF, should_cancel=should_cancel,
+                                              progress_callback=lambda d, t, name: progress(
+                                                  done=d, total=t, text=f"[{d}/{t}] DOI / metadata: {name}"))
                     else:
                         from alr.common.download_log_enrich import enrich_from_download_logs
                         from alr.common.file_manager import ALR_main_folder
-                        enrich_from_download_logs(ALR_main_folder, should_cancel=should_cancel)
+                        enrich_from_download_logs(ALR_main_folder, should_cancel=should_cancel,
+                                                  progress_callback=lambda d, t: progress(
+                                                      done=d, total=t, text=f"Download-log enrichment {d}/{t}…"))
                 except Exception as e:
                     print(f"[DOI Enrichment] Skipped/failed: {e}")
 
@@ -762,7 +805,9 @@ class AutomatedLiteratureUI(tk.Tk):
                 try:
                     from alr.analysis_evaluation.publication_classification import classify_runner
                     getattr(classify_runner, fn_name)(
-                        MF, should_cancel=should_cancel, service=service, mode=mode)
+                        MF, should_cancel=should_cancel, service=service, mode=mode,
+                        progress_callback=lambda d, t, k=kind: progress(
+                            done=d, total=t, text=f"Classifying {k}s {d}/{t}…"))
                 except Exception as e:
                     print(f"[Classification] {kind}: Skipped/failed: {e}")
 
@@ -800,18 +845,14 @@ class AutomatedLiteratureUI(tk.Tk):
                 progress(text=f"Building {' + '.join(parts)}…")
                 try:
                     from alr.rag_builders.db_manager import generate_databases as build_rag_databases
-                    build_rag_databases(str(MF.folder), do_text=do_text_db, do_vector=do_vector_db)
+                    build_rag_databases(str(MF.folder), do_text=do_text_db, do_vector=do_vector_db,
+                                        progress_callback=lambda d, t, txt: progress(
+                                            done=d, total=t, text=f"[{d}/{t}] {txt}"))
                 except Exception as e:
                     print(f"[RAG DB] Skipped/failed: {e}")
 
-            # Prune empty files/folders the manager pre-created but nothing wrote to.
-            progress(text="Cleaning up empty files and folders…")
-            try:
-                from alr.common.artifact_cleanup import prune_empty_artifacts
-                prune_empty_artifacts(MF.folder)
-            except Exception as e:
-                print(f"[Cleanup] Skipped/failed: {e}")
-
+            # Empty files/folders the managers pre-created are pruned by
+            # _run_threaded once this pass returns, like every other pass.
             return processed
 
         self._run_threaded(work, "Analyzing Literature", "analyzed")
@@ -854,6 +895,7 @@ class AutomatedLiteratureUI(tk.Tk):
             return holder.get("result")
 
         def worker():
+            result, failed = None, False
             try:
                 args = [progress, cancel_event.is_set]
                 try:
@@ -861,11 +903,27 @@ class AutomatedLiteratureUI(tk.Tk):
                         args.append(ask)
                 except (TypeError, ValueError):
                     pass
-                q.put(("done", work(*args)))
+                result = work(*args)
             except Exception as e:  # noqa: BLE001 - surface any failure to the UI
+                failed = True
                 log_path = crash_logger.write_crash_log(
                     *sys.exc_info(), origin=f"background task: {title}")
                 q.put(("error", (e, log_path)))
+
+            # Every pass tidies up after itself. The managers build their whole
+            # folder tree on construction, so any run can leave empty folders
+            # behind; each one registers its root, and this prunes exactly those
+            # trees. Runs on this worker thread (it is file I/O), and after a
+            # failure or a cancel too -- that is when strays are most likely.
+            try:
+                progress(text="Cleaning up empty files and folders…")
+                from alr.common.artifact_cleanup import prune_touched_folders
+                prune_touched_folders()
+            except Exception as e:  # noqa: BLE001 - cleanup must never fail a pass
+                print(f"[Cleanup] Skipped/failed: {e}")
+
+            if not failed:
+                q.put(("done", result))
 
         def finish():
             dlg.close()
@@ -1321,17 +1379,30 @@ class AutomatedLiteratureUI(tk.Tk):
             messagebox.showerror("Error", "Please select at least one attribute to include.")
             return
 
-        print("\n[RAG Database Architecture Step] Synchronizing local vector storage mapping structures...")
-        # generate_databases(storage_choice)
-
         target_label = "Common DB" if query_common else "storage space"
         print(f"[Query Pipeline Dispatch] Querying the {target_label} at: {storage_choice}")
         print(f"[Query Pipeline Dispatch] Running query text profiling execution match targeting expression: '{query_text}' (top-k={top_k})")
         print(f"[Query Scope] Sections: {', '.join(query_sections)}")
         print(f"[Query Report] Attributes included: {', '.join(enrich_keys)}")
-        generate_query_report([query_text], storage_choice, top_k=top_k,
-                              section_keys=query_sections, enrich_keys=enrich_keys)
-        print("Query Generation Suite Logging Executed successfully.")
+
+        # The query itself (vector search + report building + JSON harvest) runs
+        # on the worker thread with a determinate bar: one tick per searched
+        # section plus the overview and harvest steps.
+        def work(progress, should_cancel):
+            progress(text=f"Querying {len(query_sections)} section(s)…")
+            generate_query_report(
+                [query_text], storage_choice, top_k=top_k,
+                section_keys=query_sections, enrich_keys=enrich_keys,
+                progress_callback=lambda d, t, txt: progress(done=d, total=t, text=txt))
+            print("Query Generation Suite Logging Executed successfully.")
+            return len(query_sections)
+
+        def on_success(n):
+            messagebox.showinfo("Query finished",
+                                f"Query report built across {n or 0} section(s). "
+                                "See the console log for the report location.")
+
+        self._run_threaded(work, "RAG Query", on_success=on_success)
 
     # ==========================================
     # TAB 4: SECTION JSON EDITOR
@@ -1744,7 +1815,10 @@ class AutomatedLiteratureUI(tk.Tk):
             from alr.data_analysis.doi_metadata import enrich_space_with_doi
             progress(text=f"Extracting DOI / metadata from {Path(input_target).name}…")
             MF = DataAnalyzeManager(clean_path) if clean_path else DataAnalyzeManager()
-            n = enrich_space_with_doi(MF, input_path=input_target, should_cancel=should_cancel)
+            n = enrich_space_with_doi(
+                MF, input_path=input_target, should_cancel=should_cancel,
+                progress_callback=lambda d, t, name: progress(
+                    done=d, total=t, text=f"[{d}/{t}] DOI / metadata: {name}"))
             print(f"[Evaluate] DOI/metadata enrichment updated {n} document(s).")
             return n
 
@@ -1821,7 +1895,10 @@ class AutomatedLiteratureUI(tk.Tk):
                 root = clean_path or ALR_main_folder
                 progress(text=f"Enriching metadata from download logs under: {root}…")
                 print(f"[Evaluate] Enriching metadata from download logs under: {root}")
-                n = enrich_from_download_logs(root, should_cancel=should_cancel)
+                n = enrich_from_download_logs(
+                    root, should_cancel=should_cancel,
+                    progress_callback=lambda d, t: progress(
+                        done=d, total=t, text=f"Enriching from download logs {d}/{t}…"))
                 print(f"[Evaluate] Download-log enrichment updated {n} document(s).")
                 return n
 
@@ -1829,7 +1906,9 @@ class AutomatedLiteratureUI(tk.Tk):
                 from alr.data_analysis.Folder_Data_Analyzer import process_abstract
                 progress(text="Re-running abstract analysis pass…")
                 print("[Evaluate] Re-running abstract analysis pass...")
-                process_abstract(DataAnalyzeManager(clean_path))
+                process_abstract(DataAnalyzeManager(clean_path),
+                                 progress_callback=lambda d, t, name: progress(
+                                     done=d, total=t, text=f"[{d}/{t}] Abstract: {name}"))
                 print("[Evaluate] Abstract analysis pass finished.")
                 return 0
 
@@ -1837,20 +1916,24 @@ class AutomatedLiteratureUI(tk.Tk):
                 from alr.data_analysis.Folder_Data_Analyzer import process_references
                 progress(text="Re-running reference extraction pass…")
                 print("[Evaluate] Re-running reference extraction pass...")
-                process_references(DataAnalyzeManager(clean_path))
+                process_references(DataAnalyzeManager(clean_path),
+                                   progress_callback=lambda d, t, name: progress(
+                                       done=d, total=t, text=f"[{d}/{t}] References: {name}"))
                 print("[Evaluate] Reference extraction pass finished.")
                 return 0
 
             if mode == "evaluate":
                 from alr.common.sql_store import sync_storage_to_sql
-                from alr.analysis_evaluation.data_evaluator import generate_databases as generate_eval_databases
+                from alr.analysis_evaluation.data_evaluator import evaluate_space
                 progress(text="Syncing storage to DB…")
                 print("[Evaluate] Syncing storage to DB, then building analysis-evaluation databases...")
                 sync_storage_to_sql(DataAnalyzeManager(clean_path))
                 progress(text="Building analysis-evaluation databases…")
-                generate_eval_databases(clean_path)
+                n = evaluate_space(clean_path, should_cancel=should_cancel,
+                                   progress_callback=lambda d, t: progress(
+                                       done=d, total=t, text=f"Evaluating documents {d}/{t}…"))
                 print("[Evaluate] Analysis-evaluation databases built.")
-                return 0
+                return n
 
             if mode == "classify_title":
                 from alr.common.sql_store import sync_storage_to_sql
@@ -1883,7 +1966,10 @@ class AutomatedLiteratureUI(tk.Tk):
                 progress(text="Consolidating per-section data into the master Excel workbook…")
                 print("[Evaluate] Consolidating per-section data into the master Excel workbook...")
                 written, master_path = build_master_excel_db(
-                    clean_path, section_keys=master_section_keys)
+                    clean_path, section_keys=master_section_keys,
+                    should_cancel=should_cancel,
+                    progress_callback=lambda d, t: progress(
+                        done=d, total=t, text=f"Master Excel: document {d}/{t}…"))
                 print(f"[Evaluate] Master Excel workbook ({written} document(s)): {master_path}")
                 return written
 
@@ -1946,7 +2032,10 @@ class AutomatedLiteratureUI(tk.Tk):
             progress(text="Running question-scored classification (this can take a while)…")
             print("[Question Scoring] Running question-scored classification (this can take a while)...")
             manager = DataAnalyzeManager(clean_folder_path(folder)) if folder else DataAnalyzeManager()
-            out = question_score_space(manager, source=source, download_log=download_log)
+            out = question_score_space(
+                manager, source=source, download_log=download_log,
+                progress_callback=lambda d, t, title_txt: progress(
+                    done=d, total=t, text=f"[{d}/{t}] Scoring: {title_txt}"))
             if out:
                 print(f"[Question Scoring] Workbook written: {out}")
             else:
