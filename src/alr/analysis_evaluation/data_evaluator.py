@@ -1,4 +1,5 @@
 import os
+import re
 import sys
 from pathlib import Path
 import pandas as pd
@@ -9,6 +10,18 @@ from alr.rag_builders.master_excel_db_builder import _fetch_metadata, _load_abst
 from alr.common.json_utils import get_key_from_file, get_value_by_pair
 from alr.rag_builders.vector_db_updater import add_new_strings_to_index, create_faiss_index_cosine, load_index_file, save_index_file, search_similar, vectorize_strings
 from colorama import Fore, Style
+
+
+def _normalize_for_match(text):
+    """Lowercase and strip all whitespace so line breaks/spacing don't break the match."""
+    return re.sub(r"\s+", "", str(text).lower())
+
+
+def _is_subset_match(content_str, abs_txt):
+    """Whitespace-insensitive, case-insensitive substring containment check."""
+    if abs_txt == "Not Found":
+        return False
+    return _normalize_for_match(content_str) in _normalize_for_match(abs_txt)
 
 
 # =====================================================================
@@ -205,7 +218,7 @@ def _save_list_section(UUID, key, content_list, ex_path, title, file_name, abs_t
 
     for idx, item in enumerate(content_list):
         content_str = str(item)
-        is_subset = content_str.lower() in str(abs_txt).lower() if abs_txt != "Not Found" else False
+        is_subset = _is_subset_match(content_str, abs_txt)
 
         if is_subset:
             true_count += 1
@@ -239,7 +252,7 @@ def _save_single_section(UUID, key, content_value, ex_path, title, file_name, ab
     unless ``overwrite=True``, which updates the existing row in place.
     """
     content_str = str(content_value)
-    is_subset = content_str.lower() in str(abs_txt).lower() if abs_txt != "Not Found" else False
+    is_subset = _is_subset_match(content_str, abs_txt)
 
     true_count = 1 if is_subset else 0
     false_count = 0 if is_subset else 1
