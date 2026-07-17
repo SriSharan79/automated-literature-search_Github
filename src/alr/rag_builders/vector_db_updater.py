@@ -208,12 +208,17 @@ def vectorize_strings(
 
     if method == "local":
         try:
+            # Local inputs are pooled 10 strings per forward pass inside
+            # vectorize_strings_local (its batch_size default) to avoid GPU OOM.
             vectors = vectorize_strings_local(input_strings, max_length=max_length)
             _record_last_backend("local", "local", f"local:{embedding_model_repo_id}", vectors.shape[1])
             return vectors
         except Exception as e:
+            # Policy: the embedding fallback service is always Blablador,
+            # never DLR Ollama - regardless of the session-selected service.
+            service = "BlaBla"
             print(Fore.YELLOW
-                  + f"⚠️ Local embedding model failed ({e}); falling back to API service '{service}'."
+                  + f"⚠️ Local embedding model failed ({e}); falling back to API service 'BlaBla'."
                   + Style.RESET_ALL)
             method = "api"
 

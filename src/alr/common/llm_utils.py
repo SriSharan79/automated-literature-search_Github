@@ -486,10 +486,14 @@ def _get_embedding_model_and_tokenizer():
     return _embedding_tokenizer, _embedding_model
 
 
-def vectorize_strings_local(input_strings: list, max_length: int = 512):
+def vectorize_strings_local(input_strings: list, max_length: int = 512, batch_size: int = 10):
     """
     Embed a list of strings using the local GPU/CPU HuggingFace model
     (Qwen/Qwen3-Embedding-8B by default, same weights as before).
+
+    Inputs are pooled in chunks of `batch_size` (default 10) per forward
+    pass so large lists (e.g. thousands of section rows) cannot OOM the
+    GPU by being tokenised/embedded in a single giant tensor.
 
     Returns an (N, dim) float32 numpy array, L2-normalised so cosine
     similarity == inner product (matches an IndexFlatIP FAISS index).
@@ -500,23 +504,33 @@ def vectorize_strings_local(input_strings: list, max_length: int = 512):
 
     tokenizer, model = _get_embedding_model_and_tokenizer()
 
+    if batch_size is None or batch_size < 1:
+        batch_size = 10
+
+    chunks = []
+    total = len(input_strings)
     with torch.inference_mode():
-        batch = tokenizer(
-            input_strings,
-            padding=True,
-            truncation=True,
-            max_length=max_length,
-            return_tensors="pt",
-        )
-        batch = {k: v.to(model.device) for k, v in batch.items()}
+        for i in range(0, total, batch_size):
+            pool = input_strings[i:i + batch_size]
+            batch = tokenizer(
+                pool,
+                padding=True,
+                truncation=True,
+                max_length=max_length,
+                return_tensors="pt",
+            )
+            batch = {k: v.to(model.device) for k, v in batch.items()}
 
-        outputs = model(**batch)
-        emb = last_token_pool(outputs.last_hidden_state, batch["attention_mask"])
+            outputs = model(**batch)
+            emb = last_token_pool(outputs.last_hidden_state, batch["attention_mask"])
 
-        # Normalise => cosine similarity works with inner product / L2
-        emb = F.normalize(emb, p=2, dim=1)
+            # Normalise => cosine similarity works with inner product / L2
+            emb = F.normalize(emb, p=2, dim=1)
+            chunks.append(emb.detach().cpu().numpy().astype(np.float32))
+            if total > batch_size:
+                print(f"   \U0001f9ee Local embeddings: {min(i + batch_size, total)}/{total}")
 
-        return emb.detach().cpu().numpy().astype(np.float32)
+    return np.concatenate(chunks, axis=0) if chunks else np.zeros((0, 0), dtype=np.float32)
 
 
 def count_tokens(messages, response_text, model):
@@ -1157,10 +1171,12 @@ def embedding_call(texts, service: str, model: str = None, timeout: int = 120):
 
     # Service calling logic with timeout and fallback
     if s == 'b':
-        # If service B (blabla) fails or times out, fallback to Ollama (o)
+        # Policy: the embedding fallback service is always Blablador, never
+        # DLR Ollama. When BlaBla itself is the requested service there is
+        # no cross-service fallback; retries are handled by the caller
+        # (vector_db_updater.vectorize_strings max_retries loop).
         response = timeout_function(
-            blabla_ask_embedding, (texts,), timeout=timeout,
-            fallback=lambda texts: timeout_function(Ollama_ask_embedding, (texts,), timeout=timeout, fallback=None))
+            blabla_ask_embedding, (texts,), timeout=timeout, fallback=None)
         requested = "BlaBla"
     elif s == 'o':
         # If service O (Ollama) fails or times out, fallback to Blabla (b)
