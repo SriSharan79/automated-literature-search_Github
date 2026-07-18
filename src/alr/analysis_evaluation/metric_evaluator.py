@@ -11,8 +11,10 @@ introduction or results & conclusion) is split into individual sentences and
 each extracted section item is measured against EVERY sentence: the complete
 sentence-level record goes to a per-document JSON detail file
 (``Metric_Sentence_Details/{uuid}_{target}_Sentence_Metrics.json``), the
-workbooks keep the best value per item and metric, and SQL keeps only the
-workbook-level summary. The selected metric kinds:
+workbooks keep ONE ROW PER EXTRACTED ITEM holding the best value per metric
+plus, in a ``<metric>_reference`` column, the reference sentence that produced
+that value, and SQL keeps only the workbook-level summary. The selected
+metric kinds:
 
 * ``"lexical"``  -- Jaccard, ROUGE-1/2/L, BLEU (:mod:`Lexical_Overlap_Metrics`).
 * ``"distance"`` -- Levenshtein distance/ratio + word error rate
@@ -29,8 +31,10 @@ kind** (e.g. ``{date}_Abstract_Lexical_Metrics.xlsx`` /
 ``_Distance_Metrics.xlsx`` / ``_Cosine_Metrics.xlsx``) **plus a combined
 overview workbook** holding all metric data together
 (``{date}_Abstract_Metrics_Overview.xlsx`` — and the ``Introduction_*``
-counterparts). Every workbook has one sheet per section plus an ``Overview``
-sheet of per-document averages. The per-document averages are also merged into
+counterparts). Every workbook has one sheet per section (one row per document
+item: UUID/Title/Filename, Item number, Content, metric values and their
+``_reference`` sentences) plus an ``Overview`` sheet of per-document averages.
+The per-document averages are also merged into
 the SQLite ``metrics_json`` column so the Review tool's overviews can use them.
 Workbook locations come from :func:`alr.common.sections.build_metric_workbooks_map`.
 """
@@ -296,6 +300,46 @@ def _sentence_metric_rows(kinds, cosine_ctx, section_key, sentences, candidate, 
     return rows
 
 
+def _write_section_rows(file_path, sheet_name, uuid, rows) -> None:
+    """
+    Write a document's rows on a section sheet: ONE ROW PER EXTRACTED ITEM
+    (unlike data_evaluator's _write_section_sheet_flat, which keeps one row
+    per document). All existing rows of this UUID on the sheet are replaced
+    by ``rows``, keeping other documents' rows and the sheet order - so
+    re-runs stay idempotent even when the item count changes.
+    """
+    import pandas as pd
+
+    if not rows:
+        return
+    try:
+        file_path = Path(file_path)
+        df_new = pd.DataFrame(rows)
+        all_sheets = {}
+        sheet_order = []
+
+        if file_path.exists() and file_path.stat().st_size > 0:
+            with pd.ExcelFile(file_path, engine="openpyxl") as xls:
+                sheet_order = list(xls.sheet_names)
+                for s in sheet_order:
+                    all_sheets[s] = pd.read_excel(file_path, sheet_name=s, engine="openpyxl")
+
+        if sheet_name in all_sheets:
+            df_sheet = all_sheets[sheet_name]
+            if "UUID" in df_sheet.columns:
+                df_sheet = df_sheet[df_sheet["UUID"].astype(str) != str(uuid)]
+            all_sheets[sheet_name] = pd.concat([df_sheet, df_new], ignore_index=True)
+        else:
+            all_sheets[sheet_name] = df_new
+            sheet_order.append(sheet_name)
+
+        with pd.ExcelWriter(file_path, engine="openpyxl", mode="w") as writer:
+            for s in sheet_order:
+                all_sheets[s].to_excel(writer, sheet_name=s, index=False)
+    except Exception as e:
+        print(Fore.RED + f"❌ Failed to write section rows to '{sheet_name}': {e}")
+
+
 def _write_sentence_detail_json(details_dir, uuid, sql_label, payload) -> None:
     """
     Write the per-document sentence-level metric detail file
@@ -333,6 +377,197 @@ def _push_metrics_to_sql(uuid, averages, sql_label, db_path=None) -> bool:
         merged = {}
     merged[sql_label] = averages
     store.update_document(uuid, {"metrics_json": json.dumps(merged)})
+    return True
+
+
+# ---------------------------------------------------------------------------
+# Copy mode: reuse previously recorded metric data - preferring the sentence-
+# detail JSON, falling back to the latest PREVIOUS dated workbook (old wide
+# format or new per-item format) - and re-write it into TODAY's workbooks in
+# the new one-row-per-item layout, references included where recoverable.
+# ---------------------------------------------------------------------------
+_DATE_PREFIX = re.compile(r"^\d{4}-\d{2}-\d{2}_")
+# Old wide format: "Item 3 jaccard" / "Item 3 Content" (prefix absent when the
+# section had a single item).
+_OLD_ITEM_COL = re.compile(r"^Item (\d+) (.+)$")
+
+
+def _previous_dated_workbook(current_path):
+    """Latest sibling workbook with the same name but an EARLIER date prefix."""
+    current_path = Path(current_path)
+    if not _DATE_PREFIX.match(current_path.name):
+        return None
+    suffix = _DATE_PREFIX.sub("", current_path.name)
+    candidates = sorted(
+        p for p in current_path.parent.glob(f"*_{suffix.rsplit('.', 1)[0]}.xlsx")
+        if _DATE_PREFIX.match(p.name)
+        and _DATE_PREFIX.sub("", p.name) == suffix
+        and p.name < current_path.name
+    )
+    return candidates[-1] if candidates else None
+
+
+def _rows_from_detail_json(details_dir, uuid, sql_label, needed_cols):
+    """
+    Rebuild the new-format item rows ({section: [row, ...]}) from the
+    per-document sentence-detail JSON, references included (older detail
+    files carry only the sentence number - the text is recovered from the
+    stored "Reference sentences" list). Returns None when the file is
+    absent or doesn't cover every needed metric column.
+    """
+    import json
+
+    path = Path(details_dir) / f"{uuid}_{sql_label}_Sentence_Metrics.json"
+    if not path.exists():
+        return None
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except Exception:
+        return None
+
+    sentences = {d.get("Sentence"): d.get("Text")
+                 for d in data.get("Reference sentences", [])}
+    base = {"UUID": str(data.get("UUID") or uuid),
+            "Title": data.get("Title"), "Filename": data.get("Filename")}
+    sections = {}
+    for key, items in (data.get("Sections") or {}).items():
+        rows = []
+        for it in items:
+            row = {**base, "Item": it.get("Item"), "Content": it.get("Content")}
+            best = it.get("Best") or {}
+            for col in needed_cols:
+                if col not in best:
+                    return None  # partial coverage -> not reusable
+                b = best[col] or {}
+                row[col] = b.get("value")
+                row[f"{col}_reference"] = b.get("reference") or sentences.get(b.get("sentence"))
+            rows.append(row)
+        if rows:
+            sections[key] = rows
+    return sections or None
+
+
+def _rows_from_previous_workbook(current_overview_path, uuid, needed_cols):
+    """
+    Rebuild the item rows for ``uuid`` from the latest PREVIOUS dated
+    combined-overview workbook. Handles both layouts: the new per-item rows
+    (reused as-is, references kept when present) and the old wide one-row-
+    per-document format ("Item N <col>" / bare columns - no reference text
+    was recorded back then, so those cells stay empty). Returns None when
+    there is no previous workbook, the UUID is absent, or a needed metric
+    column is missing.
+    """
+    import pandas as pd
+
+    prev = _previous_dated_workbook(current_overview_path)
+    if prev is None:
+        return None
+    try:
+        with pd.ExcelFile(prev, engine="openpyxl") as xls:
+            sheets = {s: pd.read_excel(prev, sheet_name=s, engine="openpyxl")
+                      for s in xls.sheet_names if s != "Overview"}
+    except Exception:
+        return None
+
+    def _cell(row, col):
+        val = row.get(col)
+        return None if pd.isna(val) else val
+
+    sections = {}
+    for key, df in sheets.items():
+        if "UUID" not in df.columns:
+            continue
+        doc_rows = df[df["UUID"].astype(str) == str(uuid)]
+        if doc_rows.empty:
+            continue
+        base_cols = ("UUID", "Title", "Filename")
+        rows = []
+        if "Item" in df.columns and "Content" in df.columns:
+            # New per-item layout: keep the rows, carrying references along.
+            for rec in doc_rows.to_dict("records"):
+                row = {c: _cell(rec, c) for c in base_cols}
+                row["UUID"] = str(uuid)
+                row.update({"Item": _cell(rec, "Item"), "Content": _cell(rec, "Content")})
+                for col in needed_cols:
+                    if col not in rec:
+                        return None
+                    row[col] = _cell(rec, col)
+                    row[f"{col}_reference"] = _cell(rec, f"{col}_reference")
+                rows.append(row)
+        else:
+            # Old wide layout: one row per document, items packed as columns.
+            rec = doc_rows.to_dict("records")[0]
+            prefixes = sorted(
+                {int(m.group(1)) for c in rec for m in [_OLD_ITEM_COL.match(str(c))] if m})
+            plans = ([(n, f"Item {n} ") for n in prefixes] if prefixes else [(1, "")])
+            for n, prefix in plans:
+                if f"{prefix}Content" not in rec:
+                    continue
+                row = {c: _cell(rec, c) for c in base_cols}
+                row["UUID"] = str(uuid)
+                row.update({"Item": n, "Content": _cell(rec, f"{prefix}Content")})
+                for col in needed_cols:
+                    if f"{prefix}{col}" not in rec:
+                        return None
+                    row[col] = _cell(rec, f"{prefix}{col}")
+                    row[f"{col}_reference"] = None  # never recorded in the old format
+                rows.append(row)
+        if rows:
+            sections[key] = rows
+    return sections or None
+
+
+def _reuse_prior_metrics(cfg, kinds, uuid, db_path=None) -> bool:
+    """
+    Copy mode: if previously recorded metric data exists for ``uuid`` - the
+    sentence-detail JSON first, else the latest previous dated workbook (old
+    or new format) - re-write it into TODAY's workbooks in the new
+    one-row-per-item format (per-kind + combined + Overview averages), push
+    the averages to SQL, and return True. False -> nothing reusable.
+    """
+    workbooks = cfg["workbooks"]
+    needed_cols = [c for k in METRIC_KINDS if k in kinds for c in _KIND_COLUMNS[k]]
+
+    sections = _rows_from_detail_json(workbooks["details"], uuid,
+                                      cfg["sql_label"], needed_cols)
+    if sections is None:
+        sections = _rows_from_previous_workbook(workbooks["overview"], uuid, needed_cols)
+    if not sections:
+        return False
+
+    sums = {c: [0.0, 0] for c in needed_cols}
+    base = None
+    for key, rows in sections.items():
+        for kind in kinds:
+            kind_rows = []
+            for row in rows:
+                kind_row = {c: row.get(c) for c in ("UUID", "Title", "Filename", "Item", "Content")}
+                for col in _KIND_COLUMNS[kind]:
+                    kind_row[col] = row.get(col)
+                    kind_row[f"{col}_reference"] = row.get(f"{col}_reference")
+                kind_rows.append(kind_row)
+            _write_section_rows(workbooks[kind], key, str(uuid), kind_rows)
+        _write_section_rows(workbooks["overview"], key, str(uuid), rows)
+        for row in rows:
+            base = base or {"UUID": str(uuid), "Title": row.get("Title"),
+                            "Filename": row.get("Filename")}
+            for col in needed_cols:
+                if isinstance(row.get(col), (int, float)):
+                    sums[col][0] += float(row[col])
+                    sums[col][1] += 1
+
+    base = base or {"UUID": str(uuid), "Title": None, "Filename": None}
+    averages = {col: (round(t / n, 4) if n else None) for col, (t, n) in sums.items()}
+    for kind in kinds:
+        kind_avgs = {f"avg_{c}": averages.get(c) for c in _KIND_COLUMNS[kind]}
+        _write_section_sheet_flat(workbooks[kind], "Overview", {**base, **kind_avgs})
+    _write_section_sheet_flat(workbooks["overview"], "Overview",
+                              {**base, **{f"avg_{c}": v for c, v in averages.items()}})
+    try:
+        _push_metrics_to_sql(uuid, averages, cfg["sql_label"], db_path)
+    except Exception as e:
+        print(Fore.YELLOW + f"⚠️ Could not push reused metrics to SQL for {uuid}: {e}")
     return True
 
 
@@ -381,22 +616,30 @@ def evaluate_space_metrics(storage_path, kinds, target="abstract", db_path=None,
     * the full sentence-level record (every metric value for every
       sentence/attribute-value pair) goes to a per-document JSON file,
       ``Metric_Sentence_Details/{uuid}_{target}_Sentence_Metrics.json``;
-    * the workbooks store only the BEST value per attribute value and metric
-      (minimum for Levenshtein distance / word error rate, maximum for all
-      similarity metrics), plus which sentence produced it in the JSON;
+    * the workbooks store ONE ROW PER EXTRACTED ITEM (usual columns +
+      ``Item`` number + ``Content``) with the BEST value per metric (minimum
+      for Levenshtein distance / word error rate, maximum for all similarity
+      metrics) and, in ``<metric>_reference``, the reference sentence that
+      produced that best value;
     * SQL (``metrics_json``) gets only the workbook-level summary (averages
       of the best values) — never the sentence-level detail.
 
-    ``mode="copy"`` reuses prior metrics: documents whose SQL ``metrics_json``
-    already covers every selected metric column are skipped (only new/partially
-    evaluated documents are computed). ``mode="generate"`` (default, previous
-    behaviour) recomputes every document and updates the workbook rows in place.
+    ``mode="copy"`` reuses prior metrics instead of recomputing: previously
+    recorded data - the sentence-detail JSON first, else the latest PREVIOUS
+    dated workbook, whether it used the old wide one-row-per-document layout
+    or the new per-item one - is re-written into TODAY's workbooks in the new
+    one-row-per-item format (reference sentences carried over where they were
+    recorded; the old wide format never stored them, so those cells stay
+    empty). Documents with no harvestable files whose SQL ``metrics_json``
+    already covers every selected column are skipped as before; everything
+    else is computed fresh. ``mode="generate"`` (default) recomputes every
+    document and replaces its workbook rows in place.
 
     Results go to the storage space as one dated workbook **per metric kind**
     plus a **combined overview workbook** with all metric data (each workbook:
-    one sheet per section with per-item metric columns, plus an ``Overview``
-    sheet of per-document averages), and into the SQLite ``metrics_json``
-    column. Re-runs update rows in place (no duplicates).
+    one sheet per section with one row per item, plus an ``Overview`` sheet of
+    per-document averages). Re-runs replace a document's item rows in place
+    (no duplicates, even when the item count changes).
     ``progress_callback(done, total)`` / ``should_cancel`` support progress
     reporting and cancellation.
     """
@@ -423,6 +666,19 @@ def evaluate_space_metrics(storage_path, kinds, target="abstract", db_path=None,
             break
         try:
             if mode == "copy":
+                # Prefer real prior data (sentence-detail JSON, else the
+                # latest previous dated workbook - old wide format included):
+                # it is re-written into TODAY's workbooks in the new
+                # one-row-per-item format instead of being recomputed.
+                if _reuse_prior_metrics(cfg, kinds, uuid, db_path):
+                    print(Fore.YELLOW + f"⏭️ Reused previous {target} metrics for {uuid} "
+                                        "(copy mode, kept in the new per-item format).")
+                    count += 1
+                    if progress_callback:
+                        progress_callback(i, total)
+                    continue
+                # No harvestable files, but SQL already covers every selected
+                # column -> keep the old skip behaviour (nothing to convert).
                 prior = _existing_metrics(uuid, metric_cols, cfg["sql_label"], db_path)
                 if prior is not None:
                     print(Fore.YELLOW + f"⏭️ Reusing existing {target} metrics for {uuid} (copy mode).")
@@ -464,27 +720,35 @@ def evaluate_space_metrics(storage_path, kinds, target="abstract", db_path=None,
                     continue
                 items = [str(v) for v in value] if isinstance(value, list) else [str(value)]
 
-                # One row per document: a per-kind entry for each metric's own
-                # workbook, and a combined entry carrying all metric data.
-                kind_entries = {k: dict(base) for k in kinds}
-                combined_entry = dict(base)
+                # ONE ROW PER EXTRACTED ITEM: each row carries the usual
+                # columns, the item number + content, and per metric both the
+                # best value and the reference sentence that produced it.
+                kind_rows = {k: [] for k in kinds}
+                combined_rows = []
                 detail_items = []
                 for n, item in enumerate(items, 1):
                     sentence_rows = _sentence_metric_rows(
                         kinds, cosine_ctx, key, sentences, item, sent_mat)
-                    prefix = f"Item {n} " if len(items) > 1 else ""
-                    combined_entry[f"{prefix}Content"] = item
+                    item_base = {**base, "Item": n, "Content": item}
+                    kind_row = {k: dict(item_base) for k in kinds}
+                    combined_row = dict(item_base)
                     best_detail = {}
-                    for kind in kinds:
-                        kind_entries[kind][f"{prefix}Content"] = item
+                    for kind in (k for k in METRIC_KINDS if k in kinds):
                         for col in _KIND_COLUMNS[kind]:
                             val, sent_no = _best_value(col, [r.get(col) for r in sentence_rows])
-                            best_detail[col] = {"value": val, "sentence": sent_no}
-                            kind_entries[kind][f"{prefix}{col}"] = val
-                            combined_entry[f"{prefix}{col}"] = val
+                            ref_text = sentences[sent_no - 1] if sent_no else None
+                            best_detail[col] = {"value": val, "sentence": sent_no,
+                                                "reference": ref_text}
+                            kind_row[kind][col] = val
+                            kind_row[kind][f"{col}_reference"] = ref_text
+                            combined_row[col] = val
+                            combined_row[f"{col}_reference"] = ref_text
                             if isinstance(val, (int, float)):
                                 sums[col][0] += float(val)
                                 sums[col][1] += 1
+                    for kind in kinds:
+                        kind_rows[kind].append(kind_row[kind])
+                    combined_rows.append(combined_row)
                     detail_items.append({
                         "Item": n,
                         "Content": item,
@@ -495,8 +759,8 @@ def evaluate_space_metrics(storage_path, kinds, target="abstract", db_path=None,
                         ],
                     })
                 for kind in kinds:
-                    _write_section_sheet_flat(workbooks[kind], key, kind_entries[kind])
-                _write_section_sheet_flat(workbooks["overview"], key, combined_entry)
+                    _write_section_rows(workbooks[kind], key, str(uuid), kind_rows[kind])
+                _write_section_rows(workbooks["overview"], key, str(uuid), combined_rows)
                 detail_sections[key] = detail_items
 
             _write_sentence_detail_json(workbooks["details"], uuid, cfg["sql_label"], {
