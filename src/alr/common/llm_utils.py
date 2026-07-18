@@ -349,6 +349,47 @@ def get_embedding_backend() -> dict:
     return dict(SELECTED_EMBEDDING_BACKEND)
 
 
+def _parse_embedding_response(result, expected):
+    """Pull the vectors out of an /embeddings response (OpenAI-compatible or
+    native Ollama shape). Raises ValueError on an unexpected shape or count."""
+    embeddings = None
+    if isinstance(result, dict) and result.get("data"):
+        # OpenAI-compatible: {"data": [{"embedding": [...], "index": 0}, ...]}
+        data_sorted = sorted(result["data"], key=lambda d: d.get("index", 0))
+        embeddings = [d["embedding"] for d in data_sorted if "embedding" in d]
+    elif isinstance(result, dict) and result.get("embeddings"):
+        # Native Ollama batch (/api/embed): {"embeddings": [[...], [...]]}
+        embeddings = result["embeddings"]
+    elif isinstance(result, dict) and result.get("embedding"):
+        # Native Ollama single (/api/embeddings): {"embedding": [...]}
+        embeddings = [result["embedding"]]
+    if not embeddings:
+        raise ValueError(f"No embedding vectors returned: {result}")
+    if expected and len(embeddings) != expected:
+        raise ValueError(f"Expected {expected} embedding vector(s), "
+                         f"got {len(embeddings)}")
+    return embeddings
+
+
+def _embed_in_halves(texts, embed_fn, label="embedding"):
+    """Embed a pool of strings with as few calls as possible: try the WHOLE
+    pool in one call first; if that fails (server limit, timeout, OOM …),
+    split the pool in half and retry each half the same way, recursively,
+    until the pieces go through. Returns one vector per input, in order.
+    A single item that still fails raises its error."""
+    try:
+        return embed_fn(texts)
+    except Exception as exc:  # noqa: BLE001 - any failure triggers the split
+        if len(texts) <= 1:
+            raise
+        mid = (len(texts) + 1) // 2
+        print(Fore.YELLOW + f"⚠️ {label} pool of {len(texts)} failed ({exc}) "
+              f"— splitting into {mid} + {len(texts) - mid} and retrying."
+              + Style.RESET_ALL)
+        return (_embed_in_halves(texts[:mid], embed_fn, label)
+                + _embed_in_halves(texts[mid:], embed_fn, label))
+
+
 def get_embedding(
     text,
     service: str,
@@ -398,36 +439,29 @@ def get_embedding(
     if key:
         headers["Authorization"] = f"Bearer {key}"
 
-    payload = {
-        "model": resolved_model,
-        "input": inputs,
-    }
-
     url = f"{base_url}/embeddings"
 
+    # Whole pool in ONE call when possible (each request still goes through
+    # _post_with_retries: shared rate limit + bounded retry). Only when a
+    # pool keeps failing is it split in half recursively by _embed_in_halves.
+    # `raw` keeps the server response only when one request served the whole
+    # pool (a stitched pool has none).
+    raw_holder = {}
+
+    def _request(batch):
+        resp = _post_with_retries(
+            url, headers, {"model": resolved_model, "input": list(batch)},
+            timeout, f"{service} embeddings")
+        payload = resp.json()
+        if len(batch) == len(inputs):
+            raw_holder["raw"] = payload
+        return _parse_embedding_response(payload, len(batch))
+
     start_time = time.time()
-    resp = _post_with_retries(url, headers, payload, timeout, f"{service} embeddings")
-    result = resp.json()
+    embeddings = _embed_in_halves(list(inputs), _request,
+                                  f"{service} embedding")
+    result = raw_holder.get("raw")
     end_time = time.time()
-
-    try:
-        embeddings = None
-        if isinstance(result, dict) and result.get("data"):
-            # OpenAI-compatible: {"data": [{"embedding": [...], "index": 0}, ...]}
-            data_sorted = sorted(result["data"], key=lambda d: d.get("index", 0))
-            embeddings = [d["embedding"] for d in data_sorted if "embedding" in d]
-        elif isinstance(result, dict) and result.get("embeddings"):
-            # Native Ollama batch (/api/embed): {"embeddings": [[...], [...]]}
-            embeddings = result["embeddings"]
-        elif isinstance(result, dict) and result.get("embedding"):
-            # Native Ollama single (/api/embeddings): {"embedding": [...]}
-            embeddings = [result["embedding"]]
-
-        if not embeddings:
-            raise ValueError("No embedding vectors returned")
-    except (KeyError, TypeError, ValueError) as exc:
-        print(f"❌ {service} embedding call failed. Full response: {result}")
-        raise ValueError(f"Unexpected embedding response format from {service}: {exc}") from exc
 
     print(
         Fore.GREEN
@@ -564,9 +598,11 @@ def vectorize_strings_local(input_strings: list, max_length: int = 512, batch_si
     Embed a list of strings using the local GPU/CPU HuggingFace model
     (Qwen/Qwen3-Embedding-8B by default, same weights as before).
 
-    Inputs are pooled in chunks of `batch_size` (default 10) per forward
-    pass so large lists (e.g. thousands of section rows) cannot OOM the
-    GPU by being tokenised/embedded in a single giant tensor.
+    The COMPLETE pool is tried in one forward pass first; if that fails
+    (typically GPU out-of-memory on a large list), the pool is split in
+    half and each half retried the same way, recursively, until the
+    pieces fit (`_embed_in_halves`). ``batch_size`` is kept for backward
+    compatibility but no longer pre-chunks the input.
 
     Returns an (N, dim) float32 numpy array, L2-normalised so cosine
     similarity == inner product (matches an IndexFlatIP FAISS index).
@@ -577,16 +613,15 @@ def vectorize_strings_local(input_strings: list, max_length: int = 512, batch_si
 
     tokenizer, model = _get_embedding_model_and_tokenizer()
 
-    if batch_size is None or batch_size < 1:
-        batch_size = 10
+    if not input_strings:
+        return np.zeros((0, 0), dtype=np.float32)
 
-    chunks = []
-    total = len(input_strings)
-    with torch.inference_mode():
-        for i in range(0, total, batch_size):
-            pool = input_strings[i:i + batch_size]
+    def _encode(pool):
+        # One forward pass over the given pool; raises on OOM etc. so
+        # _embed_in_halves can retry with smaller pools.
+        with torch.inference_mode():
             batch = tokenizer(
-                pool,
+                list(pool),
                 padding=True,
                 truncation=True,
                 max_length=max_length,
@@ -599,11 +634,10 @@ def vectorize_strings_local(input_strings: list, max_length: int = 512, batch_si
 
             # Normalise => cosine similarity works with inner product / L2
             emb = F.normalize(emb, p=2, dim=1)
-            chunks.append(emb.detach().cpu().numpy().astype(np.float32))
-            if total > batch_size:
-                print(f"   \U0001f9ee Local embeddings: {min(i + batch_size, total)}/{total}")
+            return list(emb.detach().cpu().numpy().astype(np.float32))
 
-    return np.concatenate(chunks, axis=0) if chunks else np.zeros((0, 0), dtype=np.float32)
+    vectors = _embed_in_halves(list(input_strings), _encode, "local embedding")
+    return np.stack(vectors).astype(np.float32)
 
 
 def count_tokens(messages, response_text, model):
