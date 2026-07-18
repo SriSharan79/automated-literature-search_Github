@@ -179,8 +179,6 @@ def classify_title(title, service=None):
     Prompt = f"""Title of publication to be analyzed:
                 - {title}
             """
-            # Add a delay here (e.g., 1.5 seconds) to stay under rate limits
-    time.sleep(1.5)
     try:
         print(Fore.GREEN + f" Prompt : \n {Prompt}"+ Style.RESET_ALL)
         response = llm_call(Prompt, system_prompt_sysE, service) if service else llm_call(Prompt, system_prompt_sysE)
@@ -284,8 +282,6 @@ def classify_custom(text, tags, topic="the given taxonomy", service=None, source
     Prompt = f"""{source_label} of publication to be analyzed:
                 - {text}
             """
-    # Small delay to stay under the Blablador rate limit.
-    time.sleep(1.5)
     try:
         print(Fore.GREEN + f" Prompt : \n {Prompt}" + Style.RESET_ALL)
         response = llm_call(Prompt, system_prompt, service) if service else llm_call(Prompt, system_prompt)
@@ -316,8 +312,6 @@ def classify_abstract(abstract_text, service=None):
     Prompt = f"""Abstract of the publication to be analyzed:
                 - {abstract_text}
             """
-    # Small delay to stay under the Blablador rate limit.
-    time.sleep(1.5)
     try:
         
         print(Fore.GREEN + f" Prompt : \n {Prompt}"+ Style.RESET_ALL)

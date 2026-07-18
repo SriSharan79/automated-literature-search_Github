@@ -17,12 +17,108 @@ import json
 import os
 import tiktoken
 import re # Import regex
+import threading
 from typing import List,Dict,Any
 init(autoreset=True)
 import time
 
 
-REQUEST_TIMES = deque(maxlen=10)
+# ---------------------------------------------------------------------------
+# Shared rate limiter (one budget for every remote chat + embedding request)
+# ---------------------------------------------------------------------------
+# Sliding window: at most RATE_MAX_REQUESTS requests per RATE_WINDOW_SECONDS,
+# shared across blabla_ask_llm / Ollama_ask_llm / get_embedding so the limits
+# don't stack per-call-site the way the old flat sleeps did.
+RATE_MAX_REQUESTS = 10
+RATE_WINDOW_SECONDS = 60
+REQUEST_TIMES = deque()
+_RATE_LOCK = threading.Lock()
+
+
+def _respect_rate_limit():
+    """Block until a request slot is free, then claim it (thread-safe)."""
+    while True:
+        with _RATE_LOCK:
+            now = time.time()
+            while REQUEST_TIMES and now - REQUEST_TIMES[0] >= RATE_WINDOW_SECONDS:
+                REQUEST_TIMES.popleft()
+            if len(REQUEST_TIMES) < RATE_MAX_REQUESTS:
+                REQUEST_TIMES.append(now)
+                return
+            wait = RATE_WINDOW_SECONDS - (now - REQUEST_TIMES[0])
+        print(Fore.YELLOW
+              + f"⚠️ Rate limit reached ({RATE_MAX_REQUESTS} requests/{RATE_WINDOW_SECONDS}s). "
+              + f"Waiting {wait:.1f}s..." + Style.RESET_ALL)
+        time.sleep(max(wait, 0.1))
+
+
+# ---------------------------------------------------------------------------
+# HTTP with native timeouts + bounded retry (replaces the thread-based
+# timeout_function: a hung socket now raises cleanly instead of leaking an
+# abandoned worker thread that keeps running in the background)
+# ---------------------------------------------------------------------------
+RETRYABLE_STATUS = (429, 500, 502, 503, 504)
+CONNECT_TIMEOUT_SECONDS = 10
+
+
+def _post_with_retries(url, headers, payload, timeout, service, max_retries=3):
+    """
+    POST with a native requests timeout and retry-with-backoff on transient
+    failures (429/5xx, connection errors, timeouts). Retry-After is honoured.
+    Non-retryable HTTP errors (401, 404, ...) raise immediately; after
+    max_retries attempts the last error raises to the caller.
+    """
+    delay = 2.0
+    last_exc = None
+    for attempt in range(1, max_retries + 1):
+        _respect_rate_limit()
+        try:
+            resp = requests.post(url, headers=headers, json=payload,
+                                 timeout=(CONNECT_TIMEOUT_SECONDS, timeout))
+            if resp.status_code in RETRYABLE_STATUS:
+                retry_after = resp.headers.get("Retry-After")
+                if retry_after:
+                    try:
+                        delay = max(delay, float(retry_after))
+                    except ValueError:
+                        pass
+                last_exc = requests.HTTPError(
+                    f"{service}: HTTP {resp.status_code}", response=resp)
+            else:
+                resp.raise_for_status()
+                return resp
+        except (requests.Timeout, requests.ConnectionError) as e:
+            last_exc = e
+        if attempt < max_retries:
+            print(Fore.YELLOW
+                  + f"⚠️ {service} request failed ({last_exc}); "
+                  + f"retrying in {delay:.0f}s (attempt {attempt}/{max_retries})..."
+                  + Style.RESET_ALL)
+            time.sleep(delay)
+            delay *= 2
+    raise last_exc
+
+
+# ---------------------------------------------------------------------------
+# Record of what actually served the most recent llm_call / embedding_call -
+# callers can persist this next to their outputs (e.g. a model_used column).
+# ---------------------------------------------------------------------------
+LAST_CALL_INFO = {}
+
+
+def _record_call_info(**kw):
+    global LAST_CALL_INFO
+    LAST_CALL_INFO = {"timestamp": datetime.now().isoformat(), **kw}
+
+
+def get_last_call_info() -> dict:
+    """
+    Return details of the most recent llm_call()/embedding_call():
+    requested_service, service_used, model_used, fallback_used, error.
+    When fallback_used is True the answer came from a different service
+    than requested - record this wherever the response is stored.
+    """
+    return dict(LAST_CALL_INFO)
 
 
 # ---------------------------------------------------------------------------
@@ -286,28 +382,6 @@ def get_embedding(
 
     inputs = text if isinstance(text, list) else [text]
     resolved_model = model or get_default_embedding_model(service)
-    
-    time.sleep(3)
-        
-    # --- RATE LIMITER LOGIC ---
-    current_time = time.time()
-    
-    # If we have already hit our 20 request capacity, check the oldest request
-    if len(REQUEST_TIMES) == 10:
-        oldest_request_time = REQUEST_TIMES[0]
-        elapsed_since_oldest = current_time - oldest_request_time
-        
-        # If the oldest request happened less than 60 seconds ago, we must wait
-        if elapsed_since_oldest < 60:
-            sleep_time = 60 - elapsed_since_oldest
-            print(Fore.YELLOW + f"⚠️ Rate limit approaching. Sleeping for {sleep_time:.2f} seconds..." + Style.RESET_ALL)
-            time.sleep(sleep_time)
-            
-    # Record the current timestamp for this request execution
-    REQUEST_TIMES.append(time.time())
-    # --------------------------
-
-    start_time = time.time()
 
     if service == "BlaBla":
         base_url = BLABLADOR_BASE_URL
@@ -332,8 +406,7 @@ def get_embedding(
     url = f"{base_url}/embeddings"
 
     start_time = time.time()
-    resp = requests.post(url, headers=headers, json=payload, timeout=timeout)
-    resp.raise_for_status()
+    resp = _post_with_retries(url, headers, payload, timeout, f"{service} embeddings")
     result = resp.json()
     end_time = time.time()
 
@@ -652,27 +725,8 @@ def Ollama_ask_llm(
     temperature: float = 0.2,
     max_tokens: int = 2000,
     model: str = None,
+    timeout: int = 120,
 ) -> str:
-    
-    time.sleep(3)
-        
-    # --- RATE LIMITER LOGIC ---
-    current_time = time.time()
-    
-    # If we have already hit our 20 request capacity, check the oldest request
-    if len(REQUEST_TIMES) == 10:
-        oldest_request_time = REQUEST_TIMES[0]
-        elapsed_since_oldest = current_time - oldest_request_time
-        
-        # If the oldest request happened less than 60 seconds ago, we must wait
-        if elapsed_since_oldest < 60:
-            sleep_time = 60 - elapsed_since_oldest
-            print(Fore.YELLOW + f"⚠️ Rate limit approaching. Sleeping for {sleep_time:.2f} seconds..." + Style.RESET_ALL)
-            time.sleep(sleep_time)
-            
-    # Record the current timestamp for this request execution
-    REQUEST_TIMES.append(time.time())
-    # --------------------------
 
     start_time = time.time()
 
@@ -680,8 +734,6 @@ def Ollama_ask_llm(
 
     # Resolve the model: explicit arg > session selection > configured default.
     model = model or get_selected_model("DLR Ollama") or DEFAULT_OLLAMA_MODEL
-
-    start_time = time.time()
 
     messages = []
     messages.append({'role': 'system', 'content': sys_prompt})
@@ -699,10 +751,7 @@ def Ollama_ask_llm(
         headers["Authorization"] = f"Bearer {Ollama_DLR_API_Key}"
 
     url = f'{OLLAMA_BASE_URL}/chat/completions'
-    resp = requests.post(url, headers=headers, json=payload)
-
-    # Raise an informative error if something went wrong
-    resp.raise_for_status()
+    resp = _post_with_retries(url, headers, payload, timeout, "DLR Ollama")
 
     result = resp.json()
     content=None 
@@ -830,28 +879,9 @@ def blabla_ask_llm(
     max_tokens: int = 8192,
     blablador_key: str = None,
     model: str = None,
+    timeout: int = 120,
 ) -> str:
     """Query Blablador LLM with the selected (or default) model."""
-    
-    time.sleep(3)
-        
-    # --- RATE LIMITER LOGIC ---
-    current_time = time.time()
-    
-    # If we have already hit our 20 request capacity, check the oldest request
-    if len(REQUEST_TIMES) == 10:
-        oldest_request_time = REQUEST_TIMES[0]
-        elapsed_since_oldest = current_time - oldest_request_time
-        
-        # If the oldest request happened less than 60 seconds ago, we must wait
-        if elapsed_since_oldest < 60:
-            sleep_time = 60 - elapsed_since_oldest
-            print(Fore.YELLOW + f"⚠️ Rate limit approaching. Sleeping for {sleep_time:.2f} seconds..." + Style.RESET_ALL)
-            time.sleep(sleep_time)
-            
-    # Record the current timestamp for this request execution
-    REQUEST_TIMES.append(time.time())
-    # --------------------------
 
     start_time = time.time()
     # print_with_separator("DebugLog",'/')
@@ -880,8 +910,7 @@ def blabla_ask_llm(
 
     url = f"{BLABLADOR_BASE_URL}/chat/completions"
 
-    resp = requests.post(url, headers=headers, json=payload)
-    resp.raise_for_status()
+    resp = _post_with_retries(url, headers, payload, timeout, "Blablador")
 
     result = resp.json()
     content=None 
@@ -1022,87 +1051,85 @@ def Local_Model_call(prompt: str, sys_prompt: str) :
         return None
 
 
-import threading
-
-# Timeout wrapper function
-def timeout_function(func, args=(), timeout=120, fallback=None):
-    """
-    Executes a function with a timeout. If it exceeds the timeout, it will attempt a fallback function.
-    """
-    result = None
-    error = None
-    
-    def worker():
-        nonlocal result, error
-        try:
-            result = func(*args)  # Call the function with its arguments
-        except Exception as e:
-            error = e  # If an error occurs, capture it
-            traceback.print_exc()              
-    
-    thread = threading.Thread(target=worker)
-    thread.start()
-    thread.join(timeout)
-    
-    if thread.is_alive():
-        # Timeout, so return the fallback if it's provided
-        print("Timeout occurred. Switching service...")
-        if fallback:
-            return fallback(*args)
-        else:
-            return None  # If no fallback, return None or handle accordingly
-    elif error:
-        # If there's an error, call fallback
-        print(f"Error occurred: {error}. Switching service...")
-        if fallback:
-            return fallback(*args)
-        else:
-            return None
-    else:
-        return result
-
 # Main LLM call method
-def llm_call(prompt: str, system_prompt: str, service: str, model: str = None):
+def llm_call(prompt: str, system_prompt: str, service: str, model: str = None,
+             allow_fallback: bool = True, timeout: int = 120):
+    """
+    Chat call with native timeouts, bounded retries, and a *recorded* fallback.
+
+      'B' -> Blablador; 'O' -> DLR Ollama; 'L' -> local HuggingFace model.
+
+    Each remote attempt retries transient failures (429/5xx, timeouts) with
+    backoff inside _post_with_retries. Only after the requested service has
+    exhausted its retries does the other service get one chance - and only if
+    ``allow_fallback`` is True. Pass ``allow_fallback=False`` for calls whose
+    results must not mix models mid-batch.
+
+    Whatever happens is recorded in get_last_call_info() (requested_service,
+    service_used, model_used, fallback_used, error) so callers can persist
+    which model actually produced each output. Returns the response text, or
+    None when every allowed service failed.
+    """
     # Use provided prompt if valid; otherwise fallback
     if system_prompt:
         sys_prompt = system_prompt
     else:
         sys_prompt = General_Sys_Prompt
 
-    # print_with_separator("DebugLog",'/')
-
-    # print(f"System Prompt: {sys_prompt}")
-    # print(f"User Prompt: {prompt}")
-
     # Normalize service input
     s = service.lower()
 
     # Optional per-call model override: record it as the session selection for
-    # the targeted service so the ask_* helpers (called via timeout_function)
-    # pick it up.
+    # the targeted service so the ask_* helpers pick it up.
     if model:
         if s == 'b':
             set_selected_model("BlaBla", model)
         elif s == 'o':
             set_selected_model("DLR Ollama", model)
 
-    # Service calling logic with timeout and fallback
-    if s == 'b':
-        # If service B (blabla) fails or times out, fallback to Ollama (o)
-        response = timeout_function(blabla_ask_llm, (prompt, sys_prompt), timeout=60, fallback=lambda prompt, sys_prompt: timeout_function(Ollama_ask_llm, (prompt, sys_prompt), timeout=60, fallback=None))
-    elif s == 'o':
-        # If service O (Ollama) fails or times out, fallback to Blabla (b)
-        response = timeout_function(Ollama_ask_llm, (prompt, sys_prompt), timeout=60, fallback=lambda prompt, sys_prompt: timeout_function(blabla_ask_llm, (prompt, sys_prompt), timeout=60, fallback=None))
-    elif s == 'l':
-        # Local model call
-        # hf_pipeline=hf_pipeline_with_Lamma()  
+    if s == 'l':
         response = Local_Model_call(prompt, sys_prompt)
-    else:
+        _record_call_info(kind="chat", requested_service="local", service_used="local",
+                          model_used=model_repo_id, fallback_used=False, error=None)
+        return response
+
+    if s not in ('b', 'o'):
         error_msg = "Error: Invalid service. Use 'B', 'O', or 'L'."
         print(error_msg)
         return error_msg  # Return the error so the app doesn't crash downstream
 
-    return response
+    services = {'b': ("BlaBla", blabla_ask_llm), 'o': ("DLR Ollama", Ollama_ask_llm)}
+    primary_name = services[s][0]
+    attempt_order = [services[s]]
+    if allow_fallback:
+        attempt_order.append(services['o' if s == 'b' else 'b'])
+
+    errors = []
+    for name, ask in attempt_order:
+        try:
+            response = ask(prompt, sys_prompt, timeout=timeout)
+            fallback_used = name != primary_name
+            if fallback_used:
+                print(Fore.YELLOW
+                      + f"⚠️ Chat fallback used: '{primary_name}' failed "
+                      + f"({errors[-1]}); this answer came from '{name}' "
+                      + f"(model={get_selected_model(name)})."
+                      + Style.RESET_ALL)
+            _record_call_info(kind="chat", requested_service=primary_name,
+                              service_used=name, model_used=get_selected_model(name),
+                              fallback_used=fallback_used,
+                              error="; ".join(errors) or None)
+            return response
+        except Exception as e:
+            errors.append(f"{name}: {e}")
+            print(Fore.RED + f"❌ {name} chat call failed after retries: {e}" + Style.RESET_ALL)
+
+    _record_call_info(kind="chat", requested_service=primary_name, service_used=None,
+                      model_used=None, fallback_used=False, error="; ".join(errors))
+    print(Fore.RED
+          + f"❌ llm_call failed on every allowed service ({'; '.join(errors)}); returning None."
+          + Style.RESET_ALL)
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -1143,21 +1170,29 @@ def _normalize_embedding_service_code(service: str) -> str:
 
 
 # Main embedding call method (built the same way as llm_call above)
-def embedding_call(texts, service: str, model: str = None, timeout: int = 120):
+def embedding_call(texts, service: str, model: str = None, timeout: int = 120,
+                   allow_fallback: bool = False):
     """
-    Get embeddings with timeout + fallback, mirroring llm_call():
+    Get embeddings with native timeouts + bounded retries (inside
+    get_embedding via _post_with_retries), mirroring llm_call():
 
-      'B' -> Blablador /embeddings; on timeout/error falls back to DLR Ollama.
-      'O' -> DLR Ollama /embeddings; on timeout/error falls back to Blablador.
+      'B' -> Blablador /embeddings (never cross-service falls back).
+      'O' -> DLR Ollama /embeddings; may fall back to Blablador, but ONLY
+             when ``allow_fallback=True``.
       'L' -> local HuggingFace embedding model (no remote fallback).
 
     Long service names ("BlaBla", "DLR Ollama", "local") are accepted too.
 
-    Returns the get_embedding()-style dict, or None when the service AND its
-    fallback both failed/timed out. IMPORTANT: check result["service"] /
-    result["model"] - when the fallback kicked in they differ from the
-    requested service, and the vectors then live in a DIFFERENT embedding
-    space (never mix them into a FAISS index built with another model).
+    Cross-service fallback is OPT-IN here (default off), unlike chat: vectors
+    from a different service/model live in a DIFFERENT embedding space and
+    must never be mixed into the same FAISS index. Transient failures are
+    instead retried on the SAME service; persistent failures return None and
+    the caller (vector_db_updater.vectorize_strings max_retries loop) decides.
+
+    Returns the get_embedding()-style dict, or None when every allowed
+    attempt failed. If a fallback was allowed and used, result["service"] /
+    result["model"] differ from the request - check them (also recorded in
+    get_last_call_info()).
     """
     s = _normalize_embedding_service_code(service)
 
@@ -1169,31 +1204,48 @@ def embedding_call(texts, service: str, model: str = None, timeout: int = 120):
         elif s == 'o':
             set_selected_embedding_model("DLR Ollama", model)
 
-    # Service calling logic with timeout and fallback
-    if s == 'b':
-        # Policy: the embedding fallback service is always Blablador, never
-        # DLR Ollama. When BlaBla itself is the requested service there is
-        # no cross-service fallback; retries are handled by the caller
-        # (vector_db_updater.vectorize_strings max_retries loop).
-        response = timeout_function(
-            blabla_ask_embedding, (texts,), timeout=timeout, fallback=None)
-        requested = "BlaBla"
-    elif s == 'o':
-        # If service O (Ollama) fails or times out, fallback to Blabla (b)
-        response = timeout_function(
-            Ollama_ask_embedding, (texts,), timeout=timeout,
-            fallback=lambda texts: timeout_function(blabla_ask_embedding, (texts,), timeout=timeout, fallback=None))
-        requested = "DLR Ollama"
-    elif s == 'l':
+    if s == 'l':
         # Local embedding model call (no remote fallback, matching llm_call 'L')
         response = local_ask_embedding(texts)
-        requested = "local"
-    else:
+        _record_call_info(kind="embedding", requested_service="local",
+                          service_used="local", model_used=response.get("model"),
+                          fallback_used=False, error=None)
+        return response
+
+    if s not in ('b', 'o'):
         error_msg = "Error: Invalid embedding service. Use 'B', 'O', or 'L'."
         print(error_msg)
         return None
 
-    if response and response.get("service") and response["service"] != requested:
+    services = {'b': ("BlaBla", blabla_ask_embedding), 'o': ("DLR Ollama", Ollama_ask_embedding)}
+    requested = services[s][0]
+    attempt_order = [services[s]]
+    # Policy: the embedding fallback service is always Blablador, never
+    # DLR Ollama - so only 'o' has a cross-service fallback to offer.
+    if allow_fallback and s == 'o':
+        attempt_order.append(services['b'])
+
+    errors = []
+    response = None
+    for name, ask in attempt_order:
+        try:
+            response = ask(texts)
+            _record_call_info(kind="embedding", requested_service=requested,
+                              service_used=name, model_used=response.get("model"),
+                              fallback_used=name != requested,
+                              error="; ".join(errors) or None)
+            break
+        except Exception as e:
+            errors.append(f"{name}: {e}")
+            print(Fore.RED + f"❌ {name} embedding call failed after retries: {e}" + Style.RESET_ALL)
+
+    if response is None:
+        _record_call_info(kind="embedding", requested_service=requested,
+                          service_used=None, model_used=None, fallback_used=False,
+                          error="; ".join(errors))
+        return None
+
+    if response.get("service") and response["service"] != requested:
         print(Fore.YELLOW
               + f"⚠️ Embedding fallback used: requested '{requested}' but vectors came from "
               + f"'{response['service']}' (model={response.get('model')}). These vectors are in a "

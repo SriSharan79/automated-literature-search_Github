@@ -194,10 +194,13 @@ def vectorize_strings(
         If loading/inference fails (e.g. weights missing in the packaged
         Windows build), it falls back to the API path below with a warning.
     method='api': remote embedding call via llm_utils.embedding_call(), which
-        wraps get_embedding() with a timeout and cross-service fallback the
-        same way llm_call() does for chat (B <-> O). Results are batched and
-        L2-normalised client-side so cosine similarity == inner product
-        (matches the FAISS IndexFlatIP index built below).
+        wraps get_embedding() with native request timeouts and bounded
+        same-service retries. Cross-service fallback is opt-in there and NOT
+        enabled here - fallback vectors would live in a different embedding
+        space; the max_retries loop below retries the same backend instead.
+        Results are batched and L2-normalised client-side so cosine
+        similarity == inner product (matches the FAISS IndexFlatIP index
+        built below).
     """
     default_method, default_service = _current_backend()
     method = (method or default_method).strip().lower()
@@ -236,8 +239,9 @@ def vectorize_strings(
             batch_label = f"batch {i}-{i + len(batch)} of {len(input_strings)} strings"
             result = None
             for attempt in range(1, max_retries + 1):
-                # Timeout + cross-service fallback (mirrors llm_call); returns
-                # None only when the requested service AND its fallback failed.
+                # Native timeout + same-service retries inside; returns None
+                # when the requested service kept failing (no cross-service
+                # fallback - that stays opt-in and off for index builds).
                 candidate = embedding_call(batch, service_code, model=model)
                 if candidate and candidate.get("embeddings"):
                     got = (candidate.get("service", service), candidate.get("model", model))
