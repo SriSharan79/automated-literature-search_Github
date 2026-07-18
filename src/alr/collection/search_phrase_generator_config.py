@@ -62,15 +62,16 @@ TOTAL_KEYWORDS=AI_KEYWORDS+REQ_KEYWORDS
 #Configured Column Order for Publication Collection
 
 COLUMNS = [
-    'Occurrence', 
+    'Occurrence',
     'Search Phrase',
     'Publication Name',
-    'Keywords in Title', 
+    'Keywords in Title',
     'Abstract',
-    'Link', 
-    'Organization', 
-    'Publication Year', 
-    'Authors'
+    'Link',
+    'Organization',
+    'Publication Year',
+    'Authors',
+    'Source'   # which backend produced the row: 'OpenAlex' or 'Google Scholar'
 ]
 
 #Configured Column Order for Search Phrase collection

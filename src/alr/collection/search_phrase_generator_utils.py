@@ -20,136 +20,18 @@ from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 import time
 from itertools import chain, combinations,product
-from scholarly import scholarly
 from colorama import Fore,Style
 from datetime import datetime
 from colorama import Fore, Style
-import threading
-import time
 
-
-def find_keywords_in_phrase(text: str,
-    keywords: List[str]) -> str:
-    if pd.isna(text):
-        return ""  # Handle NaN/empty cells
-    
-    # Ensure the text is a string and convert to lowercase for case-insensitive matching
-    text_lower = str(text).lower()
-    
-    found_keywords = []
-    for keyword in keywords:
-        # Check if the keyword is in the text (case-insensitive)
-        if keyword.lower() in text_lower:
-            found_keywords.append(keyword)
-    
-    # Join the found keywords with a comma and space (e.g., "apple, banana")
-    return ", ".join(found_keywords)
-
-import time
-import threading
-from scholarly import scholarly
-
-def breakout_function():
-    print(f"Timeout reached!")
-
-# Timeout wrapper function to handle timeouts
-def timeout_function(func, args=(), timeout=60):
-
-    result = []
-    
-    def worker():
-        nonlocal result
-        try:
-            search_results = func(*args)  # Unpack args and call the function
-            result = list(search_results)  # Convert the iterator to a list
-        except Exception as e:
-            print(f"Error during search: {e}")
-            traceback.print_exc()       
-            
-    
-    timer = threading.Timer(timeout, breakout_function)
-    timer.start()
-    # Start the search in a separate thread
-    search_thread = threading.Thread(target=worker)
-    search_thread.start()
-    search_thread.join(timeout)
-
-    if search_thread.is_alive():
-        # If the scholarly function is still running after 30 seconds, stop it
-        print("Run scholarly timed out!")
-        # Here you would need to stop the `run_scholarly` process, but Python threads can't be forcefully killed.
-        # However, you could use some kind of cooperative termination strategy, such as checking a shared variable
-        # inside the `run_scholarly` function to know when it should terminate.
-    else:
-        # If run_scholarly finishes in time, cancel the timer
-        timer.cancel()
-        
-    if not result:
-        print(f"No results found in {timeout} seconds.")
-        return []  # Return empty list if no results
-    return result
-
-# Google Scholar data collection
-def scrape_scholar_data(search_query, Num_Results, Total_keywords):
-    """
-    Searches Google Scholar for publications matching the combined keywords 
-    and returns the data as a list of dictionaries.
-    """
-    
-    print(f"Searching Google Scholar for: '{search_query}'")
-    
-    publications_data = []  # Stores the raw scraped data
-
-    # Attempt to get search results with timeout
-    # search_results = timeout_function(scholarly.search_pubs, (search_query,), timeout=60)
-    search_results= scholarly.search_pubs(search_query)
-    
-    if not search_results:
-        return publications_data  # Return empty list if no results within the timeout
-    
-    MAX_RESULTS = Num_Results
-    
-    for i, pub in enumerate(search_results):
-        time.sleep(10)
-        if i >= MAX_RESULTS:
-            print(f"\nStopped after processing {MAX_RESULTS} results.")
-            break
-
-        try:
-            # Safely extract the required information
-            title = pub.get('bib', {}).get('title', 'N/A')
-            authors = ', '.join(pub.get('bib', {}).get('author', ['N/A']))
-            pub_year = pub.get('bib', {}).get('pub_year', 'N/A')
-            venue = pub.get('bib', {}).get('venue', 'N/A')
-
-            # Simplified link extraction
-            link_pub = pub.get('eprint_url') or pub.get('pub_url') or pub.get('doi') or pub.get('url') or 'N/A'
-
-            abstract = pub.get('bib', {}).get('abstract', 'N/A')
-            keywords_in_title = find_keywords_in_phrase(title, Total_keywords)
-
-            # Append data directly with all required keys (including the fixes)
-            publications_data.append({
-                'Occurrence': 1,  # Default for new entry
-                'Search Phrase': search_query,  # Pass the search phrase
-                'Publication Name': title,
-                'Keywords in Title': keywords_in_title,
-                'Abstract': abstract,
-                'Link': link_pub,
-                'Organization': venue,
-                'Publication Year': pub_year,
-                'Authors': authors  # Corrected spelling
-            })
-            print(f"  Extracted result {i+1}: {title}...")
-
-        except Exception as e:
-            print(f"  Error processing publication: {e}")
-            traceback.print_exc()       
-
-        # Sleep to avoid rate-limiting
-        time.sleep(1)
-        
-    return publications_data  # Return the collected list
+# Publication search backends live in publication_search.py: OpenAlex (official
+# API, primary) + Google Scholar via scholarly (scraping, fallback with block
+# cooldown). Re-exported here so existing importers keep working.
+from alr.collection.publication_search import (
+    collect_publications,
+    find_keywords_in_phrase,
+    scrape_scholar_data,
+)
 
 
 def generation_of_Key_phrases_with_scope(formatted_user_prompt, phrase_excel_file, Keywords,Total_keywords,llm):
@@ -391,11 +273,15 @@ def rank_search_phrases(scope, column_name, excel_file, score_column_name='Simil
     
     return matches
 
-def run_scholarly(Input_Phrases,CM, Num_Search_Results, progress_callback=None):
+def run_scholarly(Input_Phrases,CM, Num_Search_Results, progress_callback=None, backend="auto"):
     """
-    Loops through the Input_Phrases, scrapes data for each phrase, and updates the Excel file.
-    If no publication results are found, it breaks the loop and returns an empty list.
-    ``progress_callback(done, total, phrase)`` is called before each phrase is searched.
+    Loops through the Input_Phrases, collects publications for each phrase via
+    collect_publications() (OpenAlex primary, Google Scholar fallback with
+    block cooldown), and updates the Excel file. A phrase with no results is
+    skipped instead of aborting the whole run; the accumulated rows from every
+    phrase are returned ([] only when no phrase produced anything).
+    ``progress_callback(done, total, phrase)`` is called before each phrase is
+    searched. ``backend`` is 'auto', 'openalex' or 'scholar'.
     """
 
     print_with_separator("DebugLog",'/')
@@ -404,30 +290,31 @@ def run_scholarly(Input_Phrases,CM, Num_Search_Results, progress_callback=None):
 
     PUB_EXCEL_FILE_PATH = Path(CM.publications_list_excel)
 
-    publication_results = []  # Store the final list of publications
+    all_results = []  # Accumulated publications across every phrase
 
     for i, Phrase in enumerate(Input_Phrases, 1):
         if progress_callback:
             progress_callback(i, len(Input_Phrases), str(Phrase))
         # Get the publications for the current search phrase
-        publication_results = scrape_scholar_data(Phrase, Num_Search_Results, keywords_list)
-        
-        # If no publications were found, break the loop and return an empty list
+        publication_results = collect_publications(
+            Phrase, Num_Search_Results, keywords_list, backend=backend)
+
         if not publication_results:
-            print(f"\nNo results found for phrase: '{Phrase}'. Breaking the loop.")
-            return []  # Return empty list if no publications found
+            print(f"\nNo results found for phrase: '{Phrase}'. Continuing with the next phrase.")
+            continue
 
         # If publications are found, update the Excel file
         aggregate_and_update_excel(publication_results, PUB_EXCEL_FILE_PATH)
-    
-    if publication_results:
+        all_results.extend(publication_results)
+
+    if all_results:
         PUB_log_excel=Path(CM.publications_log_path)
-        
+
         pubs=extract_column(PUB_EXCEL_FILE_PATH,'Publication Name')
-        
+
         log_generated_list_file(PUB_EXCEL_FILE_PATH,len(pubs),PUB_log_excel,CM)
-    
-    return publication_results
+
+    return all_results
    
 
 

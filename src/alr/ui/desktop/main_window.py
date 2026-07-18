@@ -282,11 +282,22 @@ class AutomatedLiteratureUI(tk.Tk):
         ttk.Radiobutton(rank_frame, text="3. Comb. RA + RQ", variable=self.ranking_var, value="3").pack(side="left", padx=5)
         ttk.Radiobutton(rank_frame, text="4. Total Rank (All Inputs)", variable=self.ranking_var, value="4").pack(side="left", padx=5)
 
+        # Publication-search backend: the chosen service is tried first, the
+        # other one is kept as the automatic fallback (collect_publications).
+        backend_frame = ttk.Frame(keyword_frame)
+        backend_frame.pack(fill="x", pady=2)
+        ttk.Label(backend_frame, text="Search backend:").pack(side="left", padx=5)
+        self.search_backend_var = tk.StringVar(value="openalex")
+        ttk.Radiobutton(backend_frame, text="OpenAlex API (Scholar as fallback)",
+                        variable=self.search_backend_var, value="openalex").pack(side="left", padx=5)
+        ttk.Radiobutton(backend_frame, text="Google Scholar (OpenAlex as fallback)",
+                        variable=self.search_backend_var, value="scholar").pack(side="left", padx=5)
+
         # Executer Execution trigger buttons
         exec_frame = ttk.Frame(keyword_frame)
         exec_frame.pack(fill="x", pady=5)
-        
-        self.btn_scholarly = ttk.Button(exec_frame, text="Run Scholarly Search", state="disabled", command=lambda: self._execute_search_strategy("s"))
+
+        self.btn_scholarly = ttk.Button(exec_frame, text="Run Publication Search", state="disabled", command=lambda: self._execute_search_strategy("s"))
         self.btn_scholarly.pack(side="left", padx=5)
 
         self.btn_save_excel = ttk.Button(exec_frame, text="Save Ranking to Excel Only", state="disabled", command=lambda: self._execute_search_strategy("e"))
@@ -452,17 +463,26 @@ class AutomatedLiteratureUI(tk.Tk):
 
         sorted_phrases = get_values_from_sorted_numbers(phrase_excel_file, rank_col, 'Phrase', num_phrases)
 
-        # The Scholarly scrape is slow network work -> worker thread, with a
+        # User-chosen primary backend; the other one stays the automatic
+        # fallback: 'openalex' -> collect_publications backend "auto"
+        # (OpenAlex first, Scholar fallback), 'scholar' -> backend "scholar"
+        # (Scholar first, OpenAlex failover). Tk reads happen up front, on the
+        # main thread.
+        backend_choice = self.search_backend_var.get()
+        backend = "auto" if backend_choice == "openalex" else "scholar"
+        backend_label = "OpenAlex" if backend_choice == "openalex" else "Scholar"
+
+        # The publication search is slow network work -> worker thread, with a
         # determinate bar over the phrases. The Excel-only export is quick but
         # goes through the same funnel so every pass behaves identically.
         def work(progress, should_cancel):
             if choice_mode == "s":
-                print(f"\nRunning Scholarly search framework profiles matching ranking setup: {rank_col}")
-                progress(text=f"Searching Scholarly across {len(sorted_phrases)} phrase(s)…")
+                print(f"\nRunning {backend_label}-first publication search matching ranking setup: {rank_col}")
+                progress(text=f"Searching {backend_label} across {len(sorted_phrases)} phrase(s)…")
                 results = run_scholarly(
-                    sorted_phrases, self.CM, 15,
+                    sorted_phrases, self.CM, 15, backend=backend,
                     progress_callback=lambda d, t, phrase: progress(
-                        done=d, total=t, text=f"[{d}/{t}] Scholarly: {phrase}"))
+                        done=d, total=t, text=f"[{d}/{t}] {backend_label}: {phrase}"))
                 if not results:
                     print("Fallback triggered automatically: Saving calculations into target spreadsheet.")
                     get_values_from_sorted_numbers_and_save(phrase_excel_file, rank_col, 'Phrase', num_phrases, sp_sorted_path)
@@ -474,7 +494,7 @@ class AutomatedLiteratureUI(tk.Tk):
             print("Collection Operations Sequence Completed.")
             return len(sorted_phrases)
 
-        title = "Scholarly Search" if choice_mode == "s" else "Save Ranking to Excel"
+        title = "Publication Search" if choice_mode == "s" else "Save Ranking to Excel"
         self._run_threaded(work, title, "processed",
                            on_success=lambda n: print(f"[Collection] {title} finished ({n} phrase(s))."))
 
