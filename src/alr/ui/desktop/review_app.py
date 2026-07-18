@@ -23,6 +23,18 @@ from tkinter import ttk, filedialog, messagebox
 
 from alr.common import crash_logger
 
+from alr.common.document_inspector import (
+    SEARCH_MODES,
+    assemble_document_view,
+    document_filename,
+    find_pdf,
+    find_registry_documents,
+    is_storage_space,
+    load_space_payloads,
+    lookup_sql_documents,
+    missing_after_merge,
+    search_pdf_recursive,
+)
 from alr.common.sql_store import AnalyzedDataStore, sync_storage_to_sql, COLUMNS
 from alr.common.storage_scanner import detect_storage_spaces, find_download_logs
 from alr.common.file_manager import ALR_overviews_folder
@@ -305,6 +317,7 @@ class ReviewApp:
 
         self._build_spaces_tab()
         self._build_documents_tab()
+        self._build_inspector_tab()
         self._build_database_tab()
         self._build_overviews_tab()
         self._build_data_files_tab()
@@ -458,7 +471,7 @@ class ReviewApp:
             return None
         return self.spaces[int(sel[0])]
 
-    def _run_threaded(self, work, title, result_word="processed"):
+    def _run_threaded(self, work, title, result_word="processed", on_success=None):
         """
         Run ``work(progress, should_cancel)`` on a background thread with a modal
         progress dialog (with a Cancel button). The worker only communicates
@@ -467,7 +480,8 @@ class ReviewApp:
         unsafe). ``progress(done=?, total=?, text=?)`` enqueues an update;
         ``should_cancel()`` returns True once Cancel is pressed; ``work`` returns
         an int count. On completion a result/cancel/error message is shown and
-        the views are refreshed.
+        the views are refreshed; ``on_success(count)`` runs on the main thread
+        after an uncancelled, error-free completion.
         """
         cancel_event = threading.Event()
         dlg = ProgressDialog(self.container, title, on_cancel=cancel_event.set)
@@ -497,6 +511,8 @@ class ReviewApp:
                                            f"{outcome.get('n', 0)} document(s).")
             else:
                 messagebox.showinfo(title, f"{title}: {result_word} {outcome.get('n', 0)} document(s).")
+                if on_success:
+                    on_success(outcome.get("n", 0))
             self._refresh_all()
 
         def poll():
@@ -653,6 +669,294 @@ class ReviewApp:
         tab = ttk.Frame(self.notebook)
         self.notebook.add(tab, text="Documents")
         self.review_view = ReviewDataView(tab)
+
+    # ===================================================== Document Inspector
+    def _build_inspector_tab(self):
+        tab = ttk.Frame(self.notebook)
+        self.notebook.add(tab, text="Document Inspector")
+
+        top = ttk.LabelFrame(tab, text="Find a document (SQL first; the storage space fills whatever is missing)")
+        top.pack(fill="x", padx=8, pady=6)
+
+        row1 = ttk.Frame(top)
+        row1.pack(fill="x", pady=3)
+        ttk.Label(row1, text="Search by:").pack(side="left", padx=(6, 2))
+        self.insp_mode_var = tk.StringVar(value=SEARCH_MODES[0])
+        ttk.Combobox(row1, textvariable=self.insp_mode_var, values=list(SEARCH_MODES),
+                     width=10, state="readonly").pack(side="left", padx=2)
+        self.insp_search_entry = ttk.Entry(row1, width=52)
+        self.insp_search_entry.pack(side="left", padx=4, fill="x", expand=True)
+        self.insp_search_entry.bind("<Return>", lambda _e: self._inspector_search())
+        ttk.Button(row1, text="Search", command=self._inspector_search).pack(side="left", padx=4)
+
+        row2 = ttk.Frame(top)
+        row2.pack(fill="x", pady=3)
+        ttk.Label(row2, text="Fallback storage space:").pack(side="left", padx=(6, 2))
+        self.insp_space_entry = ttk.Entry(row2, width=52)
+        self.insp_space_entry.pack(side="left", padx=4, fill="x", expand=True)
+        ttk.Button(row2, text="Browse…", command=self._inspector_pick_space).pack(side="left", padx=4)
+        ttk.Label(row2, text="(used when the document isn't in SQL, or SQL data is incomplete)"
+                  ).pack(side="left", padx=4)
+
+        # Candidate matches (shown when the search hits more than one document).
+        cand_frame = ttk.LabelFrame(tab, text="Matches")
+        cand_frame.pack(fill="x", padx=8, pady=(0, 4))
+        self.insp_candidates = ttk.Treeview(
+            cand_frame, columns=("uuid", "title", "filename", "where"),
+            show="headings", height=3)
+        for col, width in (("uuid", 220), ("title", 380), ("filename", 220), ("where", 90)):
+            self.insp_candidates.heading(col, text=col.capitalize())
+            self.insp_candidates.column(col, width=width, stretch=(col == "title"))
+        self.insp_candidates.pack(fill="x", padx=4, pady=4)
+        self.insp_candidates.bind("<<TreeviewSelect>>", lambda _e: self._inspector_show_selected())
+
+        # Document data, grouped, with per-field provenance.
+        body = ttk.Frame(tab)
+        body.pack(fill="both", expand=True, padx=8, pady=2)
+        self.insp_tree = ttk.Treeview(body, columns=("source", "value"), show="tree headings")
+        self.insp_tree.heading("#0", text="Field")
+        self.insp_tree.column("#0", width=260, stretch=False)
+        self.insp_tree.heading("source", text="Source")
+        self.insp_tree.column("source", width=110, stretch=False)
+        self.insp_tree.heading("value", text="Value")
+        self.insp_tree.column("value", width=620, stretch=True)
+        insp_vsb = ttk.Scrollbar(body, orient="vertical", command=self.insp_tree.yview)
+        self.insp_tree.configure(yscrollcommand=insp_vsb.set)
+        insp_vsb.pack(side="right", fill="y")
+        self.insp_tree.pack(side="left", fill="both", expand=True)
+        self.insp_tree.bind("<<TreeviewSelect>>", lambda _e: self._inspector_show_value())
+
+        # Full value of the selected field (long JSON/text stays readable).
+        value_frame = ttk.LabelFrame(tab, text="Selected field - full value")
+        value_frame.pack(fill="x", padx=8, pady=4)
+        self.insp_value_text = tk.Text(value_frame, height=5, wrap="word")
+        self.insp_value_text.pack(fill="x", padx=4, pady=4)
+
+        # PDF bar.
+        pdf_frame = ttk.Frame(tab)
+        pdf_frame.pack(fill="x", padx=8, pady=(0, 8))
+        ttk.Label(pdf_frame, text="PDF:").pack(side="left", padx=(2, 4))
+        self.insp_pdf_var = tk.StringVar(value="—")
+        ttk.Label(pdf_frame, textvariable=self.insp_pdf_var, foreground="#555"
+                  ).pack(side="left", padx=4, fill="x", expand=True)
+        self.insp_open_pdf_btn = ttk.Button(pdf_frame, text="Open PDF", state="disabled",
+                                            command=self._inspector_open_pdf)
+        self.insp_open_pdf_btn.pack(side="right", padx=4)
+        self.insp_locate_pdf_btn = ttk.Button(pdf_frame, text="Locate PDF in folder…",
+                                              state="disabled",
+                                              command=self._inspector_locate_pdf)
+        self.insp_locate_pdf_btn.pack(side="right", padx=4)
+
+        # Current lookup state: candidates + assembled view + full values + pdf.
+        self._insp_state = {"candidates": [], "values": {}, "pdf": None, "filename": ""}
+
+    def _inspector_pick_space(self):
+        folder = filedialog.askdirectory(title="Select the storage space folder for this document")
+        if not folder:
+            return
+        if not is_storage_space(folder):
+            messagebox.showerror("Document Inspector",
+                                 "That folder has no Processed_file_registry.xlsx - "
+                                 "it is not a storage space.")
+            return
+        self.insp_space_entry.delete(0, tk.END)
+        self.insp_space_entry.insert(0, folder)
+
+    def _inspector_search(self):
+        mode = self.insp_mode_var.get()
+        term = self.insp_search_entry.get().strip()
+        if not term:
+            messagebox.showerror("Document Inspector", "Enter a UUID, title or filename to search for.")
+            return
+
+        # Always start with the SQL database.
+        matches = [("sql", row) for row in lookup_sql_documents(self.store, mode, term)]
+
+        # Not synced to SQL -> ask for a storage space and search its registry.
+        if not matches:
+            space = self.insp_space_entry.get().strip()
+            if not space:
+                if messagebox.askyesno(
+                        "Document Inspector",
+                        f"No document matching this {mode.lower()} exists in the SQL "
+                        "database.\n\nChoose a storage space to search its "
+                        "processed-file registry instead?"):
+                    self._inspector_pick_space()
+                    space = self.insp_space_entry.get().strip()
+            if space:
+                if not is_storage_space(space):
+                    messagebox.showerror("Document Inspector",
+                                         "The fallback folder is not a storage space "
+                                         "(no Processed_file_registry.xlsx).")
+                    return
+                matches = [("registry", row)
+                           for row in find_registry_documents(space, mode, term)]
+
+        self._insp_state["candidates"] = matches
+        self.insp_candidates.delete(*self.insp_candidates.get_children())
+        if not matches:
+            self._inspector_clear_detail()
+            messagebox.showinfo("Document Inspector",
+                                f"No document matching this {mode.lower()} was found in the "
+                                "SQL database or the chosen storage space.")
+            return
+
+        for i, (where, row) in enumerate(matches):
+            uuid = row.get("uuid") or row.get("UUID") or ""
+            self.insp_candidates.insert(
+                "", "end", iid=str(i),
+                values=(uuid, str(row.get("title") or ""), str(row.get("filename") or ""),
+                        "SQL" if where == "sql" else "Registry"))
+        self.insp_candidates.selection_set("0")  # triggers _inspector_show_selected
+
+    def _inspector_show_selected(self):
+        sel = self.insp_candidates.selection()
+        if not sel:
+            return
+        try:
+            where, row = self._insp_state["candidates"][int(sel[0])]
+        except (IndexError, ValueError):
+            return
+
+        space = self.insp_space_entry.get().strip()
+        sql_row = row if where == "sql" else None
+        registry_row = row if where == "registry" else None
+        uuid = str(row.get("uuid") or row.get("UUID") or "").strip()
+
+        # SQL first; the space the document was synced from fills the gaps
+        # (fallback: the user-chosen space).
+        space_used = None
+        if sql_row:
+            source = str(sql_row.get("source_folder") or "").strip()
+            if is_storage_space(source):
+                space_used = source
+            elif is_storage_space(space):
+                space_used = space
+        elif is_storage_space(space):
+            space_used = space
+        payloads = load_space_payloads(space_used, uuid) if space_used else {}
+
+        view = assemble_document_view(sql_row=sql_row, registry_row=registry_row,
+                                      payloads=payloads)
+        self._inspector_fill_tree(view)
+
+        gaps = missing_after_merge(view)
+        if gaps and not space_used:
+            self.insp_value_text.delete("1.0", tk.END)
+            self.insp_value_text.insert(
+                "1.0", f"No data found for: {', '.join(gaps)}. The document's synced "
+                       "storage space was not reachable - choose the storage space "
+                       "above and search again to fill these from disk.")
+
+        # PDF: known locations first; recursive search stays available.
+        pdf = find_pdf(sql_row=sql_row, registry_row=registry_row,
+                       space_folder=space_used, payloads=payloads)
+        filename = document_filename(sql_row, registry_row)
+        self._insp_state.update(pdf=pdf, filename=filename)
+        if pdf:
+            self.insp_pdf_var.set(pdf)
+        elif filename:
+            self.insp_pdf_var.set(f"'{filename}' not found at its known locations - "
+                                  "use 'Locate PDF in folder…' to search a folder tree.")
+        else:
+            self.insp_pdf_var.set("No filename recorded for this document.")
+        self.insp_open_pdf_btn.configure(state="normal" if pdf else "disabled")
+        self.insp_locate_pdf_btn.configure(state="normal" if filename else "disabled")
+
+    def _inspector_fill_tree(self, view_rows):
+        self.insp_tree.delete(*self.insp_tree.get_children())
+        self._insp_state["values"] = {}
+        self.insp_value_text.delete("1.0", tk.END)
+        groups = {}
+        for group, field, value, source in view_rows:
+            if group not in groups:
+                groups[group] = self.insp_tree.insert("", "end", text=group, open=True)
+            preview = value if len(value) <= 200 else value[:200] + " …"
+            iid = self.insp_tree.insert(groups[group], "end", text=field,
+                                        values=(source, preview.replace("\n", " ")))
+            self._insp_state["values"][iid] = value
+
+    def _inspector_show_value(self):
+        sel = self.insp_tree.selection()
+        if not sel:
+            return
+        value = self._insp_state["values"].get(sel[0])
+        if value is None:
+            return
+        self.insp_value_text.delete("1.0", tk.END)
+        self.insp_value_text.insert("1.0", value)
+
+    def _inspector_clear_detail(self):
+        self.insp_tree.delete(*self.insp_tree.get_children())
+        self.insp_value_text.delete("1.0", tk.END)
+        self._insp_state.update(values={}, pdf=None, filename="")
+        self.insp_pdf_var.set("—")
+        self.insp_open_pdf_btn.configure(state="disabled")
+        self.insp_locate_pdf_btn.configure(state="disabled")
+
+    def _inspector_open_pdf(self):
+        pdf = self._insp_state.get("pdf")
+        if pdf and os.path.isfile(pdf):
+            open_path(pdf)
+        else:
+            messagebox.showerror("Document Inspector", "The PDF file is no longer at the recorded path.")
+
+    def _inspector_locate_pdf(self):
+        filename = self._insp_state.get("filename")
+        if not filename:
+            return
+        root = filedialog.askdirectory(
+            title=f"Choose the folder to search (recursively) for '{filename}'")
+        if not root:
+            return
+
+        holder = {"matches": []}
+
+        def work(progress, should_cancel):
+            progress(text=f"Searching for '{filename}' under {root}…")
+            holder["matches"] = search_pdf_recursive(
+                root, filename, should_cancel=should_cancel,
+                progress_callback=lambda scanned, d: progress(
+                    text=f"Scanned {scanned} folder(s)… {os.path.basename(d)}"))
+            return len(holder["matches"])
+
+        def on_success(_n):
+            matches = holder["matches"]
+            if not matches:
+                self.insp_pdf_var.set(f"'{filename}' was not found anywhere under {root}.")
+                return
+            chosen = matches[0] if len(matches) == 1 else self._inspector_pick_match(matches)
+            if not chosen:
+                return
+            self._insp_state["pdf"] = chosen
+            self.insp_pdf_var.set(chosen)
+            self.insp_open_pdf_btn.configure(state="normal")
+
+        self._run_threaded(work, "PDF search", result_word="found", on_success=on_success)
+
+    def _inspector_pick_match(self, matches):
+        """Modal chooser when the recursive search finds several copies."""
+        dialog = tk.Toplevel(self.container)
+        dialog.title("Multiple PDFs found - pick one")
+        dialog.transient(self.container)
+        dialog.grab_set()
+        ttk.Label(dialog, text="The filename exists in more than one place:").pack(padx=10, pady=6)
+        box = tk.Listbox(dialog, width=100, height=min(len(matches), 12))
+        for m in matches:
+            box.insert(tk.END, m)
+        box.selection_set(0)
+        box.pack(fill="both", expand=True, padx=10, pady=4)
+        chosen = {}
+
+        def use_selected():
+            sel = box.curselection()
+            if sel:
+                chosen["path"] = matches[sel[0]]
+            dialog.destroy()
+
+        ttk.Button(dialog, text="Use selected", command=use_selected).pack(pady=8)
+        self.container.wait_window(dialog)
+        return chosen.get("path")
 
     # ============================================================== Database
     def _build_database_tab(self):
@@ -1336,6 +1640,21 @@ class ReviewApp:
          "Example: tick two dated DOI_Metadata files + the Title_Classification files -> "
          "Merge -> merged_DOI_Metadata.xlsx and merged_Title_Classification.xlsx -> "
          "Check & update SQL -> 'Applied 15 update(s)'."),
+
+        ("Document Inspector (single-document deep dive)",
+         "Pick 'Search by' (UUID, Title or Filename), type the term and press Search. "
+         "The lookup ALWAYS starts in the SQL database; every value shown carries its "
+         "source. Fields that are empty in SQL are filled automatically from the storage "
+         "space the document was synced from (Results & Conclusion content only lives "
+         "there), each marked 'Storage space'. If the document was never synced to SQL "
+         "you are asked to choose a storage space and its Processed_file_registry.xlsx "
+         "is searched instead (rows marked 'Registry'). Multiple matches appear in the "
+         "Matches list - click one to inspect it; click any field to read its full value "
+         "in the pane below. The PDF is located from its known paths (relative_path, the "
+         "space's pdf_files folder); when it isn't there, 'Locate PDF in folder…' asks "
+         "for a folder and searches it and ALL nested subfolders for the recorded "
+         "filename (with progress + cancel), letting you pick when several copies "
+         "exist, then 'Open PDF' opens it."),
     ]
 
     def _build_help_tab(self):

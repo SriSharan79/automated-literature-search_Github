@@ -32,7 +32,15 @@ per-classifier `time.sleep(1.5)`s and the off-by-one window guard are gone.
 The standalone **Review tool** (`alr.ui.desktop.review_app`, launched from the top bar or
 `review_main.py`) additionally covers: storage-space detection (complete/partial), DB linking,
 DOI enrichment, **title + abstract classification** and **data evaluation** per space (each
-synced to SQL first), a raw DB browser, read-only SQL, a **column-picker Excel export**
+synced to SQL first), a **Document Inspector tab** (`common/document_inspector.py`) — search
+one document by **UUID, Title or Filename** (user-picked mode); the lookup **always starts in
+SQL** and every shown field carries its provenance; values empty in SQL are **auto-filled from
+the storage space the document was synced from** (Results & Conclusion content only exists
+there); a document never synced to SQL prompts for a storage space and is served from its
+`Processed_file_registry.xlsx` + analysis JSONs instead; the **PDF is located** from its known
+paths (`relative_path`, the space's `pdf_files/`), with a threaded **"Locate PDF in folder…"**
+recursive search (all nested subfolders, progress + cancel, chooser when several copies exist)
+and an Open button — a raw DB browser, read-only SQL, a **column-picker Excel export**
 (tick the database columns to export — optionally per storage space — no SQL needed),
 cross-space stats (incl.
 abstract-classified/evaluated counts), custom overviews (field-picker, filters, grouped charts,
