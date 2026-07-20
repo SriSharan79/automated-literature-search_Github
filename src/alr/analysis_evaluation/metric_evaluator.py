@@ -196,8 +196,44 @@ class _CosineContext:
         norms[norms == 0] = 1.0
         return mat / norms
 
+    @staticmethod
+    def current_model():
+        """Identity of the embedding model that produced the most recent
+        vectors (set by vectorize_strings, fallbacks included)."""
+        from alr.rag_builders.vector_db_updater import LAST_EMBEDDING_BACKEND
+        return LAST_EMBEDDING_BACKEND.get("model")
+
+    @staticmethod
+    def _index_conflict(bin_path, index):
+        """
+        Why an existing index must NOT be reused with the current embedding
+        backend, or None when it is safe. Vectors reconstructed from an index
+        built by a different model live in a different embedding space -
+        cosine against freshly embedded sentences would be silently
+        meaningless. Checks the .meta.json sidecar (model identity) and the
+        dimension against the current backend (the reference sentences were
+        just embedded, so LAST_EMBEDDING_BACKEND is the truth); a legacy
+        index without a sidecar is guarded by dimension alone.
+        """
+        from alr.rag_builders.vector_db_updater import (
+            LAST_EMBEDDING_BACKEND, read_index_metadata,
+        )
+        current = LAST_EMBEDDING_BACKEND
+        index_dim = int(getattr(index, "d", 0) or 0)
+        if current.get("dim") and index_dim and index_dim != int(current["dim"]):
+            return (f"index dim {index_dim} != current backend dim {current['dim']}")
+        meta = read_index_metadata(bin_path) or {}
+        if (meta.get("model") and current.get("model")
+                and meta["model"] != current["model"]):
+            return (f"index built with model '{meta['model']}' but the current "
+                    f"backend is '{current['model']}'")
+        return None
+
     def _section_index(self, section_key):
-        """Load (index, contents) for a section; create the index if missing."""
+        """Load (index, contents) for a section; create the index if missing.
+        An existing index built with a DIFFERENT embedding backend is left
+        untouched and not reused - items then fall back to direct embedding
+        so both sides of every cosine come from one embedding space."""
         if section_key in self._cache:
             return self._cache[section_key]
         result = None
@@ -218,6 +254,16 @@ class _CosineContext:
                         embeds = vectorize_strings([str(c) for c in contents])
                         index = create_faiss_index_cosine(embeds)
                         save_index_file(index, bin_path)
+                    else:
+                        conflict = self._index_conflict(bin_path, index)
+                        if conflict:
+                            # Never rebuild/overwrite the foreign index here -
+                            # the RAG query side may still depend on it.
+                            print(Fore.YELLOW
+                                  + f"⚠️ '{section_key}': {conflict}; embedding items "
+                                  + "directly with the current backend instead of "
+                                  + "reusing the index." )
+                            index = None
                     if index is not None and getattr(index, "ntotal", 0):
                         result = (index, [str(c) for c in contents])
             except Exception as e:
@@ -430,6 +476,7 @@ def _rows_from_detail_json(details_dir, uuid, sql_label, needed_cols):
                  for d in data.get("Reference sentences", [])}
     base = {"UUID": str(data.get("UUID") or uuid),
             "Title": data.get("Title"), "Filename": data.get("Filename")}
+    cosine_model = data.get("Cosine model") if "cosine_similarity" in needed_cols else None
     sections = {}
     for key, items in (data.get("Sections") or {}).items():
         rows = []
@@ -442,6 +489,8 @@ def _rows_from_detail_json(details_dir, uuid, sql_label, needed_cols):
                 b = best[col] or {}
                 row[col] = b.get("value")
                 row[f"{col}_reference"] = b.get("reference") or sentences.get(b.get("sentence"))
+            if cosine_model:
+                row["cosine_model"] = cosine_model
             rows.append(row)
         if rows:
             sections[key] = rows
@@ -494,6 +543,8 @@ def _rows_from_previous_workbook(current_overview_path, uuid, needed_cols):
                         return None
                     row[col] = _cell(rec, col)
                     row[f"{col}_reference"] = _cell(rec, f"{col}_reference")
+                if "cosine_model" in rec:
+                    row["cosine_model"] = _cell(rec, "cosine_model")
                 rows.append(row)
         else:
             # Old wide layout: one row per document, items packed as columns.
@@ -538,6 +589,7 @@ def _reuse_prior_metrics(cfg, kinds, uuid, db_path=None) -> bool:
 
     sums = {c: [0.0, 0] for c in needed_cols}
     base = None
+    cosine_model = None
     for key, rows in sections.items():
         for kind in kinds:
             kind_rows = []
@@ -546,12 +598,15 @@ def _reuse_prior_metrics(cfg, kinds, uuid, db_path=None) -> bool:
                 for col in _KIND_COLUMNS[kind]:
                     kind_row[col] = row.get(col)
                     kind_row[f"{col}_reference"] = row.get(f"{col}_reference")
+                if kind == "cosine" and row.get("cosine_model"):
+                    kind_row["cosine_model"] = row["cosine_model"]
                 kind_rows.append(kind_row)
             _write_section_rows(workbooks[kind], key, str(uuid), kind_rows)
         _write_section_rows(workbooks["overview"], key, str(uuid), rows)
         for row in rows:
             base = base or {"UUID": str(uuid), "Title": row.get("Title"),
                             "Filename": row.get("Filename")}
+            cosine_model = cosine_model or row.get("cosine_model")
             for col in needed_cols:
                 if isinstance(row.get(col), (int, float)):
                     sums[col][0] += float(row[col])
@@ -559,13 +614,18 @@ def _reuse_prior_metrics(cfg, kinds, uuid, db_path=None) -> bool:
 
     base = base or {"UUID": str(uuid), "Title": None, "Filename": None}
     averages = {col: (round(t / n, 4) if n else None) for col, (t, n) in sums.items()}
+    extras = {"cosine_model": cosine_model} if ("cosine" in kinds and cosine_model) else {}
     for kind in kinds:
         kind_avgs = {f"avg_{c}": averages.get(c) for c in _KIND_COLUMNS[kind]}
+        if kind == "cosine":
+            kind_avgs.update(extras)
         _write_section_sheet_flat(workbooks[kind], "Overview", {**base, **kind_avgs})
     _write_section_sheet_flat(workbooks["overview"], "Overview",
-                              {**base, **{f"avg_{c}": v for c, v in averages.items()}})
+                              {**base,
+                               **{f"avg_{c}": v for c, v in averages.items()},
+                               **extras})
     try:
-        _push_metrics_to_sql(uuid, averages, cfg["sql_label"], db_path)
+        _push_metrics_to_sql(uuid, {**averages, **extras}, cfg["sql_label"], db_path)
     except Exception as e:
         print(Fore.YELLOW + f"⚠️ Could not push reused metrics to SQL for {uuid}: {e}")
     return True
@@ -701,9 +761,14 @@ def evaluate_space_metrics(storage_path, kinds, target="abstract", db_path=None,
             sentences = _split_sentences(reference) or [reference.strip()]
 
             sent_mat = None
+            cosine_model = None
             if cosine_ctx is not None:
                 try:
                     sent_mat = cosine_ctx.embed_many(sentences)
+                    # Provenance: which embedding model produced these cosines.
+                    # The index-conflict guard ensures item vectors come from
+                    # the SAME backend, so one label covers the document.
+                    cosine_model = cosine_ctx.current_model()
                 except Exception as e:
                     print(Fore.YELLOW + f"⚠️ Reference sentence embedding failed for {uuid}: {e}")
 
@@ -746,6 +811,9 @@ def evaluate_space_metrics(storage_path, kinds, target="abstract", db_path=None,
                             if isinstance(val, (int, float)):
                                 sums[col][0] += float(val)
                                 sums[col][1] += 1
+                    if "cosine" in kinds and cosine_model:
+                        kind_row["cosine"]["cosine_model"] = cosine_model
+                        combined_row["cosine_model"] = cosine_model
                     for kind in kinds:
                         kind_rows[kind].append(kind_row[kind])
                     combined_rows.append(combined_row)
@@ -767,6 +835,7 @@ def evaluate_space_metrics(storage_path, kinds, target="abstract", db_path=None,
                 **base,
                 "Target": target,
                 "Metric kinds": sorted(kinds),
+                **({"Cosine model": cosine_model} if cosine_model else {}),
                 "Reference sentences": [
                     {"Sentence": i, "Text": s} for i, s in enumerate(sentences, 1)
                 ],
@@ -774,16 +843,21 @@ def evaluate_space_metrics(storage_path, kinds, target="abstract", db_path=None,
             })
 
             averages = {col: (round(t / n, 4) if n else None) for col, (t, n) in sums.items()}
+            extras = {"cosine_model": cosine_model} if ("cosine" in kinds and cosine_model) else {}
             # Per-kind Overview sheets carry that kind's averages; the combined
             # overview workbook's Overview sheet carries all of them.
             for kind in kinds:
                 kind_avgs = {f"avg_{c}": averages.get(c) for c in _KIND_COLUMNS[kind]}
+                if kind == "cosine":
+                    kind_avgs.update(extras)
                 _write_section_sheet_flat(workbooks[kind], "Overview", {**base, **kind_avgs})
             _write_section_sheet_flat(workbooks["overview"], "Overview",
-                                      {**base, **{f"avg_{c}": v for c, v in averages.items()}})
+                                      {**base,
+                                       **{f"avg_{c}": v for c, v in averages.items()},
+                                       **extras})
 
             try:
-                _push_metrics_to_sql(uuid, averages, cfg["sql_label"], db_path)
+                _push_metrics_to_sql(uuid, {**averages, **extras}, cfg["sql_label"], db_path)
             except Exception as e:
                 print(Fore.YELLOW + f"⚠️ Could not push metrics to SQL for {uuid}: {e}")
 
