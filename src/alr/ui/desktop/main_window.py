@@ -1048,6 +1048,12 @@ class AutomatedLiteratureUI(tk.Tk):
         self.query_topk_var = tk.StringVar(value="50")
         ttk.Spinbox(topk_frame, from_=1, to=1000, increment=1, width=6,
                     textvariable=self.query_topk_var).pack(side="left", padx=5)
+        # File harvesting is opt-in: by default nothing is copied next to the
+        # report; the overview is enriched straight from the space's JSONs.
+        self.query_harvest_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(topk_frame,
+                        text="Harvest matched files (copy JSONs into the query folder)",
+                        variable=self.query_harvest_var).pack(side="left", padx=15)
 
         btn_run_query = ttk.Button(v_frame, text="Generate Query Report", command=self._run_visualization_query_action)
         btn_run_query.pack(pady=20, ipadx=10, ipady=5)
@@ -1405,14 +1411,21 @@ class AutomatedLiteratureUI(tk.Tk):
         print(f"[Query Scope] Sections: {', '.join(query_sections)}")
         print(f"[Query Report] Attributes included: {', '.join(enrich_keys)}")
 
-        # The query itself (vector search + report building + JSON harvest) runs
+        # File harvesting is the user's checkbox choice (off by default: the
+        # overview is enriched from the space's JSONs without copying files).
+        harvest_files = bool(self.query_harvest_var.get())
+        if harvest_files:
+            print("[Query Report] Harvest ticked: matched JSONs will be copied into the query folder.")
+
+        # The query itself (vector search + report building + enrichment) runs
         # on the worker thread with a determinate bar: one tick per searched
-        # section plus the overview and harvest steps.
+        # section plus the overview and enrich/harvest steps.
         def work(progress, should_cancel):
             progress(text=f"Querying {len(query_sections)} section(s)…")
             generate_query_report(
                 [query_text], storage_choice, top_k=top_k,
                 section_keys=query_sections, enrich_keys=enrich_keys,
+                harvest_files=harvest_files,
                 progress_callback=lambda d, t, txt: progress(done=d, total=t, text=txt))
             print("Query Generation Suite Logging Executed successfully.")
             return len(query_sections)

@@ -145,7 +145,8 @@ def generate_query_report_RA_KC(query_list, Storage_path, top_k: int = 20):
 
 
 def generate_query_report(query_list, storage_path, search_root='/remotedata/U/DLR+kata_du/ALR DATA', top_k: int = 50,
-                          section_keys=None, enrich_keys=None, progress_callback=None):
+                          section_keys=None, enrich_keys=None, harvest_files=False,
+                          progress_callback=None):
     """
     section_keys: optional iterable of section keys to query (any mix of
     abstract, Introduction and Results & Conclusion attributes — see
@@ -157,9 +158,15 @@ def generate_query_report(query_list, storage_path, search_root='/remotedata/U/D
     overview report (independent of which sections were searched). Defaults to
     the abstract attributes.
 
+    harvest_files: file harvesting is a USER CHOICE and off by default — no
+    PDFs or analysis JSONs are copied into the query folder; the overview is
+    enriched by reading the JSONs directly from the storage space's analysis
+    folders. Pass True to also copy the matched JSONs next to the report
+    (the old behaviour, via harvest_query_resources).
+
     progress_callback(done, total, text): optional; called after every unit of
     work — one per section searched plus the overview aggregation and the
-    resource harvest of each query — so a UI can drive a determinate bar.
+    enrich/harvest step of each query — so a UI can drive a determinate bar.
     """
     print(f"{Fore.CYAN}{Style.BRIGHT}--- Initializing Report Generation for {len(query_list)} queries ---")
 
@@ -198,10 +205,21 @@ def generate_query_report(query_list, storage_path, search_root='/remotedata/U/D
         print(f"{Fore.GREEN}   - Overview saved: {overview_path}")
         tick("Aggregated the overview report")
 
-        # 3. Harvest associated files
-        print(f"{Fore.CYAN} > [Step 3] Harvesting associated resources (PDFs/JSONs)...")
-        harvest_query_resources(overview_path, search_root, vdb, mf, enrich_keys=enrich_keys)
-        tick("Harvested analysis JSONs and enriched the report")
+        # 3. Enrich the overview; copying files next to the report is the
+        #    user's choice (harvest_files) and off by default.
+        if harvest_files:
+            print(f"{Fore.CYAN} > [Step 3] Harvesting associated resources (PDFs/JSONs)...")
+            harvest_query_resources(overview_path, search_root, vdb, mf, enrich_keys=enrich_keys)
+            tick("Harvested analysis JSONs and enriched the report")
+        else:
+            print(f"{Fore.CYAN} > [Step 3] No file harvest (user choice) — enriching the "
+                  "overview straight from the storage space's analysis JSONs...")
+            enrich_overview_with_abstracts(overview_path, {
+                "abstract": mf.AD_Abstract,
+                "intro": mf.AD_Intro,
+                "rescon": mf.AD_ResCon,
+            }, enrich_keys=enrich_keys)
+            tick("Enriched the report from the storage space")
 
         print(f"{Fore.GREEN}{Style.BRIGHT}Workflow complete for: '{query}'")
         print(f"{Fore.LIGHTBLACK_EX}Path: {vdb.query_storage}")
