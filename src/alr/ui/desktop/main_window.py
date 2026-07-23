@@ -327,7 +327,8 @@ class AutomatedLiteratureUI(tk.Tk):
                    command=lambda: self._remove_selected_rows(self.phrase_tree)).pack(side="left", padx=5, pady=5)
 
         self.phrase_tree = self._make_check_table(
-            keyword_frame, [("rank", "Rank", 60), ("phrase", "Search Phrase", 460)], height=8)
+            keyword_frame, [("rank", "Rank", 60), ("phrase", "Search Phrase", 460)],
+            height=8, numeric_sort=("rank",))
 
         # Publication-search backend: the chosen service is tried first, the
         # other one is kept as the automatic fallback (collect_publications).
@@ -425,13 +426,16 @@ class AutomatedLiteratureUI(tk.Tk):
     _CHECKED = "☑"    # ballot box with check
     _UNCHECKED = "☐"  # empty ballot box
 
-    def _make_check_table(self, parent, columns, height=6):
+    def _make_check_table(self, parent, columns, height=6, numeric_sort=()):
         """
         Build a Treeview whose first column is a click-to-toggle checkbox,
         followed by ``columns`` = [(id, heading, width), ...]. Text columns
         are double-click editable in place. A "Select all" checkbutton above
         the table toggles every row and mirrors the per-row state
-        (``tree.select_all_var``). Returns the tree.
+        (``tree.select_all_var``). Column ids in ``numeric_sort`` get a
+        clickable heading that sorts rows by that column's numeric value
+        (ascending, then toggling to descending); non-numeric cells such as the
+        manual-row "-" always sort to the bottom. Returns the tree.
         """
         bar = ttk.Frame(parent)
         bar.pack(fill="x", padx=5)
@@ -443,8 +447,13 @@ class AutomatedLiteratureUI(tk.Tk):
         tree = ttk.Treeview(holder, columns=col_ids, show="headings", height=height)
         tree.heading("use", text="Use")
         tree.column("use", width=45, anchor="center", stretch=False)
+        tree._sort_state = {}
         for cid, heading, width in columns:
-            tree.heading(cid, text=heading)
+            if cid in numeric_sort:
+                tree.heading(cid, text=f"{heading} ⇅",
+                             command=lambda c=cid: self._sort_numeric_column(tree, c))
+            else:
+                tree.heading(cid, text=heading)
             tree.column(cid, width=width, anchor="w")
 
         vbar = ttk.Scrollbar(holder, orient="vertical", command=tree.yview)
@@ -470,6 +479,29 @@ class AutomatedLiteratureUI(tk.Tk):
         items = tree.get_children()
         tree.select_all_var.set(
             bool(items) and all(tree.set(i, "use") == self._CHECKED for i in items))
+
+    def _sort_numeric_column(self, tree, column):
+        """
+        Reorder the rows by ``column``'s numeric value, toggling ascending /
+        descending on each heading click. Cells that aren't numbers (the
+        manual-row "-") always sink to the bottom regardless of direction.
+        """
+        descending = not tree._sort_state.get(column, True)  # first click -> ascending
+        tree._sort_state[column] = descending
+
+        def key(item):
+            raw = tree.set(item, column)
+            try:
+                return (0, float(raw))
+            except (TypeError, ValueError):
+                return (1, 0.0)  # non-numeric -> always last
+
+        ordered = sorted(tree.get_children(), key=key, reverse=descending)
+        # Keep non-numeric rows pinned to the bottom in both directions.
+        numeric = [i for i in ordered if key(i)[0] == 0]
+        others = [i for i in tree.get_children() if key(i)[0] == 1]
+        for pos, item in enumerate(numeric + others):
+            tree.move(item, "", pos)
 
     def _tree_toggle_check(self, tree, event):
         if tree.identify_region(event.x, event.y) != "cell":
