@@ -261,37 +261,73 @@ class AutomatedLiteratureUI(tk.Tk):
         btn_derive_scope = ttk.Button(scope_frame, text="Generate Scope via LLM", command=self._generate_scope_action)
         btn_derive_scope.pack(side="left", padx=5, pady=5)
 
-        self.scope_entry = ttk.Entry(scope_frame, width=65)
+        self.scope_entry = ttk.Entry(scope_frame, width=55)
         self.scope_entry.pack(side="left", padx=5, fill="x", expand=True)
 
-        # Keywords Control Area
+        # The scope is optional from here on: when unticked (or blank) the
+        # keyword suggestion and phrase generation run without it.
+        self.use_scope_var = tk.BooleanVar(value=True)
+        ttk.Checkbutton(scope_frame, text="Use scope in next steps",
+                        variable=self.use_scope_var).pack(side="left", padx=5, pady=5)
+
+        # Keywords Control Area: an in-tab check table replaces the old
+        # "Refine LLM Suggested Keywords" pop-up. Rows come from the LLM
+        # suggestion button and/or manual entry; only checked rows are
+        # processed into search phrases.
         keyword_frame = tk.LabelFrame(tab, text="Keywords & Search Phrase Automation")
         keyword_frame.pack(fill="both", expand=True, padx=10, pady=5)
 
         kw_action_frame = ttk.Frame(keyword_frame)
         kw_action_frame.pack(fill="x")
 
-        self.suggest_kw_var = tk.BooleanVar(value=True)
-        ttk.Checkbutton(kw_action_frame, text="Suggest keywords using LLM?", variable=self.suggest_kw_var).pack(side="left", padx=5, pady=5)
+        ttk.Button(kw_action_frame, text="Suggest Keywords via LLM",
+                   command=self._suggest_keywords_action).pack(side="left", padx=5, pady=5)
+        self.kw_add_entry = ttk.Entry(kw_action_frame, width=32)
+        self.kw_add_entry.pack(side="left", padx=(15, 2), pady=5)
+        ttk.Button(kw_action_frame, text="Add",
+                   command=self._add_manual_keywords).pack(side="left", padx=2, pady=5)
+        ttk.Button(kw_action_frame, text="Remove Selected",
+                   command=lambda: self._remove_selected_rows(self.kw_tree)).pack(side="left", padx=5, pady=5)
 
-        btn_gen_kw = ttk.Button(kw_action_frame, text="Process Keywords", command=self._process_keywords_action)
-        btn_gen_kw.pack(side="left", padx=5, pady=5)
+        self.kw_tree = self._make_check_table(
+            keyword_frame, [("keyword", "Keyword", 520)], height=6)
 
-        # Phrase settings 
-        ttk.Label(kw_action_frame, text="Top Phrases count:").pack(side="left", padx=20, pady=5)
-        self.phrases_count_spin = ttk.Spinbox(kw_action_frame, from_=1, to=100, width=5)
+        # Phrase generation trigger + settings
+        proc_frame = ttk.Frame(keyword_frame)
+        proc_frame.pack(fill="x", pady=(6, 0))
+        ttk.Button(proc_frame, text="Process Selected Keywords → Search Phrases",
+                   command=self._process_keywords_action).pack(side="left", padx=5, pady=5)
+        ttk.Label(proc_frame, text="Top Phrases count:").pack(side="left", padx=20, pady=5)
+        self.phrases_count_spin = ttk.Spinbox(proc_frame, from_=1, to=100, width=5,
+                                              command=self._refresh_phrase_ranks)
         self.phrases_count_spin.set(10)
         self.phrases_count_spin.pack(side="left", pady=5)
 
-        # Ranking Framework selection
+        # Ranking Framework selection (changing it re-ranks the phrase table)
         rank_frame = ttk.Frame(keyword_frame)
         rank_frame.pack(fill="x", pady=2)
         ttk.Label(rank_frame, text="Phrases ranking strategy:").pack(side="left", padx=5)
         self.ranking_var = tk.StringVar(value="1")
-        ttk.Radiobutton(rank_frame, text="1. Research Area Basis", variable=self.ranking_var, value="1").pack(side="left", padx=5)
-        ttk.Radiobutton(rank_frame, text="2. Research Question Basis", variable=self.ranking_var, value="2").pack(side="left", padx=5)
-        ttk.Radiobutton(rank_frame, text="3. Comb. RA + RQ", variable=self.ranking_var, value="3").pack(side="left", padx=5)
-        ttk.Radiobutton(rank_frame, text="4. Total Rank (All Inputs)", variable=self.ranking_var, value="4").pack(side="left", padx=5)
+        ttk.Radiobutton(rank_frame, text="1. Research Area Basis", variable=self.ranking_var, value="1", command=self._refresh_phrase_ranks).pack(side="left", padx=5)
+        ttk.Radiobutton(rank_frame, text="2. Research Question Basis", variable=self.ranking_var, value="2", command=self._refresh_phrase_ranks).pack(side="left", padx=5)
+        ttk.Radiobutton(rank_frame, text="3. Comb. RA + RQ", variable=self.ranking_var, value="3", command=self._refresh_phrase_ranks).pack(side="left", padx=5)
+        ttk.Radiobutton(rank_frame, text="4. Total Rank (All Inputs)", variable=self.ranking_var, value="4", command=self._refresh_phrase_ranks).pack(side="left", padx=5)
+
+        # Search-phrase check table: filled by phrase generation (ranked by the
+        # selected strategy, top-N pre-checked) and/or manual entry (rank "-").
+        # The publication search runs over the checked rows.
+        sp_action_frame = ttk.Frame(keyword_frame)
+        sp_action_frame.pack(fill="x")
+        ttk.Label(sp_action_frame, text="Search phrases:").pack(side="left", padx=5, pady=5)
+        self.sp_add_entry = ttk.Entry(sp_action_frame, width=32)
+        self.sp_add_entry.pack(side="left", padx=(15, 2), pady=5)
+        ttk.Button(sp_action_frame, text="Add",
+                   command=self._add_manual_phrases).pack(side="left", padx=2, pady=5)
+        ttk.Button(sp_action_frame, text="Remove Selected",
+                   command=lambda: self._remove_selected_rows(self.phrase_tree)).pack(side="left", padx=5, pady=5)
+
+        self.phrase_tree = self._make_check_table(
+            keyword_frame, [("rank", "Rank", 60), ("phrase", "Search Phrase", 460)], height=8)
 
         # Publication-search backend: the chosen service is tried first, the
         # other one is kept as the automatic fallback (collect_publications).
@@ -322,36 +358,52 @@ class AutomatedLiteratureUI(tk.Tk):
             self.collect_path_entry.configure(state="disabled")
             self.collect_path_btn.configure(state="disabled")
 
+    def _ensure_collection_manager(self):
+        """
+        Make sure ``self.CM`` exists and reflects the current RA/RQ/service
+        entries. The scope step used to be the only place the manager was
+        created; now that the scope is optional, every collection action goes
+        through here instead. Returns True when the manager is ready.
+        """
+        ra = self.ra_entry.get().strip()
+        rq = self.rq_entry.get().strip()
+        if not ra or not rq:
+            messagebox.showerror("Error", "Please clarify both Research Area and Research Question items first.")
+            return False
+
+        if self.CM is None:
+            if self.custom_path_var_col.get() and self.collect_path_entry.get().strip():
+                clean_path = clean_folder_path(self.collect_path_entry.get().strip())
+                self.CM = CollectionManager(clean_path)
+            else:
+                self.CM = CollectionManager()
+            # Handle ID assignment (once per manager)
+            topic_id = generate_unique_id(ra, extract_column(self.CM.keywords_list_log_path, 'UUID'))
+            self.CM.update_topic_files(topic_id)
+
+        self.CM.update_Research_Area(ra)
+        self.CM.update_Research_Question(rq)
+        self.CM.update_llm_service(self.llm_choice_col.get())
+        return True
+
+    def _current_scope(self):
+        """The refined scope if the user chose to use it, else ''. """
+        if not self.use_scope_var.get():
+            return ""
+        return self.scope_entry.get().strip()
+
     def _generate_scope_action(self):
         # Move the heavy imports here!
-        from alr.collection.collection_system_prompts import SCOPE_DERIVATOR_PROMPT
         from alr.common.llm_utils import llm_call
-        
+
         ra = self.ra_entry.get().strip()
         rq = self.rq_entry.get().strip()
         service = self.llm_choice_col.get()
 
-        if not ra or not rq:
-            messagebox.showerror("Error", "Please clarify both Research Area and Research Question items first.")
+        if not self._ensure_collection_manager():
             return
-
         if not self._ensure_api_key(service):
             return
-
-        # Setup Collection Manager Object
-        if self.custom_path_var_col.get() and self.collect_path_entry.get().strip():
-            clean_path = clean_folder_path(self.collect_path_entry.get().strip())
-            self.CM = CollectionManager(clean_path)
-        else:
-            self.CM = CollectionManager()
-
-        self.CM.update_Research_Area(ra)
-        self.CM.update_Research_Question(rq)
-        self.CM.update_llm_service(service)
-
-        # Handle ID assignment
-        topic_id = generate_unique_id(ra, extract_column(self.CM.keywords_list_log_path, 'UUID'))
-        self.CM.update_topic_files(topic_id)
 
         # The LLM call runs on a worker thread so the UI stays responsive; the
         # derived scope is written back to the entry on the main thread.
@@ -368,54 +420,173 @@ class AutomatedLiteratureUI(tk.Tk):
 
         self._run_threaded(work, "Derive Scope", on_success=on_success)
 
-    def _process_keywords_action(self):
-        from alr.common.llm_utils import llm_call
-        if not self.CM:
-            messagebox.showerror("Error", "Please initialize the scope config system parameters using 'Generate Scope' first.")
-            return
+    # ---- Check-table helpers (keywords + search phrases) -----------------
 
-        # Explicitly pull any structural adjustments user may have typed directly into the scope entry line
-        refined_scope = self.scope_entry.get().strip()
-        self.CM.update_Research_Scope(refined_scope)
+    _CHECKED = "☑"    # ballot box with check
+    _UNCHECKED = "☐"  # empty ballot box
+
+    def _make_check_table(self, parent, columns, height=6):
+        """
+        Build a Treeview whose first column is a click-to-toggle checkbox,
+        followed by ``columns`` = [(id, heading, width), ...]. Text columns
+        are double-click editable in place. Returns the tree.
+        """
+        holder = ttk.Frame(parent)
+        holder.pack(fill="both", expand=True, padx=5, pady=(0, 5))
+
+        col_ids = ["use"] + [c[0] for c in columns]
+        tree = ttk.Treeview(holder, columns=col_ids, show="headings", height=height)
+        tree.heading("use", text="Use")
+        tree.column("use", width=45, anchor="center", stretch=False)
+        for cid, heading, width in columns:
+            tree.heading(cid, text=heading)
+            tree.column(cid, width=width, anchor="w")
+
+        vbar = ttk.Scrollbar(holder, orient="vertical", command=tree.yview)
+        tree.configure(yscrollcommand=vbar.set)
+        tree.pack(side="left", fill="both", expand=True)
+        vbar.pack(side="right", fill="y")
+
+        tree.bind("<Button-1>", lambda e: self._tree_toggle_check(tree, e))
+        tree.bind("<Double-1>", lambda e: self._tree_edit_cell(tree, e))
+        return tree
+
+    def _tree_toggle_check(self, tree, event):
+        if tree.identify_region(event.x, event.y) != "cell":
+            return
+        if tree.identify_column(event.x) != "#1":
+            return
+        item = tree.identify_row(event.y)
+        if item:
+            current = tree.set(item, "use")
+            tree.set(item, "use", self._UNCHECKED if current == self._CHECKED else self._CHECKED)
+
+    def _tree_edit_cell(self, tree, event):
+        """In-place editing of the text column (last column) on double-click."""
+        if tree.identify_region(event.x, event.y) != "cell":
+            return
+        col_id = tree.identify_column(event.x)
+        text_col = tree["columns"][-1]
+        if col_id != f"#{len(tree['columns'])}":
+            return
+        item = tree.identify_row(event.y)
+        if not item:
+            return
+        x, y, w, h = tree.bbox(item, col_id)
+        entry = ttk.Entry(tree)
+        entry.insert(0, tree.set(item, text_col))
+        entry.select_range(0, tk.END)
+        entry.focus_set()
+        entry.place(x=x, y=y, width=w, height=h)
+
+        def commit(_event=None):
+            if entry.winfo_exists():
+                new_text = entry.get().strip()
+                if new_text:
+                    tree.set(item, text_col, new_text)
+                entry.destroy()
+
+        entry.bind("<Return>", commit)
+        entry.bind("<FocusOut>", commit)
+        entry.bind("<Escape>", lambda e: entry.destroy())
+
+    def _checked_rows(self, tree, column):
+        """Values of ``column`` for every checked row, in table order."""
+        return [tree.set(item, column)
+                for item in tree.get_children()
+                if tree.set(item, "use") == self._CHECKED]
+
+    def _remove_selected_rows(self, tree):
+        for item in tree.selection():
+            tree.delete(item)
+
+    def _add_manual_keywords(self):
+        raw = self.kw_add_entry.get().strip()
+        if not raw:
+            return
+        existing = {self.kw_tree.set(i, "keyword").lower() for i in self.kw_tree.get_children()}
+        for kw in (part.strip() for part in raw.split(",")):
+            if kw and kw.lower() not in existing:
+                self.kw_tree.insert("", "end", values=(self._CHECKED, kw))
+                existing.add(kw.lower())
+        self.kw_add_entry.delete(0, tk.END)
+
+    def _add_manual_phrases(self):
+        raw = self.sp_add_entry.get().strip()
+        if not raw:
+            return
+        existing = {self.phrase_tree.set(i, "phrase").lower() for i in self.phrase_tree.get_children()}
+        for phrase in (part.strip() for part in raw.split(",")):
+            if phrase and phrase.lower() not in existing:
+                self.phrase_tree.insert("", "end", values=(self._CHECKED, "-", phrase))
+                existing.add(phrase.lower())
+        self.sp_add_entry.delete(0, tk.END)
+        if self.CM is not None:
+            self.btn_scholarly.configure(state="normal")
+
+    # ---- Keyword suggestion + phrase generation --------------------------
+
+    def _suggest_keywords_action(self):
+        """LLM keyword suggestions land directly in the keyword table
+        (checked), replacing the old refinement pop-up."""
+        from alr.common.llm_utils import llm_call
 
         service = self.llm_choice_col.get()
+        if not self._ensure_collection_manager():
+            return
         if not self._ensure_api_key(service):
             return
-        suggest = self.suggest_kw_var.get()
 
-        # LLM suggestion + phrase processing run on the worker thread; the
-        # keyword-refinement pop-up / manual-input dialog are Tk modals, so the
-        # worker hands them to the main thread via the ask() round-trip.
-        def work(progress, should_cancel, ask):
-            keywords_list = []
-            if suggest:
-                progress(text="Requesting keyword suggestions from the LLM…")
-                kw_prompt_inputs = f"\n1. Research Area/Topic: {self.CM.Research_Area}\n2. Key Research Questions/Gaps: {self.CM.Research_Question}\n3. Refined Scope: To {refined_scope}"
-                raw_keywords = llm_call(kw_prompt_inputs, KEYWORD_GENERATOR_PROMPT, service)
-                suggested = Proccess_string_to_list(raw_keywords)
-                progress(text="Waiting for the keyword selection…")
-                keywords_list = ask(lambda app: app._prompt_keyword_indices_selection(suggested))
-            else:
-                progress(text="Waiting for the manual keyword input…")
+        ra = self.CM.Research_Area
+        rq = self.CM.Research_Question
+        refined_scope = self._current_scope()
 
-                def manual(app):
-                    manual_input = filedialog.SimpleDialog(
-                        app, text="Enter comma-separated keywords:", title="Manual Keywords Choice Input")
-                    user_string = manual_input.go()
-                    if user_string:
-                        return [item.strip() for item in user_string.split(",") if item.strip()]
-                    return []
-                keywords_list = ask(manual)
+        def work(progress, should_cancel):
+            progress(text="Requesting keyword suggestions from the LLM…")
+            kw_prompt_inputs = f"\n1. Research Area/Topic: {ra}\n2. Key Research Questions/Gaps: {rq}"
+            if refined_scope:
+                kw_prompt_inputs += f"\n3. Refined Scope: To {refined_scope}"
+            raw_keywords = llm_call(kw_prompt_inputs, KEYWORD_GENERATOR_PROMPT, service)
+            return Proccess_string_to_list(raw_keywords)
 
-            if not keywords_list:
-                print("Action halted or keywords context returned blank frame arrays.")
-                return 0
+        def on_success(suggested):
+            existing = {self.kw_tree.set(i, "keyword").lower() for i in self.kw_tree.get_children()}
+            added = 0
+            for kw in suggested or []:
+                kw = str(kw).strip()
+                if kw and kw.lower() not in existing:
+                    self.kw_tree.insert("", "end", values=(self._CHECKED, kw))
+                    existing.add(kw.lower())
+                    added += 1
+            print(f"[Keywords] {added} LLM suggestion(s) added to the table. "
+                  f"Untick anything you don't want before processing.")
 
-            progress(text=f"Processing {len(keywords_list)} keyword(s) with the scope…")
+        self._run_threaded(work, "Suggest Keywords", on_success=on_success)
+
+    def _process_keywords_action(self):
+        keywords_list = self._checked_rows(self.kw_tree, "keyword")
+        if not keywords_list:
+            messagebox.showerror("Error", "Check at least one keyword in the table first "
+                                          "(suggest via LLM or add manually).")
+            return
+
+        service = self.llm_choice_col.get()
+        if not self._ensure_collection_manager():
+            return
+        if not self._ensure_api_key(service):
+            return
+
+        refined_scope = self._current_scope()
+        self.CM.update_Research_Scope(refined_scope)
+        if not refined_scope:
+            print("[Keywords] Processing without a refined scope (scope unused or blank).")
+
+        def work(progress, should_cancel):
+            progress(text=f"Processing {len(keywords_list)} keyword(s) into search phrases…")
             self.CM.update_Keyword_list(keywords_list)
             # The end-of-pass cleanup prunes the manager's empty sub-folders, so
-            # the tree built when the scope was derived may be gone by now.
-            # Re-create it before anything writes a JSON/Excel into it.
+            # the tree built earlier may be gone by now. Re-create it before
+            # anything writes a JSON/Excel into it.
             self.CM.ensure_folders()
             log_Keyword_Json(self.CM)
 
@@ -441,46 +612,53 @@ class AutomatedLiteratureUI(tk.Tk):
             if count:
                 self.btn_scholarly.configure(state="normal")
                 self.btn_save_excel.configure(state="normal")
+                self._refresh_phrase_table()
 
         self._run_threaded(work, "Process Keywords", on_success=on_success)
 
-    def _prompt_keyword_indices_selection(self, original_list):
-        # Mini secondary functional frame pop-up window
-        dialog = tk.Toplevel(self)
-        dialog.title("Refine LLM Suggested Keywords")
-        dialog.geometry("500x450")
-        dialog.grab_set() # Modal interaction enforcement
+    def _refresh_phrase_ranks(self):
+        """Radio/spinbox hook: re-rank the phrase table when generated phrases
+        are present."""
+        if self.CM is not None and Path(self.CM.search_phrase_list_excel).exists():
+            self._refresh_phrase_table()
 
-        ttk.Label(dialog, text="LLM Suggested keywords list (Check items to KEEP):", font=("Arial", 10, "bold")).pack(pady=5)
+    def _refresh_phrase_table(self):
+        """
+        Fill the search-phrase table from the generated phrase workbook, sorted
+        by the selected ranking strategy; the top-N (phrase count spinbox) rows
+        come pre-checked. Manually added rows (rank '-') keep their check state
+        and stay at the bottom.
+        """
+        strategy_map = {"1": "RA_Rank", "2": "RQ_Rank", "3": "RA+RQ_Rank", "4": "TOTAL_Rank"}
+        rank_col = strategy_map.get(self.ranking_var.get(), "TOTAL_Rank")
+        try:
+            num_phrases = int(self.phrases_count_spin.get())
+        except (tk.TclError, ValueError):
+            num_phrases = 10
 
-        canvas = tk.Canvas(dialog)
-        scrollbar = ttk.Scrollbar(dialog, orient="vertical", command=canvas.yview)
-        scrollable_frame = ttk.Frame(canvas)
+        excel_path = Path(self.CM.search_phrase_list_excel)
+        phrases = extract_column(excel_path, "Phrase") or []
+        ranks = extract_column(excel_path, rank_col) or []
+        ranked = sorted(zip(phrases, ranks), key=lambda pr: pr[1])
 
-        scrollable_frame.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
-        canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
-        canvas.configure(yscrollcommand=scrollbar.set)
+        # Remember the manual rows before clearing; generated rows are
+        # re-checked deterministically (top-N by the chosen rank).
+        manual_rows = []
+        for item in self.phrase_tree.get_children():
+            if self.phrase_tree.set(item, "rank") == "-":
+                manual_rows.append((self.phrase_tree.set(item, "phrase"),
+                                    self.phrase_tree.set(item, "use") == self._CHECKED))
+            self.phrase_tree.delete(item)
 
-        checkbox_vars = []
-        for index, item in enumerate(original_list):
-            var = tk.BooleanVar(value=True) # Default all to selected state
-            checkbox_vars.append((var, item))
-            chk = ttk.Checkbutton(scrollable_frame, text=f"[{index}] {item}", variable=var)
-            chk.pack(anchor="w", padx=10, pady=2)
+        for idx, (phrase, rank) in enumerate(ranked):
+            mark = self._CHECKED if idx < num_phrases else self._UNCHECKED
+            self.phrase_tree.insert("", "end", values=(mark, rank, phrase))
+        for phrase, checked in manual_rows:
+            mark = self._CHECKED if checked else self._UNCHECKED
+            self.phrase_tree.insert("", "end", values=(mark, "-", phrase))
 
-        canvas.pack(side="left", fill="both", expand=True, padx=5, pady=5)
-        scrollbar.pack(side="right", fill="y")
-
-        final_keywords = []
-
-        def _on_confirm():
-            nonlocal final_keywords
-            final_keywords = [text for var, text in checkbox_vars if var.get()]
-            dialog.destroy()
-
-        ttk.Button(dialog, text="Confirm Selected List Strategy", command=_on_confirm).pack(pady=10)
-        self.wait_window(dialog)
-        return final_keywords
+        print(f"[Phrases] Table ranked by {rank_col}; top {min(num_phrases, len(ranked))} "
+              f"of {len(ranked)} generated phrase(s) pre-checked.")
 
     def _execute_search_strategy(self, choice_mode):
         strategy_map = {"1": "RA_Rank", "2": "RQ_Rank", "3": "RA+RQ_Rank", "4": "TOTAL_Rank"}
@@ -491,7 +669,20 @@ class AutomatedLiteratureUI(tk.Tk):
         phrase_excel_file = Path(self.CM.search_phrase_list_excel)
         sp_sorted_path = Path(self.CM.search_phrase_sorted_list_excel)
 
-        sorted_phrases = get_values_from_sorted_numbers(phrase_excel_file, rank_col, 'Phrase', num_phrases)
+        # The publication search always runs over the phrases CHECKED in the
+        # table (generated + manual, in table order). The Excel-only export
+        # keeps the classic top-N-by-rank behaviour and needs the workbook.
+        if choice_mode == "s":
+            sorted_phrases = self._checked_rows(self.phrase_tree, "phrase")
+            if not sorted_phrases:
+                messagebox.showerror("Error", "Check at least one search phrase in the table first.")
+                return
+        else:
+            if not phrase_excel_file.exists():
+                messagebox.showerror("Error", "No generated phrase workbook to export - "
+                                              "process keywords into search phrases first.")
+                return
+            sorted_phrases = get_values_from_sorted_numbers(phrase_excel_file, rank_col, 'Phrase', num_phrases)
 
         # User-chosen primary backend; the other one stays the automatic
         # fallback: 'openalex' -> collect_publications backend "auto"
@@ -516,7 +707,7 @@ class AutomatedLiteratureUI(tk.Tk):
                     sorted_phrases, self.CM, 15, backend=backend,
                     progress_callback=lambda d, t, phrase: progress(
                         done=d, total=t, text=f"[{d}/{t}] {backend_label}: {phrase}"))
-                if not results:
+                if not results and phrase_excel_file.exists():
                     print("Fallback triggered automatically: Saving calculations into target spreadsheet.")
                     get_values_from_sorted_numbers_and_save(phrase_excel_file, rank_col, 'Phrase', num_phrases, sp_sorted_path)
             else:

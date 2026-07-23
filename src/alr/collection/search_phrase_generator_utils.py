@@ -194,8 +194,12 @@ def Keywords_Processing_with_scope(CM):
 def rank_to_available_data(CM): 
     scope= CM.Research_Scope
     Keywords= CM.Keyword_list
-    phrase_excel_file= Path(CM.search_phrase_list_excel)    
-    rank_search_phrases(scope,'Phrase',phrase_excel_file,'RS_Similarity_Score','RS_Rank')
+    phrase_excel_file= Path(CM.search_phrase_list_excel)
+    # The scope is optional now: with a blank scope the RS similarity query
+    # would be empty (all-zero scores -> arbitrary ranks) and would only pollute
+    # TOTAL_Rank, so skip it entirely.
+    if str(scope or "").strip():
+        rank_search_phrases(scope,'Phrase',phrase_excel_file,'RS_Similarity_Score','RS_Rank')
     rank_search_phrases(CM.Research_Area,'Phrase',phrase_excel_file,'RA_Similarity_Score','RA_Rank')
     rank_search_phrases(CM.Research_Question,'Phrase',phrase_excel_file,'RQ_Similarity_Score','RQ_Rank')
     add_column_sum(phrase_excel_file,'RA_Rank','RQ_Rank','RA+RQ_Rank')
