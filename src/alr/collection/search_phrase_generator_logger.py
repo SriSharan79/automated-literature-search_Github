@@ -103,12 +103,22 @@ def log_Keyword_Json(CM):
 
     filename=CM.keywords_list_json
 
+    selected = list(CM.Keyword_list or [])
+    suggested = list(getattr(CM, "Keyword_suggested_list", None) or [])
+    user_added = list(getattr(CM, "Keyword_user_added_list", None) or [])
+
     new_entry = {
         "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "research_area": CM.Research_Area,
         "research_questions": CM.Research_Question,
         "refined_scope": CM.Research_Scope,
-        "generated_keywords": CM.Keyword_list
+        # Full keyword universe behind this run: everything the LLM suggested,
+        # anything the user typed in, and the subset the user selected.
+        "suggested_keywords": suggested,
+        "user_added_keywords": user_added,
+        "selected_keywords": selected,
+        # Kept for backward compatibility with readers of the old schema.
+        "generated_keywords": selected,
     }
     
     data = []

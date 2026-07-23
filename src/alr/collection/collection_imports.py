@@ -43,12 +43,26 @@ def _pick_column(df, candidates):
     return None
 
 
-def read_keywords_file(path):
+# Keyword fields recorded per JSON entry (new schema), in the order they are
+# merged into the unique universe.
+_ENTRY_KEYWORD_FIELDS = ("suggested_keywords", "user_added_keywords",
+                         "selected_keywords", "generated_keywords")
+# The field naming the user's actual selection, newest-first preference.
+_SELECTION_FIELDS = ("selected_keywords", "generated_keywords")
+
+
+def read_keywords_record(path):
     """
-    Return a de-duplicated list of keywords from a keywords JSON or a
-    spreadsheet. For the canonical JSON (list of entries) the *most recent*
-    entry's ``generated_keywords`` are used. Raises ValueError with a readable
-    message when nothing keyword-like is found.
+    Return ``(unique_keywords, last_selected)`` from a keywords file:
+
+    * ``unique_keywords`` -- every distinct keyword the file records (across all
+      timestamped entries: LLM-suggested + user-added + selected), in first-seen
+      order.
+    * ``last_selected``   -- the set of keywords the user selected in the *most
+      recent* entry (case-insensitive lookup against ``unique_keywords``).
+
+    For a spreadsheet (no selection history) every keyword is treated as
+    selected. Raises ValueError when nothing keyword-like is found.
     """
     path = Path(path)
     suffix = path.suffix.lower()
@@ -56,14 +70,35 @@ def read_keywords_file(path):
     if suffix == ".json":
         data = json.loads(path.read_text(encoding="utf-8"))
         entries = data if isinstance(data, list) else [data]
-        # Walk newest-first so the latest generated set wins.
-        for entry in reversed(entries):
-            if isinstance(entry, dict) and entry.get("generated_keywords"):
-                return _dedupe_preserve_order(entry["generated_keywords"])
-        # A bare JSON list of strings is also acceptable.
+
+        # A bare JSON list of strings -> all unique, all selected.
         if entries and all(isinstance(e, str) for e in entries):
-            return _dedupe_preserve_order(entries)
-        raise ValueError("No 'generated_keywords' found in the JSON file.")
+            uniq = _dedupe_preserve_order(entries)
+            return uniq, set(k.lower() for k in uniq)
+
+        dict_entries = [e for e in entries if isinstance(e, dict)]
+        if not dict_entries:
+            raise ValueError("No keyword entries found in the JSON file.")
+
+        # Union of every recorded keyword across all entries, first-seen order.
+        universe = []
+        for entry in dict_entries:
+            for field in _ENTRY_KEYWORD_FIELDS:
+                universe.extend(entry.get(field) or [])
+        unique = _dedupe_preserve_order(universe)
+        if not unique:
+            raise ValueError("The JSON file records no keywords.")
+
+        # Selection from the newest entry that actually names one.
+        last_selected = []
+        for entry in reversed(dict_entries):
+            for field in _SELECTION_FIELDS:
+                if entry.get(field):
+                    last_selected = entry[field]
+                    break
+            if last_selected:
+                break
+        return unique, set(str(k).strip().lower() for k in last_selected)
 
     if suffix in (".xlsx", ".xls", ".csv"):
         df = pd.read_csv(path) if suffix == ".csv" else pd.read_excel(path)
@@ -72,9 +107,15 @@ def read_keywords_file(path):
             raise ValueError(
                 "No keyword column found (expected one of: "
                 + ", ".join(_KEYWORD_COLUMNS) + ").")
-        return _dedupe_preserve_order(df[col].dropna().tolist())
+        unique = _dedupe_preserve_order(df[col].dropna().tolist())
+        return unique, set(k.lower() for k in unique)
 
     raise ValueError(f"Unsupported keyword file type: {suffix or '(none)'}")
+
+
+def read_keywords_file(path):
+    """Backward-compatible helper: just the unique keyword list."""
+    return read_keywords_record(path)[0]
 
 
 def read_phrases_file(path, rank_column=None):

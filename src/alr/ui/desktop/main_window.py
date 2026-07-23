@@ -368,6 +368,10 @@ class AutomatedLiteratureUI(tk.Tk):
 
         self.kw_tree = self._make_check_table(
             keyword_frame, [("keyword", "Keyword", 520)], height=6)
+        # Origin of every keyword ever in the table (lowercased -> "llm" |
+        # "manual"), so the keywords JSON can log LLM-suggested vs user-added
+        # keywords separately from the selection.
+        self.kw_origin = {}
 
         # Phrase generation trigger + settings
         proc_frame = ttk.Frame(keyword_frame)
@@ -653,6 +657,7 @@ class AutomatedLiteratureUI(tk.Tk):
             if kw and kw.lower() not in existing:
                 self.kw_tree.insert("", "end", values=(self._CHECKED, kw))
                 existing.add(kw.lower())
+                self.kw_origin.setdefault(kw.lower(), "manual")
         self.kw_add_entry.delete(0, tk.END)
         self._sync_select_all(self.kw_tree)
 
@@ -673,9 +678,12 @@ class AutomatedLiteratureUI(tk.Tk):
     # ---- Import previously generated keywords / phrases ------------------
 
     def _import_keywords_action(self):
-        """Load keywords from a previously generated file into the table
-        (checked, de-duplicated against what is already there)."""
-        from alr.collection.collection_imports import read_keywords_file
+        """
+        Load a previous keywords file into the table: list ALL unique keywords
+        it recorded (LLM-suggested + user-added + selected across every
+        timestamped entry) and check exactly the ones from the last selection.
+        """
+        from alr.collection.collection_imports import read_keywords_record
         path = filedialog.askopenfilename(
             title="Import keywords from a previous file",
             filetypes=[("Keyword files", "*.json *.xlsx *.xls *.csv"),
@@ -683,22 +691,28 @@ class AutomatedLiteratureUI(tk.Tk):
         if not path:
             return
         try:
-            keywords = read_keywords_file(path)
+            unique, last_selected = read_keywords_record(path)
         except Exception as e:  # noqa: BLE001 - show the reason, don't crash
             messagebox.showerror("Import keywords", f"Could not import keywords:\n{e}")
             return
-        if not keywords:
+        if not unique:
             messagebox.showinfo("Import keywords", "No keywords found in that file.")
             return
-        existing = {self.kw_tree.set(i, "keyword").lower() for i in self.kw_tree.get_children()}
-        added = 0
-        for kw in keywords:
-            if kw.lower() not in existing:
-                self.kw_tree.insert("", "end", values=(self._CHECKED, kw))
-                existing.add(kw.lower())
-                added += 1
+        # Replace the table with the file's full unique keyword universe; check
+        # only those in the last recorded selection. Imported keywords keep
+        # "manual" origin (their original provenance isn't reconstructed here).
+        for item in self.kw_tree.get_children():
+            self.kw_tree.delete(item)
+        checked_count = 0
+        for kw in unique:
+            checked = kw.lower() in last_selected
+            mark = self._CHECKED if checked else self._UNCHECKED
+            self.kw_tree.insert("", "end", values=(mark, kw))
+            self.kw_origin.setdefault(kw.lower(), "manual")
+            checked_count += int(checked)
         self._sync_select_all(self.kw_tree)
-        print(f"[Keywords] Imported {added} keyword(s) from {Path(path).name}.")
+        print(f"[Keywords] Imported {len(unique)} unique keyword(s) from "
+              f"{Path(path).name}; {checked_count} pre-checked from the last selection.")
 
     def _import_phrases_action(self):
         """Load search phrases (with ranks, when present) from a previously
@@ -769,12 +783,29 @@ class AutomatedLiteratureUI(tk.Tk):
                 if kw and kw.lower() not in existing:
                     self.kw_tree.insert("", "end", values=(self._CHECKED, kw))
                     existing.add(kw.lower())
+                    self.kw_origin.setdefault(kw.lower(), "llm")
                     added += 1
             self._sync_select_all(self.kw_tree)
             print(f"[Keywords] {added} LLM suggestion(s) added to the table. "
                   f"Untick anything you don't want before processing.")
 
         self._run_threaded(work, "Suggest Keywords", on_success=on_success)
+
+    def _keyword_provenance(self):
+        """
+        (suggested, user_added, selected) keyword lists from the current table,
+        split by their recorded origin. Read on the main thread (Tk access).
+        """
+        suggested, user_added, selected = [], [], []
+        for item in self.kw_tree.get_children():
+            kw = self.kw_tree.set(item, "keyword")
+            if self.kw_origin.get(kw.lower(), "manual") == "llm":
+                suggested.append(kw)
+            else:
+                user_added.append(kw)
+            if self.kw_tree.set(item, "use") == self._CHECKED:
+                selected.append(kw)
+        return suggested, user_added, selected
 
     def _process_keywords_action(self):
         keywords_list = self._checked_rows(self.kw_tree, "keyword")
@@ -794,9 +825,15 @@ class AutomatedLiteratureUI(tk.Tk):
         if not refined_scope:
             print("[Keywords] Processing without a refined scope (scope unused or blank).")
 
+        # Full keyword universe behind this run, captured now on the main thread.
+        suggested, user_added, _ = self._keyword_provenance()
+
         def work(progress, should_cancel):
             progress(text=f"Processing {len(keywords_list)} keyword(s) into search phrases…")
             self.CM.update_Keyword_list(keywords_list)
+            # Log all LLM-suggested + user-added keywords alongside the selected
+            # subset, timestamped (a fresh entry every processing run).
+            self.CM.update_Keyword_provenance(suggested, user_added)
             # The end-of-pass cleanup prunes the manager's empty sub-folders, so
             # the tree built earlier may be gone by now. Re-create it before
             # anything writes a JSON/Excel into it.

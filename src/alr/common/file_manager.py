@@ -108,6 +108,8 @@ class CollectionManager:
         self.Research_Scope = None
         self.Keyword_list = None
         self.Keyword_count = None
+        self.Keyword_suggested_list = None
+        self.Keyword_user_added_list = None
         self.Search_phrase_count = None
         self.Search_phrase_list = None       
         
@@ -184,8 +186,17 @@ class CollectionManager:
     def update_Keyword_list(self, Value):
         self.Keyword_list =Value
         self.Keyword_count =len(Value)
-        print_with_separator("DebugLog",'/')        
+        print_with_separator("DebugLog",'/')
         print(f"updated list of {len(Value)} Keywords: {Value}")
+
+    def update_Keyword_provenance(self, suggested, user_added):
+        """
+        Record the full keyword universe behind the current selection so the
+        keywords JSON can log all LLM-suggested keywords and any user-added
+        keywords alongside the selected subset (``Keyword_list``).
+        """
+        self.Keyword_suggested_list = list(suggested or [])
+        self.Keyword_user_added_list = list(user_added or [])
 
     def update_Search_phrase_list(self, Value):
         self.Search_phrase_list =Value      
