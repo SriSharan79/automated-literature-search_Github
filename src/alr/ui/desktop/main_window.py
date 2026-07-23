@@ -620,7 +620,12 @@ class AutomatedLiteratureUI(tk.Tk):
             # phrase list instead -- rebinding self.CM to that list broke every
             # later attribute access (AttributeError: 'list' object has no
             # attribute 'Search_phrase_count').
-            processed = Keywords_Processing_with_scope(self.CM)
+            # Cancel-aware: pressing Cancel stops further per-subset LLM calls,
+            # but the phrases already collected are still ranked and returned.
+            processed = Keywords_Processing_with_scope(
+                self.CM, should_cancel=should_cancel,
+                progress_callback=lambda d, t: progress(
+                    done=d, total=t, text=f"[{d}/{t}] Generating phrases from keyword subsets…"))
             if isinstance(processed, CollectionManager):
                 self.CM = processed
             elif isinstance(processed, (list, tuple)):
@@ -639,7 +644,10 @@ class AutomatedLiteratureUI(tk.Tk):
                 self.btn_save_excel.configure(state="normal")
                 self._refresh_phrase_table()
 
-        self._run_threaded(work, "Process Keywords", on_success=on_success)
+        # A cancel keeps whatever was collected: the worker ranks the partial
+        # phrase list and the table/buttons are wired up exactly like a full run.
+        self._run_threaded(work, "Process Keywords", on_success=on_success,
+                           on_cancelled=on_success)
 
     def _refresh_phrase_ranks(self):
         """Radio/spinbox hook: re-rank the phrase table when generated phrases
@@ -1126,7 +1134,8 @@ class AutomatedLiteratureUI(tk.Tk):
 
         self._run_threaded(work, "Analyzing Literature", "analyzed")
 
-    def _run_threaded(self, work, title, result_word="processed", on_success=None):
+    def _run_threaded(self, work, title, result_word="processed", on_success=None,
+                      on_cancelled=None):
         """
         Run ``work(progress, should_cancel)`` on a background thread with a modal
         progress dialog (with Cancel). The worker only touches a thread-safe queue;
@@ -1140,6 +1149,10 @@ class AutomatedLiteratureUI(tk.Tk):
         the default "processed N document(s)" message box -- for passes whose
         result isn't a plain document count (e.g. a classification result dict,
         a workbook path, or computed metrics text).
+
+        ``on_cancelled(result)``, if given, replaces the default "cancelled
+        after N" message box -- for passes whose worker treats Cancel as
+        "finish early with what you have" and still returns a usable result.
 
         A worker that declares a third parameter also receives ``ask(handler)``:
         it runs ``handler(self)`` on the **main** thread (Tk is not thread-safe)
@@ -1202,8 +1215,11 @@ class AutomatedLiteratureUI(tk.Tk):
                     msg += f"\n\nA full traceback was saved to:\n{outcome['error_log']}"
                 messagebox.showerror(title, msg)
             elif cancel_event.is_set():
-                messagebox.showinfo(title, f"{title}: cancelled after {result_word} "
-                                           f"{outcome.get('n', 0)} document(s).")
+                if on_cancelled is not None:
+                    on_cancelled(outcome.get("n"))
+                else:
+                    messagebox.showinfo(title, f"{title}: cancelled after {result_word} "
+                                               f"{outcome.get('n', 0)} document(s).")
             elif on_success is not None:
                 on_success(outcome.get("n"))
             else:

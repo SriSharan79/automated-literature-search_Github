@@ -134,7 +134,14 @@ def generation_of_Key_phrases_with_scope(formatted_user_prompt, phrase_excel_fil
 
     return cleaned_phrases
 
-def Keywords_Processing_with_scope(CM):
+def Keywords_Processing_with_scope(CM, should_cancel=None, progress_callback=None):
+    """
+    Generate search phrases per keyword subset via the LLM, then rank and log
+    them. ``should_cancel()`` is checked between subsets: a cancel stops any
+    FURTHER LLM calls but the phrases collected so far are still ranked and
+    logged, so the pass always ends in a usable state.
+    ``progress_callback(done, total)`` reports the subset loop.
+    """
     scope= CM.Research_Scope
     Keywords= CM.Keyword_list
     llm= CM.llm_service
@@ -157,22 +164,33 @@ def Keywords_Processing_with_scope(CM):
 
         # Debugging: Print the generated subsets
         print(f"number of subsets:{ len(all_subsets)}")
-        
+
         for i,subset in enumerate(all_subsets):
+            if should_cancel is not None and should_cancel():
+                print(f"\nCancelled after {i} of {len(all_subsets)} keyword subsets - "
+                      "no further LLM calls; ranking the phrases collected so far.")
+                break
+            if progress_callback is not None:
+                progress_callback(i, len(all_subsets))
             subset_list = list(subset)
             Serach_phrase_User_prompt = f"\n The scope of the research is: {scope}\n The keywords provided are: {subset_list}"
-            
+
             # Debugging: Print the generated prompt
             print(f"{i}th Generated Search Prompt: {Serach_phrase_User_prompt}")
-            
+
             New_phrases = generation_of_Key_phrases_with_scope(Serach_phrase_User_prompt, phrase_excel_file, subset,Keywords,llm)
             Key_Phrases = merge_lists(Key_Phrases, New_phrases)
-        
+
         # Debugging: Print the final key phrases
         # print(f"Final Key Phrases: {Key_Phrases}")
         # `or []` guards a workbook that exists but has no 'Phrase' column yet.
         total_phrases= extract_column(phrase_excel_file,'Phrase') or []
         CM.update_Search_phrase_list(total_phrases)
+        if not total_phrases:
+            # Cancelled before anything was collected (or every call failed):
+            # there is nothing to rank/log, but the manager is still valid.
+            print("\nNo search phrases were collected - nothing to rank.")
+            return CM
         rank_to_available_data(CM)
         log_generated_list_file(phrase_excel_file,len(total_phrases),log_excel_file,CM)
 
