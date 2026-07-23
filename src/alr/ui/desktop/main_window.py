@@ -429,8 +429,13 @@ class AutomatedLiteratureUI(tk.Tk):
         """
         Build a Treeview whose first column is a click-to-toggle checkbox,
         followed by ``columns`` = [(id, heading, width), ...]. Text columns
-        are double-click editable in place. Returns the tree.
+        are double-click editable in place. A "Select all" checkbutton above
+        the table toggles every row and mirrors the per-row state
+        (``tree.select_all_var``). Returns the tree.
         """
+        bar = ttk.Frame(parent)
+        bar.pack(fill="x", padx=5)
+
         holder = ttk.Frame(parent)
         holder.pack(fill="both", expand=True, padx=5, pady=(0, 5))
 
@@ -447,9 +452,24 @@ class AutomatedLiteratureUI(tk.Tk):
         tree.pack(side="left", fill="both", expand=True)
         vbar.pack(side="right", fill="y")
 
+        tree.select_all_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(bar, text="Select all", variable=tree.select_all_var,
+                        command=lambda: self._toggle_all_rows(tree)).pack(side="left", pady=(2, 0))
+
         tree.bind("<Button-1>", lambda e: self._tree_toggle_check(tree, e))
         tree.bind("<Double-1>", lambda e: self._tree_edit_cell(tree, e))
         return tree
+
+    def _toggle_all_rows(self, tree):
+        mark = self._CHECKED if tree.select_all_var.get() else self._UNCHECKED
+        for item in tree.get_children():
+            tree.set(item, "use", mark)
+
+    def _sync_select_all(self, tree):
+        """Mirror the per-row state onto the Select-all checkbutton."""
+        items = tree.get_children()
+        tree.select_all_var.set(
+            bool(items) and all(tree.set(i, "use") == self._CHECKED for i in items))
 
     def _tree_toggle_check(self, tree, event):
         if tree.identify_region(event.x, event.y) != "cell":
@@ -460,6 +480,7 @@ class AutomatedLiteratureUI(tk.Tk):
         if item:
             current = tree.set(item, "use")
             tree.set(item, "use", self._UNCHECKED if current == self._CHECKED else self._CHECKED)
+            self._sync_select_all(tree)
 
     def _tree_edit_cell(self, tree, event):
         """In-place editing of the text column (last column) on double-click."""
@@ -499,6 +520,7 @@ class AutomatedLiteratureUI(tk.Tk):
     def _remove_selected_rows(self, tree):
         for item in tree.selection():
             tree.delete(item)
+        self._sync_select_all(tree)
 
     def _add_manual_keywords(self):
         raw = self.kw_add_entry.get().strip()
@@ -510,6 +532,7 @@ class AutomatedLiteratureUI(tk.Tk):
                 self.kw_tree.insert("", "end", values=(self._CHECKED, kw))
                 existing.add(kw.lower())
         self.kw_add_entry.delete(0, tk.END)
+        self._sync_select_all(self.kw_tree)
 
     def _add_manual_phrases(self):
         raw = self.sp_add_entry.get().strip()
@@ -521,6 +544,7 @@ class AutomatedLiteratureUI(tk.Tk):
                 self.phrase_tree.insert("", "end", values=(self._CHECKED, "-", phrase))
                 existing.add(phrase.lower())
         self.sp_add_entry.delete(0, tk.END)
+        self._sync_select_all(self.phrase_tree)
         if self.CM is not None:
             self.btn_scholarly.configure(state="normal")
 
@@ -558,6 +582,7 @@ class AutomatedLiteratureUI(tk.Tk):
                     self.kw_tree.insert("", "end", values=(self._CHECKED, kw))
                     existing.add(kw.lower())
                     added += 1
+            self._sync_select_all(self.kw_tree)
             print(f"[Keywords] {added} LLM suggestion(s) added to the table. "
                   f"Untick anything you don't want before processing.")
 
@@ -656,6 +681,7 @@ class AutomatedLiteratureUI(tk.Tk):
         for phrase, checked in manual_rows:
             mark = self._CHECKED if checked else self._UNCHECKED
             self.phrase_tree.insert("", "end", values=(mark, "-", phrase))
+        self._sync_select_all(self.phrase_tree)
 
         print(f"[Phrases] Table ranked by {rank_col}; top {min(num_phrases, len(ranked))} "
               f"of {len(ranked)} generated phrase(s) pre-checked.")
