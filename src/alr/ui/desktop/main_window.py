@@ -22,6 +22,11 @@ from alr.common.llm_utils import (
     local_embedding_model_dir, embedding_model_repo_id,
 )
 from alr.common.LLM_Config import get_stored_api_key, set_api_key, KEY_ENV_NAMES
+
+# Provider code <-> service label / API-key type. Preference order everywhere:
+# BlaBla first, then Chat AI, then DLR Ollama.
+_CODE_TO_SERVICE = {"B": "BlaBla", "C": "Chat AI", "O": "DLR Ollama"}
+_CODE_TO_KEY_TYPE = {"B": "BlaBla Door", "C": "Chat AI", "O": "DLR Ollama"}
 from alr.common.sql_store import sync_storage_to_sql
 from alr.common import crash_logger
 from alr.ui.desktop.review_app import open_review_app, ProgressDialog
@@ -234,10 +239,10 @@ class AutomatedLiteratureUI(tk.Tk):
         self.rq_entry.grid(row=1, column=1, padx=5, pady=5)
 
         ttk.Label(inputs_frame, text="LLM Provider:").grid(row=2, column=0, padx=5, pady=5, sticky="w")
-        self.llm_choice_col = ttk.Combobox(inputs_frame, values=["O", "B"], width=5, state="readonly")
-        self.llm_choice_col.set("O")
+        self.llm_choice_col = ttk.Combobox(inputs_frame, values=["B", "C", "O"], width=5, state="readonly")
+        self.llm_choice_col.set("B")
         self.llm_choice_col.grid(row=2, column=1, padx=5, pady=5, sticky="w")
-        ttk.Label(inputs_frame, text="(O = DLR ollama Nimbus Service | B = BlaBla LLM models)").grid(row=2, column=1, padx=70, pady=5, sticky="w")
+        ttk.Label(inputs_frame, text="(B = BlaBla LLM models | C = Chat AI | O = DLR ollama Nimbus Service)").grid(row=2, column=1, padx=70, pady=5, sticky="w")
 
         ttk.Button(inputs_frame, text="Choose Model...",
                    command=lambda: self._choose_model_action(self.llm_choice_col.get())
@@ -558,8 +563,8 @@ class AutomatedLiteratureUI(tk.Tk):
         llm_frame = ttk.Frame(tab)
         llm_frame.pack(fill="x", padx=10, pady=10)
         ttk.Label(llm_frame, text="LLM Processing Service Engine:").pack(side="left", padx=5)
-        self.llm_choice_an = ttk.Combobox(llm_frame, values=["O", "B"], width=5, state="readonly")
-        self.llm_choice_an.set("O")
+        self.llm_choice_an = ttk.Combobox(llm_frame, values=["B", "C", "O"], width=5, state="readonly")
+        self.llm_choice_an.set("B")
         self.llm_choice_an.pack(side="left", padx=5)
         ttk.Button(llm_frame, text="Choose Model...",
                    command=lambda: self._choose_model_action(self.llm_choice_an.get())
@@ -1523,7 +1528,7 @@ class AutomatedLiteratureUI(tk.Tk):
         llm_row = ttk.Frame(shared)
         llm_row.pack(fill="x", padx=5, pady=(0, 8))
         ttk.Label(llm_row, text="LLM Processing Service Engine:").pack(side="left", padx=5)
-        combo = ttk.Combobox(llm_row, values=["O", "B"], width=5, state="readonly",
+        combo = ttk.Combobox(llm_row, values=["B", "C", "O"], width=5, state="readonly",
                              textvariable=self.eval_llm_var)
         combo.pack(side="left", padx=5)
         self.llm_choice_eval = combo
@@ -2185,10 +2190,10 @@ class AutomatedLiteratureUI(tk.Tk):
 
     def _ensure_api_key(self, provider_code):
         """
-        Ensure a key exists for the selected provider ('O'/'B'). If missing, open
-        the key dialog. Returns True if a key is now present, else False.
+        Ensure a key exists for the selected provider ('B'/'C'/'O'). If missing,
+        open the key dialog. Returns True if a key is now present, else False.
         """
-        key_type = "DLR Ollama" if str(provider_code).upper() == "O" else "BlaBla Door"
+        key_type = _CODE_TO_KEY_TYPE.get(str(provider_code).upper(), "BlaBla Door")
         if get_stored_api_key(key_type):
             return True
         messagebox.showinfo("API key required",
@@ -2214,10 +2219,10 @@ class AutomatedLiteratureUI(tk.Tk):
     def _choose_model_action(self, provider_code):
         """
         Fetch the live list of available models for the selected provider
-        ('O' = DLR Ollama, 'B' = Blablador), let the user pick one, and store
-        it as the session model used by all subsequent LLM calls.
+        ('B' = Blablador, 'C' = Chat AI, 'O' = DLR Ollama), let the user pick
+        one, and store it as the session model used by all subsequent LLM calls.
         """
-        service = "DLR Ollama" if str(provider_code).upper() == "O" else "BlaBla"
+        service = _CODE_TO_SERVICE.get(str(provider_code).upper(), "BlaBla")
 
         print(f"Fetching available {service} models...")
         try:
@@ -2289,15 +2294,22 @@ class AutomatedLiteratureUI(tk.Tk):
             else:
                 has_local = bool(local_embedding_model_dir) and os.path.isdir(local_embedding_model_dir)
                 default_method = "Local" if has_local else "API"
-            default_service = "B" if "blabla" in os.getenv("ALR_EMBEDDING_SERVICE", "").lower() else "O"
+            # BlaBla is the preferred service; the env var can force another.
+            env_svc = os.getenv("ALR_EMBEDDING_SERVICE", "").lower()
+            if "ollama" in env_svc:
+                default_service = "O"
+            elif "chat" in env_svc:
+                default_service = "C"
+            else:
+                default_service = "B"
 
             self.embed_method_var = tk.StringVar(value=default_method)
             self.embed_service_var = tk.StringVar(value=default_service)
             self.embed_model_var = tk.StringVar(value="")
             self._embed_service_boxes = []
             self._embed_model_buttons = []
-            # Embedding model chosen this session, per service code ('O'/'B').
-            self._embed_model_choice = {"O": None, "B": None}
+            # Embedding model chosen this session, per service code ('B'/'C'/'O').
+            self._embed_model_choice = {"B": None, "C": None, "O": None}
 
         row = ttk.Frame(parent)
         ttk.Label(row, text="Embedding Engine:").pack(side="left", padx=5)
@@ -2307,7 +2319,7 @@ class AutomatedLiteratureUI(tk.Tk):
         method_box.bind("<<ComboboxSelected>>", lambda e: self._apply_embedding_backend())
 
         ttk.Label(row, text="Service:").pack(side="left", padx=(10, 2))
-        service_box = ttk.Combobox(row, values=["O", "B"], width=5, state="readonly",
+        service_box = ttk.Combobox(row, values=["B", "C", "O"], width=5, state="readonly",
                                    textvariable=self.embed_service_var)
         service_box.pack(side="left", padx=5)
         service_box.bind("<<ComboboxSelected>>", lambda e: self._apply_embedding_backend())
@@ -2329,7 +2341,7 @@ class AutomatedLiteratureUI(tk.Tk):
         """
         method = "local" if self.embed_method_var.get() == "Local" else "api"
         service_code = self.embed_service_var.get().upper()
-        service = "DLR Ollama" if service_code == "O" else "BlaBla"
+        service = _CODE_TO_SERVICE.get(service_code, "BlaBla")
         set_embedding_backend(method=method, service=service)
 
         box_state = "readonly" if method == "api" else "disabled"
@@ -2348,11 +2360,12 @@ class AutomatedLiteratureUI(tk.Tk):
     def _choose_embedding_model_action(self):
         """
         Fetch the live list of embedding models for the selected embedding
-        service ('O' = DLR Ollama, 'B' = Blablador), let the user pick one, and
-        store it as the session embedding model. Mirrors _choose_model_action.
+        service ('B' = Blablador, 'C' = Chat AI, 'O' = DLR Ollama), let the
+        user pick one, and store it as the session embedding model. Mirrors
+        _choose_model_action.
         """
         service_code = self.embed_service_var.get().upper()
-        service = "DLR Ollama" if service_code == "O" else "BlaBla"
+        service = _CODE_TO_SERVICE.get(service_code, "BlaBla")
 
         print(f"Fetching available {service} embedding models...")
         try:

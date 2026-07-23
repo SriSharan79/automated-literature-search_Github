@@ -20,8 +20,9 @@ def _choose_llm_service():
     LLM_Choice_Message=f"""
 please choose the llm service that you would like to use:
 
-'O' or 'o': DLR ollama Nimbus Service
 'B' or 'b': BlaBla LLM models
+'C' or 'c': Chat AI (academiccloud)
+'O' or 'o': DLR ollama Nimbus Service
 
 Only input the number of your choice
 example: B
@@ -32,7 +33,7 @@ example: B
 
     # Optionally let the user pick a specific model for the chosen service.
     # The default model is kept unless the user opts to change it.
-    service = "DLR Ollama" if user_choice.upper() == "O" else "BlaBla" if user_choice.upper() == "B" else None
+    service = {"B": "BlaBla", "C": "Chat AI", "O": "DLR Ollama"}.get(user_choice.upper())
     if service:
         change = input(
             f"Current {service} model: {get_selected_model(service)}\n"

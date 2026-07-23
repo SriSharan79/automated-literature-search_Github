@@ -1,6 +1,6 @@
 from alr.common.System_prompts import General_Sys_Prompt
 from alr.common.general_utils import caluculate_time_taken, print_with_separator
-from alr.common.LLM_Config import BLABLADOR_BASE_URL, PREFERRED_BLABLADOR_MODELS, check_api_key, get_stored_api_key,local_model_dir,model_repo_id, OLLAMA_BASE_URL, DEFAULT_BLABLADOR_MODEL, DEFAULT_OLLAMA_MODEL
+from alr.common.LLM_Config import BLABLADOR_BASE_URL, PREFERRED_BLABLADOR_MODELS, check_api_key, get_stored_api_key,local_model_dir,model_repo_id, OLLAMA_BASE_URL, DEFAULT_BLABLADOR_MODEL, DEFAULT_OLLAMA_MODEL, CHATAI_BASE_URL, PREFERRED_CHATAI_MODELS, DEFAULT_CHATAI_MODEL, DEFAULT_CHATAI_EMBEDDING_MODEL
 from alr.common.file_manager import ALR_main_folder
 
 from collections import deque
@@ -129,12 +129,13 @@ def get_last_call_info() -> dict:
 # via select_model_interactive() from the CLI or a dropdown in the desktop UI.
 SELECTED_MODELS = {
     "BlaBla": DEFAULT_BLABLADOR_MODEL,
+    "Chat AI": DEFAULT_CHATAI_MODEL,
     "DLR Ollama": DEFAULT_OLLAMA_MODEL,
 }
 
 
 def get_selected_model(service: str) -> str:
-    """Return the currently selected model for a service ('BlaBla' or 'DLR Ollama')."""
+    """Return the currently selected model for a service ('BlaBla', 'Chat AI' or 'DLR Ollama')."""
     return SELECTED_MODELS.get(service)
 
 
@@ -166,6 +167,26 @@ def list_blablador_models(blablador_key: str = None) -> list:
         return []
 
 
+def list_chatai_models(chatai_key: str = None) -> list:
+    """Fetch the list of currently available Chat AI model ids (live call)."""
+    # Non-prompting: this is called from the UI, so never block on console input.
+    key = chatai_key or get_stored_api_key('Chat AI')
+    if not key:
+        print(Fore.YELLOW + "⚠️ No Chat AI API key - cannot list models." + Style.RESET_ALL)
+        return []
+    try:
+        resp = requests.get(
+            f"{CHATAI_BASE_URL}/models",
+            headers={"Authorization": f"Bearer {key}"},
+            timeout=30,
+        )
+        resp.raise_for_status()
+        return [m['id'] for m in resp.json().get('data', [])]
+    except Exception as e:
+        print(Fore.RED + f"❌ Failed to list Chat AI models: {e}" + Style.RESET_ALL)
+        return []
+
+
 def list_ollama_models(ollama_key: str = None) -> list:
     """Fetch the list of currently available DLR Ollama model ids (live call)."""
     # Non-prompting: this is called from the UI, so never block on console input.
@@ -191,12 +212,34 @@ def list_ollama_models(ollama_key: str = None) -> list:
 
 
 def list_available_models(service: str) -> list:
-    """Return live available model ids for 'BlaBla' or 'DLR Ollama'."""
+    """Return live available model ids for 'BlaBla', 'Chat AI' or 'DLR Ollama'."""
     if service == "BlaBla":
         return list_blablador_models()
+    if service == "Chat AI":
+        return list_chatai_models()
     if service == "DLR Ollama":
         return list_ollama_models()
     raise ValueError(f"Unknown service '{service}'.")
+
+
+def probe_available_services() -> list:
+    """The services that are usable RIGHT NOW: an API key is stored **and**
+    the live model list answers. Returns ``[(label, [model ids])]`` with
+    **BlaBla first** (the preferred service), then Chat AI, then DLR Ollama.
+    Makes network calls — run it off the UI thread."""
+    out = []
+    for label, key_name in (("BlaBla", "BlaBla Door"),
+                            ("Chat AI", "Chat AI"),
+                            ("DLR Ollama", "DLR Ollama")):
+        try:
+            if not get_stored_api_key(key_name):
+                continue
+            models = list_available_models(label)
+        except Exception:  # noqa: BLE001 - an unreachable service is just absent
+            models = []
+        if models:
+            out.append((label, models))
+    return out
 
 
 def select_model_interactive(service: str) -> str:
@@ -239,38 +282,53 @@ DEFAULT_EMBEDDING_MODEL = "qwen3-8b-embeddings"
 
 SELECTED_EMBEDDING_MODELS = {
     "BlaBla": None,
+    "Chat AI": None,
     "DLR Ollama": None,
+}
+
+# Per-service preferred embedding model. Chat AI's embedding models are the
+# e5 family whose ids don't contain 'embed', so the generic default would
+# never match there.
+PREFERRED_EMBEDDING_MODELS = {
+    "BlaBla": DEFAULT_EMBEDDING_MODEL,
+    "Chat AI": DEFAULT_CHATAI_EMBEDDING_MODEL,
+    "DLR Ollama": DEFAULT_EMBEDDING_MODEL,
 }
 
 
 def _filter_embedding_models(models: list) -> list:
-    """Return only the models whose id/name contains 'embed' (case-insensitive)."""
-    return [m for m in (models or []) if m and "embed" in m.lower()]
+    """Return only the models that look like embedding models: id/name contains
+    'embed' (case-insensitive) or is an e5-family model (Chat AI's embedding
+    ids, e.g. 'e5-mistral-7b-instruct', don't contain 'embed')."""
+    return [m for m in (models or [])
+            if m and ("embed" in m.lower() or m.lower().startswith("e5"))]
 
 
 def list_embedding_models(service: str) -> list:
     """
-    Fetch the live model list for a service ('BlaBla' or 'DLR Ollama') via the
-    existing /models call, and return only the ones that look like embedding
-    models (id/name contains 'embed').
+    Fetch the live model list for a service ('BlaBla', 'Chat AI' or
+    'DLR Ollama') via the existing /models call, and return only the ones that
+    look like embedding models (id/name contains 'embed', or e5-*).
     """
     all_models = list_available_models(service)
     embedding_models = _filter_embedding_models(all_models)
     return embedding_models
 
 
-def get_default_embedding_model(service: str, preferred: str = DEFAULT_EMBEDDING_MODEL) -> str:
+def get_default_embedding_model(service: str, preferred: str = None) -> str:
     """
     Resolve which embedding model to use for `service`.
 
     Preference order:
       1. Embedding model already selected earlier this session.
-      2. `preferred` ('qwen3-8b-embeddings' by default), if it is present in
-         the live embedding-model list.
+      2. `preferred` (the per-service default from PREFERRED_EMBEDDING_MODELS
+         when not given), if it is present in the live embedding-model list.
       3. First embedding model found in the live list.
       4. `preferred` as a last-resort fallback if the live list is empty
          (e.g. the /models call failed).
     """
+    if preferred is None:
+        preferred = PREFERRED_EMBEDDING_MODELS.get(service, DEFAULT_EMBEDDING_MODEL)
     if SELECTED_EMBEDDING_MODELS.get(service):
         return SELECTED_EMBEDDING_MODELS[service]
 
@@ -325,8 +383,8 @@ def set_embedding_backend(method: str = None, service: str = None) -> None:
             raise ValueError(f"Unknown embedding method '{method}'. Expected 'local' or 'api'.")
         SELECTED_EMBEDDING_BACKEND["method"] = method
     if service is not None:
-        if service not in ("BlaBla", "DLR Ollama"):
-            raise ValueError(f"Unknown service '{service}'. Expected 'BlaBla' or 'DLR Ollama'.")
+        if service not in ("BlaBla", "Chat AI", "DLR Ollama"):
+            raise ValueError(f"Unknown service '{service}'. Expected 'BlaBla', 'Chat AI' or 'DLR Ollama'.")
         SELECTED_EMBEDDING_BACKEND["service"] = service
     if SELECTED_EMBEDDING_BACKEND["method"] == "local":
         # 'service' is irrelevant for local embeddings; it is kept only as the
@@ -403,7 +461,7 @@ def get_embedding(
 
     Args:
         text: a single string, or a list of strings (batch embedding).
-        service: 'BlaBla' or 'DLR Ollama'.
+        service: 'BlaBla', 'Chat AI' or 'DLR Ollama'.
         model: explicit model id to use; otherwise the resolved default
                embedding model for the service is used (qwen3-8b-embeddings
                if available).
@@ -418,8 +476,8 @@ def get_embedding(
             "raw": <raw JSON response from the API>,
         }
     """
-    if service not in ("BlaBla", "DLR Ollama"):
-        raise ValueError(f"Unknown service '{service}'. Expected 'BlaBla' or 'DLR Ollama'.")
+    if service not in ("BlaBla", "Chat AI", "DLR Ollama"):
+        raise ValueError(f"Unknown service '{service}'. Expected 'BlaBla', 'Chat AI' or 'DLR Ollama'.")
 
     inputs = text if isinstance(text, list) else [text]
     resolved_model = model or get_default_embedding_model(service)
@@ -431,6 +489,9 @@ def get_embedding(
         # does. If no key is stored the request goes out unauthenticated and the
         # server returns a clear 401 rather than the app hanging.
         key = api_key or get_stored_api_key('BlaBla Door')
+    elif service == "Chat AI":
+        base_url = CHATAI_BASE_URL
+        key = api_key or get_stored_api_key('Chat AI')
     else:
         base_url = OLLAMA_BASE_URL
         key = api_key or get_stored_api_key('DLR Ollama')
@@ -978,6 +1039,66 @@ def blabla_ask_llm(
     return content.strip() if content else ""
 
 
+#Chat AI Models Usage
+
+def chatai_ask_llm(
+    prompt: str,
+    sys_prompt: str,
+    temperature: float = 0.3,
+    max_tokens: int = 8192,
+    chatai_key: str = None,
+    model: str = None,
+    timeout: int = 120,
+) -> str:
+    """Query Chat AI (academiccloud) with the selected (or default) model."""
+
+    start_time = time.time()
+
+    # Resolve the model: explicit arg > session selection > configured default.
+    model = model or get_selected_model("Chat AI") or DEFAULT_CHATAI_MODEL
+
+    messages = [
+        {'role': 'system', 'content': sys_prompt},
+        {'role': 'user', 'content': prompt}
+    ]
+
+    payload = {
+        "model": model,
+        "messages": messages,
+        "temperature": temperature,
+        "max_tokens": max_tokens,
+    }
+
+    headers = {"Content-Type": "application/json"}
+    # Non-prompting key lookup: never block on console input from the UI.
+    key = chatai_key or get_stored_api_key('Chat AI')
+    if key:
+        headers["Authorization"] = f"Bearer {key}"
+
+    url = f"{CHATAI_BASE_URL}/chat/completions"
+
+    resp = _post_with_retries(url, headers, payload, timeout, "Chat AI")
+
+    result = resp.json()
+    content = None
+    try:
+        content = result["choices"][0]["message"]["content"]
+        if content is None:
+            raise ValueError("Empty content received from Chat AI")
+    except (KeyError, IndexError, ValueError) as exc:
+        print(f"❌ Chat AI failed. Full response: {result}")
+        raise ValueError(f"Unexpected response format from Chat AI: {exc}") from exc
+
+    end_time = time.time()
+    try:
+        log_llm_interaction(model, "Chat_AI", messages, content.strip(),
+                            caluculate_time_taken(start_time, end_time))
+    except Exception as e:
+        print('failed to log LLM Interaction')
+
+    return content.strip() if content else ""
+
+
 # hugging face pipline
 def hf_pipeline_with_Lamma():
 
@@ -1091,11 +1212,13 @@ def llm_call(prompt: str, system_prompt: str, service: str, model: str = None,
     """
     Chat call with native timeouts, bounded retries, and a *recorded* fallback.
 
-      'B' -> Blablador; 'O' -> DLR Ollama; 'L' -> local HuggingFace model.
+      'B' -> Blablador; 'C' -> Chat AI; 'O' -> DLR Ollama;
+      'L' -> local HuggingFace model.
 
     Each remote attempt retries transient failures (429/5xx, timeouts) with
     backoff inside _post_with_retries. Only after the requested service has
-    exhausted its retries does the other service get one chance - and only if
+    exhausted its retries do the other services get one chance each, in the
+    preference order BlaBla -> Chat AI -> DLR Ollama - and only if
     ``allow_fallback`` is True. Pass ``allow_fallback=False`` for calls whose
     results must not mix models mid-batch.
 
@@ -1118,6 +1241,8 @@ def llm_call(prompt: str, system_prompt: str, service: str, model: str = None,
     if model:
         if s == 'b':
             set_selected_model("BlaBla", model)
+        elif s == 'c':
+            set_selected_model("Chat AI", model)
         elif s == 'o':
             set_selected_model("DLR Ollama", model)
 
@@ -1127,16 +1252,21 @@ def llm_call(prompt: str, system_prompt: str, service: str, model: str = None,
                           model_used=model_repo_id, fallback_used=False, error=None)
         return response
 
-    if s not in ('b', 'o'):
-        error_msg = "Error: Invalid service. Use 'B', 'O', or 'L'."
+    if s not in ('b', 'c', 'o'):
+        error_msg = "Error: Invalid service. Use 'B', 'C', 'O', or 'L'."
         print(error_msg)
         return error_msg  # Return the error so the app doesn't crash downstream
 
-    services = {'b': ("BlaBla", blabla_ask_llm), 'o': ("DLR Ollama", Ollama_ask_llm)}
+    services = {'b': ("BlaBla", blabla_ask_llm),
+                'c': ("Chat AI", chatai_ask_llm),
+                'o': ("DLR Ollama", Ollama_ask_llm)}
     primary_name = services[s][0]
     attempt_order = [services[s]]
     if allow_fallback:
-        attempt_order.append(services['o' if s == 'b' else 'b'])
+        # Preference order for fallbacks: BlaBla -> Chat AI -> DLR Ollama,
+        # skipping the service that was requested.
+        attempt_order.extend(services[code] for code in ('b', 'c', 'o')
+                             if code != s)
 
     errors = []
     for name, ask in attempt_order:
@@ -1174,6 +1304,11 @@ def blabla_ask_embedding(texts):
     return get_embedding(texts, service="BlaBla")
 
 
+def chatai_ask_embedding(texts):
+    """Embed via Chat AI using the session-selected embedding model."""
+    return get_embedding(texts, service="Chat AI")
+
+
 def Ollama_ask_embedding(texts):
     """Embed via DLR Ollama using the session-selected embedding model."""
     return get_embedding(texts, service="DLR Ollama")
@@ -1192,10 +1327,13 @@ def local_ask_embedding(texts):
 
 
 def _normalize_embedding_service_code(service: str) -> str:
-    """Map 'B'/'BlaBla'/'O'/'DLR Ollama'/'L'/'local' (any case) to 'b'/'o'/'l'."""
+    """Map 'B'/'BlaBla'/'C'/'Chat AI'/'O'/'DLR Ollama'/'L'/'local' (any case)
+    to 'b'/'c'/'o'/'l'."""
     s = str(service or "").strip().lower()
     if s in ("b", "blabla", "blablador", "blabla door"):
         return "b"
+    if s in ("c", "chatai", "chat ai", "chat-ai"):
+        return "c"
     if s in ("o", "ollama", "dlr ollama"):
         return "o"
     if s in ("l", "local"):
@@ -1211,11 +1349,14 @@ def embedding_call(texts, service: str, model: str = None, timeout: int = 120,
     get_embedding via _post_with_retries), mirroring llm_call():
 
       'B' -> Blablador /embeddings (never cross-service falls back).
-      'O' -> DLR Ollama /embeddings; may fall back to Blablador, but ONLY
+      'C' -> Chat AI /embeddings; may fall back to Blablador, but ONLY
              when ``allow_fallback=True``.
+      'O' -> DLR Ollama /embeddings; may fall back to Blablador then Chat AI,
+             but ONLY when ``allow_fallback=True``.
       'L' -> local HuggingFace embedding model (no remote fallback).
 
-    Long service names ("BlaBla", "DLR Ollama", "local") are accepted too.
+    Long service names ("BlaBla", "Chat AI", "DLR Ollama", "local") are
+    accepted too.
 
     Cross-service fallback is OPT-IN here (default off), unlike chat: vectors
     from a different service/model live in a DIFFERENT embedding space and
@@ -1235,6 +1376,8 @@ def embedding_call(texts, service: str, model: str = None, timeout: int = 120,
     if model:
         if s == 'b':
             set_selected_embedding_model("BlaBla", model)
+        elif s == 'c':
+            set_selected_embedding_model("Chat AI", model)
         elif s == 'o':
             set_selected_embedding_model("DLR Ollama", model)
 
@@ -1246,18 +1389,23 @@ def embedding_call(texts, service: str, model: str = None, timeout: int = 120,
                           fallback_used=False, error=None)
         return response
 
-    if s not in ('b', 'o'):
-        error_msg = "Error: Invalid embedding service. Use 'B', 'O', or 'L'."
+    if s not in ('b', 'c', 'o'):
+        error_msg = "Error: Invalid embedding service. Use 'B', 'C', 'O', or 'L'."
         print(error_msg)
         return None
 
-    services = {'b': ("BlaBla", blabla_ask_embedding), 'o': ("DLR Ollama", Ollama_ask_embedding)}
+    services = {'b': ("BlaBla", blabla_ask_embedding),
+                'c': ("Chat AI", chatai_ask_embedding),
+                'o': ("DLR Ollama", Ollama_ask_embedding)}
     requested = services[s][0]
     attempt_order = [services[s]]
-    # Policy: the embedding fallback service is always Blablador, never
-    # DLR Ollama - so only 'o' has a cross-service fallback to offer.
-    if allow_fallback and s == 'o':
-        attempt_order.append(services['b'])
+    # Policy: embedding fallbacks follow the preference order BlaBla ->
+    # Chat AI, and DLR Ollama is never a fallback target (its vectors live in
+    # a different space than most callers expect) - so 'b' has no fallback,
+    # 'c' falls back to 'b', and 'o' falls back to 'b' then 'c'.
+    if allow_fallback and s != 'b':
+        attempt_order.extend(services[code] for code in ('b', 'c')
+                             if code != s)
 
     errors = []
     response = None

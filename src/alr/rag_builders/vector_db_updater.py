@@ -51,7 +51,9 @@ def _resolve_default_embedding_method() -> str:
 
 
 EMBEDDING_METHOD = _resolve_default_embedding_method()
-EMBEDDING_SERVICE = os.getenv("ALR_EMBEDDING_SERVICE", "DLR Ollama")  # only used when method == "api"
+# BlaBla is the preferred service (then Chat AI, then DLR Ollama); the env
+# var can force another for this deployment.
+EMBEDDING_SERVICE = os.getenv("ALR_EMBEDDING_SERVICE", "BlaBla")  # only used when method == "api"
 
 
 def _current_backend() -> tuple:
@@ -226,7 +228,7 @@ def vectorize_strings(
             method = "api"
 
     if method == "api":
-        service_code = "B" if service == "BlaBla" else "O"
+        service_code = {"BlaBla": "B", "Chat AI": "C"}.get(service, "O")
         all_embeddings = []
         actual_service, actual_model = service, model
         # (service, model) of the FIRST successful batch. Every later batch

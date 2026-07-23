@@ -224,8 +224,8 @@ def classify_space(manager, db_path=None, progress_callback=None, should_cancel=
     (SQLite ``classification`` column + managed dated ``Title_Classification.xlsx``).
 
     ``manager`` is a DataAnalyzeManager (or folder path). Returns the number of
-    documents classified. Requires an API key for the chosen ``service`` ('O' =
-    DLR Ollama, 'B' = Blablador).
+    documents classified. Requires an API key for the chosen ``service`` ('B' =
+    Blablador, 'C' = Chat AI, 'O' = DLR Ollama).
 
     ``mode`` controls reuse: ``"copy"`` copies each document's newest prior dated
     classification (no LLM) and only classifies genuinely-new documents;

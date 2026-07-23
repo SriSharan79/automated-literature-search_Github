@@ -170,8 +170,8 @@ def classify_title(title, service=None):
     """
     Classify a publication by its title against the taxonomy.
 
-    ``service`` selects which configured LLM engine to use ('O' = DLR Ollama,
-    'B' = Blablador -- same codes as the "LLM Processing Service Engine"
+    ``service`` selects which configured LLM engine to use ('B' = Blablador,
+    'C' = Chat AI, 'O' = DLR Ollama -- same codes as the "LLM Processing Service Engine"
     picker in the main window), and which session-selected model
     (``set_selected_model``/``get_selected_model``) is used for the call. If
     omitted, ``llm_call`` falls back to its own default engine/model.
@@ -305,8 +305,8 @@ def classify_abstract(abstract_text, service=None):
     the title. Returns ``{topic: bool}`` for every taxonomy topic; on failure it
     falls back to an all-False result. Requires an API key for the chosen service.
 
-    ``service`` selects which configured LLM engine to use ('O' = DLR Ollama,
-    'B' = Blablador), and which session-selected model is used for the call.
+    ``service`` selects which configured LLM engine to use ('B' = Blablador,
+    'C' = Chat AI, 'O' = DLR Ollama), and which session-selected model is used for the call.
     If omitted, ``llm_call`` falls back to its own default engine/model.
     """
     Prompt = f"""Abstract of the publication to be analyzed:
