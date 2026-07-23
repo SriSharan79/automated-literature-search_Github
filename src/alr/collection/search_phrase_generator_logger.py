@@ -14,6 +14,22 @@ from datetime import datetime
 # Initialize colorama
 init(autoreset=True)
 
+
+def _ensure_parent_dir(path):
+    """
+    Make sure the folder holding ``path`` exists before an Excel/JSON write.
+
+    The managers build their folder tree on construction, but the end-of-pass
+    cleanup prunes any sub-folder that is still empty, so a folder created in an
+    earlier pass may be gone by the time this one writes into it. Without this,
+    pandas fails with "Cannot save file into a non-existent directory".
+    """
+    target_dir = os.path.dirname(str(path))
+    if target_dir:
+        os.makedirs(target_dir, exist_ok=True)
+    return path
+
+
 def Log_keyPhrases(Key_Phrases, EXCEL_FILE_PATH):
     """
     Handles the core logic: loading existing data, performing deduplication,
@@ -66,11 +82,16 @@ def Log_keyPhrases(Key_Phrases, EXCEL_FILE_PATH):
     
     # Save the final DataFrame to the Excel file
     try:
+        _ensure_parent_dir(EXCEL_FILE_PATH)
         final_df.to_excel(EXCEL_FILE_PATH, index=False, engine='openpyxl')
         print(f"\nSuccessfully saved/updated data to {EXCEL_FILE_PATH}")
     except Exception as e:
         print(f"\nFATAL ERROR: Could not write to Excel file. Check permissions or if the file is open. Error: {e}")            
-        traceback.print_exc()       
+        traceback.print_exc()
+        # Re-raise: swallowing this left the caller believing the phrase list had
+        # been written, so the failure only surfaced later as a confusing
+        # AttributeError further down the pipeline.
+        raise
 
 
 def log_Keyword_Json(CM):
@@ -91,12 +112,9 @@ def log_Keyword_Json(CM):
     }
     
     data = []
-    
-    target_dir = os.path.dirname(filename)
 
-    # 2. Create the directory if it doesn't exist
-    if target_dir and not os.path.exists(target_dir):
-        os.makedirs(target_dir)
+    # Make sure the folder exists (it may have been pruned after an earlier pass).
+    _ensure_parent_dir(filename)
 
     # Check if file exists and load existing data
     if os.path.exists(filename):
@@ -129,7 +147,7 @@ def log_generated_list_file(filename, Count, EXCEL_FILE_PATH, CM):
     COLUMNS = [
         'Time stamp', 
         'UUID',
-        'Research Area'
+        'Research Area',
         'File path',
         'Count'
     ]
@@ -160,6 +178,7 @@ def log_generated_list_file(filename, Count, EXCEL_FILE_PATH, CM):
         updated_df = new_df
 
     # Write back to Excel
+    _ensure_parent_dir(EXCEL_FILE_PATH)
     updated_df.to_excel(EXCEL_FILE_PATH, index=False, engine='openpyxl')
     return f"Log updated in {EXCEL_FILE_PATH}"
 
@@ -225,10 +244,12 @@ def aggregate_and_update_excel(new_publications,EXCEL_FILE_PATH):
     
     # Save the final DataFrame to the Excel file
     try:
+        _ensure_parent_dir(EXCEL_FILE_PATH)
         final_df.to_excel(EXCEL_FILE_PATH, index=False, engine='openpyxl')
         print(f"\nSuccessfully saved/updated data to {EXCEL_FILE_PATH}")
     except Exception as e:
         print(f"\nFATAL ERROR: Could not write to Excel file. Check permissions or if the file is open. Error: {e}")        
-        traceback.print_exc()       
-
-
+        traceback.print_exc()
+        # Same reason as in Log_keyPhrases: a swallowed write failure here left
+        # the publication search reporting success on data that never landed.
+        raise

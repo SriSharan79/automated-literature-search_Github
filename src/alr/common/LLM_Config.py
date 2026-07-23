@@ -1,5 +1,5 @@
 import os
-from alr.common.file_manager import ALR_main_folder
+from .file_manager import ALR_main_folder
 import json
 # Model repo id 
 # model_repo_id = "openai/gpt-oss-20b"
@@ -19,6 +19,7 @@ API_keys_config= os.path.join(ALR_main_folder, "API_keys_config.json")
 KEY_ENV_NAMES = {
     'DLR Ollama': "Ollama_DLR_API_Key",
     'BlaBla Door': "BlaBla_API_Key",
+    'Chat AI': "ChatAI_API_Key",
 }
 
 
@@ -84,6 +85,22 @@ def set_api_key(API_Key_type, api_key):
     return api_key
 
 
+def delete_api_key(API_Key_type):
+    """Remove a stored API key from the environment and the config file."""
+    env_name = KEY_ENV_NAMES.get(API_Key_type)
+    if env_name:
+        os.environ.pop(env_name, None)
+
+    config_data = _load_config()
+    if API_Key_type in config_data:
+        del config_data[API_Key_type]
+        try:
+            with open(API_keys_config, 'w') as file:
+                json.dump(config_data, file, indent=4)
+        except OSError as e:
+            print(f"Warning: could not update {API_keys_config}: {e}")
+
+
 def get_api_key(API_Key_type):
     """
     CLI helper: return the stored key, or prompt for it on the console and
@@ -110,6 +127,8 @@ PREFERRED_BLABLADOR_MODELS = [
     "GPT-OSS-120b", "Llama-3.1-70B-Instruct", "Llama-3.1-8B-Instruct",
     "Mistral-Large-Instruct-2407", "Mistral-7B-Instruct-v0.3"
 ]
+
+CHATAI_BASE_URL = "https://chat-ai.academiccloud.de/v1"
 
 # DLR Ollama OpenAI-compatible endpoint (base; specific paths are appended).
 OLLAMA_BASE_URL = "http://ollama.nimbus.dlr.de/api"

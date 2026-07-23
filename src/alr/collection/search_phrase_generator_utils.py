@@ -118,17 +118,21 @@ def generation_of_Key_phrases_with_scope(formatted_user_prompt, phrase_excel_fil
                 'Keywords_in_phrase': kW_in_ph
             })
 
-        # Log the key phrases
-        Log_keyPhrases(Key_Phrases, phrase_excel_file)
-
-        return cleaned_phrases
-
     except Exception as e:
-        # Detailed error logging
+        # A bad or failed LLM answer for ONE subset must not abort the whole
+        # run, so this subset is skipped and the caller's loop moves on.
         print(f"Error in generation_of_Key_phrases_with_scope: {str(e)}")
         print(f"Formatted User Prompt: {formatted_user_prompt}")
         print(f"Master Excel File Path: {phrase_excel_file}")
         return []
+
+    # Deliberately OUTSIDE the try above: failing to write the workbook is a
+    # storage problem, not a bad LLM answer, and must not be swallowed into an
+    # empty result. That is what hid the pruned search_phrase_lists folder until
+    # it resurfaced much later as an AttributeError.
+    Log_keyPhrases(Key_Phrases, phrase_excel_file)
+
+    return cleaned_phrases
 
 def Keywords_Processing_with_scope(CM):
     scope= CM.Research_Scope
@@ -166,7 +170,8 @@ def Keywords_Processing_with_scope(CM):
         
         # Debugging: Print the final key phrases
         # print(f"Final Key Phrases: {Key_Phrases}")
-        total_phrases= extract_column(phrase_excel_file,'Phrase')  
+        # `or []` guards a workbook that exists but has no 'Phrase' column yet.
+        total_phrases= extract_column(phrase_excel_file,'Phrase') or []
         CM.update_Search_phrase_list(total_phrases)
         rank_to_available_data(CM)
         log_generated_list_file(phrase_excel_file,len(total_phrases),log_excel_file,CM)
@@ -177,8 +182,14 @@ def Keywords_Processing_with_scope(CM):
 
     except Exception as e:
         print(f"Error in Keywords_Processing_with_scope: {str(e)}")        
-        traceback.print_exc()       
-        return []
+        traceback.print_exc()
+        # Do NOT return [] here. The caller assigns this back onto its manager
+        # (self.CM = Keywords_Processing_with_scope(self.CM)), so a failure
+        # silently replaced the CollectionManager with a list and the real error
+        # only surfaced later as "'list' object has no attribute
+        # 'Search_phrase_count'". Re-raising lets the UI's _run_threaded show the
+        # error dialog and write a crash log at the point things actually broke.
+        raise
 
 def rank_to_available_data(CM): 
     scope= CM.Research_Scope
@@ -310,11 +321,8 @@ def run_scholarly(Input_Phrases,CM, Num_Search_Results, progress_callback=None, 
     if all_results:
         PUB_log_excel=Path(CM.publications_log_path)
 
-        pubs=extract_column(PUB_EXCEL_FILE_PATH,'Publication Name')
+        pubs=extract_column(PUB_EXCEL_FILE_PATH,'Publication Name') or []
 
         log_generated_list_file(PUB_EXCEL_FILE_PATH,len(pubs),PUB_log_excel,CM)
 
     return all_results
-   
-
-

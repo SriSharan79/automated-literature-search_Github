@@ -402,10 +402,29 @@ class AutomatedLiteratureUI(tk.Tk):
 
             progress(text=f"Processing {len(keywords_list)} keyword(s) with the scope…")
             self.CM.update_Keyword_list(keywords_list)
+            # The end-of-pass cleanup prunes the manager's empty sub-folders, so
+            # the tree built when the scope was derived may be gone by now.
+            # Re-create it before anything writes a JSON/Excel into it.
+            self.CM.ensure_folders()
             log_Keyword_Json(self.CM)
-            self.CM = Keywords_Processing_with_scope(self.CM)
-            print(f"\nSuccessfully logged structural pipeline setups. Ready to rank/export across {self.CM.Search_phrase_count} expressions.")
-            return self.CM.Search_phrase_count
+
+            # Keep the manager. Keywords_Processing_with_scope hands back the
+            # manager on success, but a failed logging step can return the bare
+            # phrase list instead -- rebinding self.CM to that list broke every
+            # later attribute access (AttributeError: 'list' object has no
+            # attribute 'Search_phrase_count').
+            processed = Keywords_Processing_with_scope(self.CM)
+            if isinstance(processed, CollectionManager):
+                self.CM = processed
+            elif isinstance(processed, (list, tuple)):
+                self.CM.update_Search_phrase_list(list(processed))
+
+            count = self.CM.Search_phrase_count or 0
+            if count:
+                print(f"\nSuccessfully logged structural pipeline setups. Ready to rank/export across {count} expressions.")
+            else:
+                print("\nNo search phrases were produced - see the errors above for the step that failed.")
+            return count
 
         def on_success(count):
             if count:
@@ -476,6 +495,9 @@ class AutomatedLiteratureUI(tk.Tk):
         # determinate bar over the phrases. The Excel-only export is quick but
         # goes through the same funnel so every pass behaves identically.
         def work(progress, should_cancel):
+            # Same reason as in _process_keywords_action: the previous pass's
+            # cleanup may have pruned publications_lists/ and search_phrase_lists/.
+            self.CM.ensure_folders()
             if choice_mode == "s":
                 print(f"\nRunning {backend_label}-first publication search matching ranking setup: {rank_col}")
                 progress(text=f"Searching {backend_label} across {len(sorted_phrases)} phrase(s)…")

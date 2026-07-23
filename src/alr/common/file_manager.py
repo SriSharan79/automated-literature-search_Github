@@ -110,11 +110,35 @@ class CollectionManager:
 
         print(f"Data Storage Initialized at: {Collection_Folder}")
 
+    def ensure_folders(self):
+        """
+        (Re-)create the managed folder tree and return self.
+
+        The tree is built once in ``__init__``, but empty sub-folders are removed
+        again by ``artifact_cleanup.prune_touched_folders``, which runs at the end
+        of *every* background pass (see ``main_window._run_threaded``). A pass that
+        only derives the scope therefore leaves ``keywords_lists/``,
+        ``search_phrase_lists/`` and ``publications_lists/`` pruned away, and the
+        next pass that writes into them fails with pandas'
+        "Cannot save file into a non-existent directory".
+
+        Any pass that is about to write must call this first. It is cheap
+        (``exist_ok=True``) and safe to call repeatedly.
+        """
+        self.folder.mkdir(parents=True, exist_ok=True)
+        register_managed_folder(self.folder)
+        for sub in (self.keywords_list_folder,
+                    self.search_phrase_list_folder,
+                    self.publications_list_folder):
+            Path(sub).mkdir(parents=True, exist_ok=True)
+        return self
+
     def update_topic_files(self, doc_id):
         """
         Updates the specific JSON paths for a given document ID.
         Replaces the old 'Update_ID_Files' global logic.
         """
+        self.ensure_folders()
         self.topic_id = doc_id
 
         self.keywords_list_json = os.path.join(self.keywords_list_folder, f"{doc_id}_keywords_list.json")
