@@ -36,6 +36,64 @@ SCHOLAR_COOLDOWN_SECONDS = 15 * 60
 _scholar_blocked_until = 0.0
 
 
+# ---------------------------------------------------------------------------
+# Client-side rate limiting
+# ---------------------------------------------------------------------------
+import threading  # noqa: E402 - kept beside the limiter it supports
+from collections import deque  # noqa: E402
+
+
+def _env_float(name, default):
+    try:
+        return float(os.environ.get(name, "") or default)
+    except (TypeError, ValueError):
+        return float(default)
+
+
+class RateLimiter:
+    """
+    Thread-safe sliding-window limiter: at most ``max_requests`` per
+    ``window_seconds``. ``acquire()`` blocks until a slot is free, then claims
+    it, so bursts are smoothed out instead of hammering the remote API.
+    """
+
+    def __init__(self, max_requests, window_seconds, name):
+        self.max_requests = max(1, int(max_requests))
+        self.window = max(0.001, float(window_seconds))
+        self.name = name
+        self._calls = deque()
+        self._lock = threading.Lock()
+
+    def acquire(self):
+        while True:
+            with self._lock:
+                now = time.time()
+                while self._calls and now - self._calls[0] >= self.window:
+                    self._calls.popleft()
+                if len(self._calls) < self.max_requests:
+                    self._calls.append(now)
+                    return
+                wait = self.window - (now - self._calls[0])
+            if wait > 0:
+                print(Fore.YELLOW
+                      + f"⏳ {self.name} rate limit ({self.max_requests}/"
+                      + f"{self.window:g}s) reached; waiting {wait:.1f}s..."
+                      + Style.RESET_ALL)
+                time.sleep(min(wait, self.window))
+
+
+# OpenAlex allows a generous request rate; keep a polite default well under it.
+OPENALEX_LIMITER = RateLimiter(
+    _env_float("ALR_OPENALEX_RATE_MAX", 8),
+    _env_float("ALR_OPENALEX_RATE_WINDOW", 1.0),
+    "OpenAlex")
+# Google Scholar (via scholarly) blocks aggressively; throttle it hard.
+SCHOLAR_LIMITER = RateLimiter(
+    _env_float("ALR_SCHOLAR_RATE_MAX", 1),
+    _env_float("ALR_SCHOLAR_RATE_WINDOW", 3.0),
+    "Google Scholar")
+
+
 def find_keywords_in_phrase(text: str, keywords: List[str]) -> str:
     if pd.isna(text):
         return ""  # Handle NaN/empty cells
@@ -101,6 +159,7 @@ def _openalex_get(params: dict, timeout: int = 30, max_retries: int = 3) -> dict
     last_exc = None
     for attempt in range(1, max_retries + 1):
         try:
+            OPENALEX_LIMITER.acquire()
             resp = requests.get(OPENALEX_BASE_URL, params=params, timeout=(10, timeout))
             if resp.status_code in (429, 500, 502, 503, 504):
                 retry_after = resp.headers.get("Retry-After")
@@ -205,7 +264,7 @@ def scrape_scholar_data(search_query, Num_Results, Total_keywords):
         MAX_RESULTS = Num_Results
 
         for i, pub in enumerate(search_results):
-            time.sleep(10)
+            SCHOLAR_LIMITER.acquire()
             if i >= MAX_RESULTS:
                 print(f"\nStopped after processing {MAX_RESULTS} results.")
                 break
@@ -241,9 +300,6 @@ def scrape_scholar_data(search_query, Num_Results, Total_keywords):
             except Exception as e:
                 print(f"  Error processing publication: {e}")
                 traceback.print_exc()
-
-            # Sleep to avoid rate-limiting
-            time.sleep(1)
 
     except MaxTriesExceededException as e:
         # Google is serving CAPTCHAs / refusing the scraper: cool down and

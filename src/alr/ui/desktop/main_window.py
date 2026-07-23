@@ -212,6 +212,81 @@ class AutomatedLiteratureUI(tk.Tk):
         scrollbar.pack(side="right", fill="y")
         self.terminal_output.pack(side="left", fill="both", expand=True)
 
+        # Restore the storage paths / inputs from the last session, and save
+        # them again when the window closes (so the tool starts where it was
+        # left off).
+        self._restore_session_state()
+        self.protocol("WM_DELETE_WINDOW", self._on_close)
+
+    # ------------------------------------------------------------------
+    # Session state: remember the storage paths and inputs across runs
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _session_state_path():
+        from alr.common.file_manager import ALR_main_folder
+        return Path(ALR_main_folder) / "ui_session_state.json"
+
+    def _session_fields(self):
+        """Map of session-state key -> (Entry widget, BooleanVar or None)."""
+        fields = {
+            "collect_path": (self.collect_path_entry, self.custom_path_var_col),
+            "analyze_storage": (self.analyze_storage_entry, self.custom_path_var_an),
+            "visualize_storage": (self.visualize_storage_entry, None),
+            "research_area": (self.ra_entry, None),
+            "research_question": (self.rq_entry, None),
+        }
+        # Built in a later tab; guard in case the layout changes.
+        if hasattr(self, "eval_storage_entry"):
+            fields["eval_storage"] = (self.eval_storage_entry, None)
+        return fields
+
+    def _restore_session_state(self):
+        import json as _json
+        try:
+            path = self._session_state_path()
+            if not path.exists():
+                return
+            state = _json.loads(path.read_text(encoding="utf-8"))
+        except Exception as e:  # noqa: BLE001 - never block startup on this
+            print(f"[Session] Could not load saved state: {e}")
+            return
+
+        for key, (entry, flag) in self._session_fields().items():
+            saved = state.get(key)
+            if not isinstance(saved, dict):
+                continue
+            if flag is not None:
+                flag.set(bool(saved.get("enabled", True)))
+            # Enable to write, then restore the disabled look for unticked
+            # custom-path entries.
+            entry.configure(state="normal")
+            entry.delete(0, "end")
+            entry.insert(0, saved.get("value", "") or "")
+            if flag is not None and not flag.get():
+                entry.configure(state="disabled")
+        # Re-sync the custom-path browse buttons with the restored flags.
+        self._toggle_collect_path_btn()
+        self._toggle_analyze_path_btn()
+        print("[Session] Restored storage paths and inputs from the last session.")
+
+    def _save_session_state(self):
+        import json as _json
+        try:
+            state = {}
+            for key, (entry, flag) in self._session_fields().items():
+                state[key] = {
+                    "value": entry.get().strip(),
+                    "enabled": bool(flag.get()) if flag is not None else True,
+                }
+            self._session_state_path().write_text(
+                _json.dumps(state, indent=2), encoding="utf-8")
+        except Exception as e:  # noqa: BLE001 - closing must not fail on this
+            print(f"[Session] Could not save state: {e}")
+
+    def _on_close(self):
+        self._save_session_state()
+        self.destroy()
+
     # ==========================================
     # TAB 1: LITERATURE COLLECTION
     # ==========================================
@@ -288,6 +363,8 @@ class AutomatedLiteratureUI(tk.Tk):
                    command=self._add_manual_keywords).pack(side="left", padx=2, pady=5)
         ttk.Button(kw_action_frame, text="Remove Selected",
                    command=lambda: self._remove_selected_rows(self.kw_tree)).pack(side="left", padx=5, pady=5)
+        ttk.Button(kw_action_frame, text="Import from File...",
+                   command=self._import_keywords_action).pack(side="left", padx=5, pady=5)
 
         self.kw_tree = self._make_check_table(
             keyword_frame, [("keyword", "Keyword", 520)], height=6)
@@ -325,6 +402,8 @@ class AutomatedLiteratureUI(tk.Tk):
                    command=self._add_manual_phrases).pack(side="left", padx=2, pady=5)
         ttk.Button(sp_action_frame, text="Remove Selected",
                    command=lambda: self._remove_selected_rows(self.phrase_tree)).pack(side="left", padx=5, pady=5)
+        ttk.Button(sp_action_frame, text="Import from File...",
+                   command=self._import_phrases_action).pack(side="left", padx=5, pady=5)
 
         self.phrase_tree = self._make_check_table(
             keyword_frame, [("rank", "Rank", 60), ("phrase", "Search Phrase", 460)],
@@ -580,6 +659,72 @@ class AutomatedLiteratureUI(tk.Tk):
         if self.CM is not None:
             self.btn_scholarly.configure(state="normal")
 
+    # ---- Import previously generated keywords / phrases ------------------
+
+    def _import_keywords_action(self):
+        """Load keywords from a previously generated file into the table
+        (checked, de-duplicated against what is already there)."""
+        from alr.collection.collection_imports import read_keywords_file
+        path = filedialog.askopenfilename(
+            title="Import keywords from a previous file",
+            filetypes=[("Keyword files", "*.json *.xlsx *.xls *.csv"),
+                       ("All files", "*.*")])
+        if not path:
+            return
+        try:
+            keywords = read_keywords_file(path)
+        except Exception as e:  # noqa: BLE001 - show the reason, don't crash
+            messagebox.showerror("Import keywords", f"Could not import keywords:\n{e}")
+            return
+        if not keywords:
+            messagebox.showinfo("Import keywords", "No keywords found in that file.")
+            return
+        existing = {self.kw_tree.set(i, "keyword").lower() for i in self.kw_tree.get_children()}
+        added = 0
+        for kw in keywords:
+            if kw.lower() not in existing:
+                self.kw_tree.insert("", "end", values=(self._CHECKED, kw))
+                existing.add(kw.lower())
+                added += 1
+        self._sync_select_all(self.kw_tree)
+        print(f"[Keywords] Imported {added} keyword(s) from {Path(path).name}.")
+
+    def _import_phrases_action(self):
+        """Load search phrases (with ranks, when present) from a previously
+        generated workbook into the phrase table for re-display and search."""
+        from alr.collection.collection_imports import read_phrases_file
+        path = filedialog.askopenfilename(
+            title="Import search phrases from a previous file",
+            filetypes=[("Phrase files", "*.xlsx *.xls *.csv"),
+                       ("All files", "*.*")])
+        if not path:
+            return
+        strategy_map = {"1": "RA_Rank", "2": "RQ_Rank", "3": "RA+RQ_Rank", "4": "TOTAL_Rank"}
+        rank_col = strategy_map.get(self.ranking_var.get(), "TOTAL_Rank")
+        try:
+            rows = read_phrases_file(path, rank_column=rank_col)
+        except Exception as e:  # noqa: BLE001
+            messagebox.showerror("Import phrases", f"Could not import phrases:\n{e}")
+            return
+        if not rows:
+            messagebox.showinfo("Import phrases", "No phrases found in that file.")
+            return
+        existing = {self.phrase_tree.set(i, "phrase").lower() for i in self.phrase_tree.get_children()}
+        added = 0
+        for rank, phrase in rows:
+            if phrase.lower() not in existing:
+                self.phrase_tree.insert("", "end", values=(self._CHECKED, rank, phrase))
+                existing.add(phrase.lower())
+                added += 1
+        self._sync_select_all(self.phrase_tree)
+        # Imported phrases are searchable as soon as a manager exists (created
+        # by any collection action); the search itself will bootstrap one from
+        # the RA/RQ entries if needed.
+        if self.CM is not None:
+            self.btn_scholarly.configure(state="normal")
+        print(f"[Phrases] Imported {added} phrase(s) from {Path(path).name} "
+              f"(rank column: {rank_col} when present).")
+
     # ---- Keyword suggestion + phrase generation --------------------------
 
     def _suggest_keywords_action(self):
@@ -731,6 +876,12 @@ class AutomatedLiteratureUI(tk.Tk):
         rank_col = strategy_map.get(self.ranking_var.get(), "TOTAL_Rank")
 
         num_phrases = int(self.phrases_count_spin.get())
+
+        # Imported phrases can populate the table before any manager exists;
+        # bootstrap one from the RA/RQ entries so the search has somewhere to
+        # write. (Generated-phrase runs already have a manager here.)
+        if self.CM is None and not self._ensure_collection_manager():
+            return
 
         phrase_excel_file = Path(self.CM.search_phrase_list_excel)
         sp_sorted_path = Path(self.CM.search_phrase_sorted_list_excel)
