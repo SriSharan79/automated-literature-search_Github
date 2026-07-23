@@ -430,6 +430,17 @@ class AutomatedLiteratureUI(tk.Tk):
         self.btn_save_excel = ttk.Button(exec_frame, text="Save Ranking to Excel Only", state="disabled", command=lambda: self._execute_search_strategy("e"))
         self.btn_save_excel.pack(side="left", padx=5)
 
+        # Classify the collected publications against the selected keywords
+        # (enabled once a search has produced a list).
+        self.btn_classify_pubs = ttk.Button(
+            exec_frame, text="Classify Publications by Keywords", state="disabled",
+            command=self._classify_publications_action)
+        self.btn_classify_pubs.pack(side="left", padx=5)
+
+        # Live count of the last collected publications list.
+        self.pub_count_var = tk.StringVar(value="No publications collected yet.")
+        ttk.Label(exec_frame, textvariable=self.pub_count_var).pack(side="left", padx=15)
+
     def _toggle_collect_path_btn(self):
         if self.custom_path_var_col.get():
             self.collect_path_entry.configure(state="normal")
@@ -920,24 +931,95 @@ class AutomatedLiteratureUI(tk.Tk):
             if choice_mode == "s":
                 print(f"\nRunning {backend_label}-first publication search matching ranking setup: {rank_col}")
                 progress(text=f"Searching {backend_label} across {len(sorted_phrases)} phrase(s)…")
-                results = run_scholarly(
+                run_scholarly(
                     sorted_phrases, self.CM, 15, backend=backend,
                     progress_callback=lambda d, t, phrase: progress(
                         done=d, total=t, text=f"[{d}/{t}] {backend_label}: {phrase}"))
-                if not results and phrase_excel_file.exists():
+                # Count the unique publications actually collected (the search
+                # accumulates rows across phrases into the publications workbook).
+                pub_path = Path(self.CM.publications_list_excel)
+                pubs = extract_column(pub_path, "Publication Name") if pub_path.exists() else []
+                pub_count = len(pubs or [])
+                if not pub_count and phrase_excel_file.exists():
                     print("Fallback triggered automatically: Saving calculations into target spreadsheet.")
                     get_values_from_sorted_numbers_and_save(phrase_excel_file, rank_col, 'Phrase', num_phrases, sp_sorted_path)
+                print("Collection Operations Sequence Completed.")
+                return pub_count
             else:
                 print(f"\nExtracting top numerical items context vectors targets to location mapping index matching file: {sp_sorted_path}")
                 progress(text="Saving the ranked phrases to Excel…")
                 get_values_from_sorted_numbers_and_save(phrase_excel_file, rank_col, 'Phrase', num_phrases, sp_sorted_path)
+                print("Collection Operations Sequence Completed.")
+                return len(sorted_phrases)
 
-            print("Collection Operations Sequence Completed.")
-            return len(sorted_phrases)
+        if choice_mode == "s":
+            self._run_threaded(work, "Publication Search", "collected",
+                               on_success=self._on_publications_collected,
+                               on_cancelled=self._on_publications_collected)
+        else:
+            self._run_threaded(work, "Save Ranking to Excel", "processed",
+                               on_success=lambda n: print(f"[Collection] Save Ranking to Excel finished ({n} phrase(s))."))
 
-        title = "Publication Search" if choice_mode == "s" else "Save Ranking to Excel"
-        self._run_threaded(work, title, "processed",
-                           on_success=lambda n: print(f"[Collection] {title} finished ({n} phrase(s))."))
+    def _on_publications_collected(self, pub_count):
+        """
+        After a publication search: surface the collected count in the UI and
+        offer to classify the list against the selected keywords.
+        """
+        pub_count = int(pub_count or 0)
+        self.pub_count_var.set(f"{pub_count} publication(s) collected.")
+        if pub_count <= 0:
+            self.btn_classify_pubs.configure(state="disabled")
+            messagebox.showinfo("Publication Search",
+                                "No publications were collected. Check the phrases/backend and try again.")
+            return
+
+        self.btn_classify_pubs.configure(state="normal")
+        proceed = messagebox.askyesno(
+            "Publication Search complete",
+            f"{pub_count} publication(s) were collected.\n\n"
+            "Classify them now against your selected keywords "
+            "(publication name + abstract are tagged and stored in the "
+            "collection space)?")
+        if proceed:
+            self._classify_publications_action()
+
+    def _classify_publications_action(self):
+        """Classify the collected publications against the checked keywords via
+        the custom classifier, storing the result in the collection space."""
+        from alr.collection.publication_classifier import classify_publications_list
+
+        if self.CM is None:
+            messagebox.showerror("Classify Publications", "Run a publication search first.")
+            return
+        tags = self._checked_rows(self.kw_tree, "keyword")
+        if not tags:
+            messagebox.showerror("Classify Publications",
+                                 "Check at least one keyword to use as a classification tag.")
+            return
+        service = self.llm_choice_col.get()
+        if not self._ensure_api_key(service):
+            return
+
+        def work(progress, should_cancel):
+            progress(text=f"Classifying publications against {len(tags)} keyword tag(s)…")
+            return classify_publications_list(
+                self.CM, tags, service=service, should_cancel=should_cancel,
+                progress_callback=lambda d, t: progress(
+                    done=d, total=t, text=f"[{d}/{t}] Classifying publications…"))
+
+        def on_done(result):
+            count, out_path = result if isinstance(result, tuple) else (result, None)
+            if count and out_path:
+                messagebox.showinfo(
+                    "Classify Publications",
+                    f"Classified {count} publication(s) against {len(tags)} keyword(s).\n\n"
+                    f"Saved in the collection space:\n{out_path}")
+            else:
+                messagebox.showinfo("Classify Publications",
+                                    "Nothing was classified (empty or missing publications list).")
+
+        self._run_threaded(work, "Classify Publications", "classified",
+                           on_success=on_done, on_cancelled=on_done)
 
     # ==========================================
     # TAB 2: LITERATURE ANALYSIS

@@ -89,13 +89,19 @@ class CollectionManager:
         self.publications_list_folder = self.folder / "publications_lists"
         self.publications_list_folder.mkdir(exist_ok=True)
         self.publications_log_path = os.path.join(self.folder, "publications_list_log.xlsx")
-        
+
+        # Classified publications live in the COLLECTION space (not the Data
+        # Analysis space): the search list tagged against the user's keywords.
+        self.classified_publications_folder = self.folder / "classified_publications"
+        self.classified_publications_folder.mkdir(exist_ok=True)
+
 
         # Placeholders for ID-specific paths
         self.topic_id= None
         self.keywords_list_excel = None
         self.search_phrase_list_excel = None
         self.publications_list_excel = None
+        self.classified_publications_excel = None
 
         self.Research_Area = None
         self.Research_Question = None
@@ -129,7 +135,8 @@ class CollectionManager:
         register_managed_folder(self.folder)
         for sub in (self.keywords_list_folder,
                     self.search_phrase_list_folder,
-                    self.publications_list_folder):
+                    self.publications_list_folder,
+                    self.classified_publications_folder):
             Path(sub).mkdir(parents=True, exist_ok=True)
         return self
 
@@ -147,6 +154,7 @@ class CollectionManager:
         self.search_phrase_sorted_list_excel = os.path.join(self.search_phrase_list_folder, f"{doc_id}_search_phrase_sorted_list.xlsx")
 
         self.publications_list_excel = os.path.join(self.publications_list_folder, f"{doc_id}_publications_list.xlsx")
+        self.classified_publications_excel = os.path.join(self.classified_publications_folder, f"{doc_id}_classified_publications.xlsx")
 
         
         print_with_separator("DebugLog",'/')
