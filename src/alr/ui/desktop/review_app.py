@@ -2057,5 +2057,12 @@ def open_review_app(master=None):
         crash_logger.attach_to_tk(win)
     win.title("Automated Literature Review — Review Tool")
     win.geometry("1050x760")
+    # Same clam theme as the main tool (the theme is interpreter-wide, so a
+    # Toplevel opened from the main app already has it; this covers the
+    # standalone review_main.py launch).
+    try:
+        ttk.Style(win).theme_use("clam")
+    except tk.TclError:
+        pass
     ReviewApp(win)
     return win

@@ -168,6 +168,13 @@ class AutomatedLiteratureUI(tk.Tk):
         print(f"Welcome, {self.username}! Application Initialized.")
 
     def _create_widgets(self):
+        # Consistent look across platforms; clam also renders the ttk
+        # scrollbars/notebook more clearly than the platform default.
+        try:
+            ttk.Style(self).theme_use("clam")
+        except tk.TclError:
+            pass  # theme unavailable on this Tk build - keep the default
+
         # Top bar: greeting + global actions (fixed height at the top).
         top_bar = tk.Frame(self)
         top_bar.pack(fill="x", pady=10)
@@ -209,8 +216,7 @@ class AutomatedLiteratureUI(tk.Tk):
     # TAB 1: LITERATURE COLLECTION
     # ==========================================
     def _build_collect_tab(self):
-        tab = ttk.Frame(self.notebook)
-        self.notebook.add(tab, text="1. Collect Literature")
+        tab = self._make_scrollable_tab("1. Collect Literature")
 
         # Storage Path configuration
         path_frame = tk.LabelFrame(tab, text="Data Storage Configuration")
@@ -529,8 +535,7 @@ class AutomatedLiteratureUI(tk.Tk):
     # TAB 2: LITERATURE ANALYSIS
     # ==========================================
     def _build_analyze_tab(self):
-        tab = ttk.Frame(self.notebook)
-        self.notebook.add(tab, text="2. Analyze Literature")
+        tab = self._make_scrollable_tab("2. Analyze Literature")
 
         # Select file or folder
         path_frame = tk.LabelFrame(tab, text="Input Selection Targets (.pdf format)")
@@ -1468,8 +1473,7 @@ class AutomatedLiteratureUI(tk.Tk):
     # TAB 4: SECTION JSON EDITOR
     # ==========================================
     def _build_section_editor_tab(self):
-        tab = ttk.Frame(self.notebook)
-        self.notebook.add(tab, text="4. Section Editor")
+        tab = self._make_scrollable_tab("4. Section Editor")
 
         header = ttk.Frame(tab)
         header.pack(fill="x", padx=10, pady=(8, 0))
