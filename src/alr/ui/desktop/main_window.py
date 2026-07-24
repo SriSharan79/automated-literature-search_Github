@@ -44,7 +44,6 @@ def _provider_code(value):
 from alr.common.sql_store import sync_storage_to_sql
 from alr.common import crash_logger
 from alr.ui.desktop.review_app import open_review_app, ProgressDialog
-from alr.ui.desktop.section_rewriter_view import JSONRestructurerUI, open_section_editor_window
 from alr.data_analysis.Pdf_File_processor import process_pdf_mode_file
 from alr.rag_builders.db_manager import generate_databases
 from alr.rag_builders.query_executor import generate_query_report
@@ -282,15 +281,13 @@ class AutomatedLiteratureUI(tk.Tk):
         self.notebook.pack(fill="both", expand=True)
         body.add(notebook_pane, weight=3)
 
-        # Build individual Tabs. The Section Editor is a side tool, so it sits
-        # at the end instead of interrupting the collect -> analyze -> visualize
-        # -> evaluate -> enrich pipeline order.
+        # Build individual Tabs, in pipeline order. (The Section Editor is a
+        # side tool and now lives in the Review tool, not here.)
         self._build_collect_tab()
         self._build_analyze_tab()
         self._build_visualize_tab()
         self._build_evaluation_tab()
         self._build_enrichment_tab()
-        self._build_section_editor_tab()
 
         # Console pane -> bottom. A one-line status label above it echoes the
         # last action's result, so the user doesn't have to read the raw log.
@@ -358,10 +355,11 @@ class AutomatedLiteratureUI(tk.Tk):
               "Afterwards you can classify the collected publications by your keywords."),
         "2": ("Analyze Literature",
               "Point at a PDF or a folder of PDFs and choose what to extract (sections,\n"
-              "abstract, introduction, results & conclusion, references, DOI, classification,\n"
-              "and optional RAG databases). Existing results are reused instead of recomputed.\n"
-              "The folder you analyze into becomes the active storage space for the next tabs."),
-        "3": ("Visualize & Query",
+              "abstract, introduction, results & conclusion, references, DOI, classification\n"
+              "by title and/or abstract, and optional RAG databases). Existing results are\n"
+              "reused instead of recomputed. The folder you analyze into becomes the active\n"
+              "storage space for the next tabs. Buttons here jump to Evaluation and Enrichment."),
+        "3": ("Query Execution",
               "Run a RAG query against the active storage space (or the common database).\n"
               "Pick which section types to search and which attributes to add as columns.\n"
               "Set top-k, and optionally harvest the matched files next to the report."),
@@ -373,10 +371,14 @@ class AutomatedLiteratureUI(tk.Tk):
               "Run standalone passes over an already-analyzed space: DOI/metadata lookup,\n"
               "title/abstract classification, custom-tag classification, and question-scored\n"
               "classification. Uses the active storage space and LLM service."),
-        "6": ("Section Editor",
-              "A side tool to open and restructure the section JSON files a document produced,\n"
-              "editing their content before it feeds the databases and evaluation."),
     }
+
+    def _select_tab_by_prefix(self, prefix):
+        """Bring the notebook tab whose title starts with ``prefix`` to the front."""
+        for tab_id in self.notebook.tabs():
+            if self.notebook.tab(tab_id, "text").startswith(prefix):
+                self.notebook.select(tab_id)
+                return
 
     def _show_current_tab_help(self):
         """Show plain-language help for whichever tab is currently open."""
@@ -1375,7 +1377,8 @@ class AutomatedLiteratureUI(tk.Tk):
             "results": tk.BooleanVar(value=True),
             "references": tk.BooleanVar(value=False),
             "doi": tk.BooleanVar(value=True),
-            "classification": tk.BooleanVar(value=True),
+            "classification_title": tk.BooleanVar(value=True),
+            "classification_abstract": tk.BooleanVar(value=True),
             "text_db": tk.BooleanVar(value=False),
             "vector_db": tk.BooleanVar(value=False),
         }
@@ -1387,7 +1390,14 @@ class AutomatedLiteratureUI(tk.Tk):
         ttk.Checkbutton(comp_frame, text="Results & Conclusion", variable=self.comp_vars["results"]).grid(row=0, column=3, sticky="w", padx=6, pady=3)
         ttk.Checkbutton(comp_frame, text="References", variable=self.comp_vars["references"]).grid(row=1, column=0, sticky="w", padx=6, pady=3)
         ttk.Checkbutton(comp_frame, text="DOI / metadata", variable=self.comp_vars["doi"]).grid(row=1, column=1, sticky="w", padx=6, pady=3)
-        ttk.Checkbutton(comp_frame, text="Classification", variable=self.comp_vars["classification"]).grid(row=1, column=2, sticky="w", padx=6, pady=3)
+        # Classification is split so the user can pick which text is classified.
+        cls_frame = ttk.Frame(comp_frame)
+        cls_frame.grid(row=1, column=2, columnspan=2, sticky="w", padx=2, pady=0)
+        ttk.Label(cls_frame, text="Classification:").pack(side="left", padx=(4, 2))
+        ttk.Checkbutton(cls_frame, text="by Title",
+                        variable=self.comp_vars["classification_title"]).pack(side="left", padx=4)
+        ttk.Checkbutton(cls_frame, text="by Abstract",
+                        variable=self.comp_vars["classification_abstract"]).pack(side="left", padx=4)
         # RAG database builds, now selectable separately. Both are incremental
         # syncs (only missing entries/vectors are added, nothing is rebuilt from
         # scratch). The vector DB is built FROM the text DB's section JSON files,
@@ -1408,6 +1418,14 @@ class AutomatedLiteratureUI(tk.Tk):
         # Process Execute
         btn_run_analysis = ttk.Button(tab, text="Execute Document Extraction & Analysis", command=self._run_analysis_action)
         btn_run_analysis.pack(pady=20, ipadx=10, ipady=5)
+
+        # Quick links to the follow-on stages (they open the same tabs).
+        next_frame = tk.LabelFrame(tab, text="Next steps (on the active storage space)")
+        next_frame.pack(fill="x", padx=10, pady=(0, 10))
+        ttk.Button(next_frame, text="Open Evaluation →",
+                   command=lambda: self._select_tab_by_prefix("4.")).pack(side="left", padx=8, pady=8)
+        ttk.Button(next_frame, text="Open Enrichment →",
+                   command=lambda: self._select_tab_by_prefix("5.")).pack(side="left", padx=8, pady=8)
 
     def _toggle_analyze_path_btn(self):
         if self.custom_path_var_an.get():
@@ -1454,12 +1472,17 @@ class AutomatedLiteratureUI(tk.Tk):
         # is always run as the prerequisite; the rest are optional.
         components = {c for c in ("abstract", "intro", "results", "references") if self.comp_vars[c].get()}
         do_doi = self.comp_vars["doi"].get()
-        do_classify = self.comp_vars["classification"].get()
+        do_classify_title = self.comp_vars["classification_title"].get()
+        do_classify_abstract = self.comp_vars["classification_abstract"].get()
+        do_classify = do_classify_title or do_classify_abstract
         do_text_db = self.comp_vars["text_db"].get()
         do_vector_db = self.comp_vars["vector_db"].get()
+        classify_label = ", ".join(
+            k for k, on in (("title", do_classify_title), ("abstract", do_classify_abstract)) if on)
         print(f"[Selection] Components: sections (required)"
               + "".join(f", {c}" for c in ("abstract", "intro", "results", "references") if c in components)
-              + (", doi/metadata" if do_doi else "") + (", classification" if do_classify else "")
+              + (", doi/metadata" if do_doi else "")
+              + (f", classification ({classify_label})" if do_classify else "")
               + (", text DB" if do_text_db else "") + (", vector DB" if do_vector_db else ""))
 
         # The per-document pass reuses whatever a previous dated file already holds
@@ -1552,13 +1575,16 @@ class AutomatedLiteratureUI(tk.Tk):
                     except Exception as e:
                         print(f"[DOI Enrichment] {pdf.name}: {e}")
 
-                # 4. Classification (title + abstract), copy-or-generate per class_mode.
+                # 4. Classification (by title and/or abstract per the user's
+                # choice), copy-or-generate per class_mode.
                 if do_classify and doc and not should_cancel():
                     progress(text=f"[{i}/{total}] Classifying: {pdf.name}")
                     try:
                         from alr.analysis_evaluation.publication_classification.classify_runner import classify_document
-                        classify_document(MF, doc, kind="title", service=service, mode=class_mode)
-                        classify_document(MF, doc, kind="abstract", service=service, mode=class_mode)
+                        if do_classify_title:
+                            classify_document(MF, doc, kind="title", service=service, mode=class_mode)
+                        if do_classify_abstract:
+                            classify_document(MF, doc, kind="abstract", service=service, mode=class_mode)
                     except Exception as e:
                         print(f"[Classification] {pdf.name}: {e}")
 
@@ -1839,7 +1865,7 @@ class AutomatedLiteratureUI(tk.Tk):
     # TAB 3: VISUALIZE & RAG QUERY
     # ==========================================
     def _build_visualize_tab(self):
-        tab = self._make_scrollable_tab("3. Visualize & Query")
+        tab = self._make_scrollable_tab("3. Query Execution")
 
         v_frame = tk.LabelFrame(tab, text="RAG Database Query Engine (Vector DB Layout Profiles)")
         v_frame.pack(fill="x", padx=10, pady=10)
@@ -2289,18 +2315,6 @@ class AutomatedLiteratureUI(tk.Tk):
     # ==========================================
     # TAB 4: SECTION JSON EDITOR
     # ==========================================
-    def _build_section_editor_tab(self):
-        tab = self._make_scrollable_tab("6. Section Editor")
-
-        header = ttk.Frame(tab)
-        header.pack(fill="x", padx=10, pady=(8, 0))
-        ttk.Label(header, text="Restructure and edit section JSON files.").pack(side="left")
-        ttk.Button(header, text="Pop out ▸", command=lambda: open_section_editor_window(self)).pack(side="right")
-
-        container = ttk.Frame(tab)
-        container.pack(fill="both", expand=True)
-        self.section_editor = JSONRestructurerUI(container)
-
     # ==========================================
     # TAB 5: EVALUATE & ENRICH
     # ==========================================

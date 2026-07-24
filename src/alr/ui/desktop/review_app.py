@@ -328,6 +328,7 @@ class ReviewApp:
         self._build_database_tab()
         self._build_overviews_tab()
         self._build_data_files_tab()
+        self._build_section_editor_tab()
         self._build_help_tab()
 
     # ================================================================ Spaces
@@ -1663,6 +1664,13 @@ class ReviewApp:
          "filename (with progress + cancel), letting you pick when several copies "
          "exist, then 'Open PDF' opens it."),
     ]
+
+    def _build_section_editor_tab(self):
+        """Host the section JSON editor here (moved out of the main tool)."""
+        from alr.ui.desktop.section_rewriter_view import JSONRestructurerUI
+        tab = ttk.Frame(self.notebook)
+        self.notebook.add(tab, text="Section Editor")
+        self.section_editor = JSONRestructurerUI(tab)
 
     def _build_help_tab(self):
         tab = ttk.Frame(self.notebook)
