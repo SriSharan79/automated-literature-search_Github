@@ -252,14 +252,20 @@ def sql_target_for_type(type_key):
 
 
 class ProgressDialog:
-    """A small modal dialog with a status message, progress bar and Cancel."""
+    """A small dialog with a status message, progress bar and Cancel.
 
-    def __init__(self, master, title="Working…", on_cancel=None):
+    Modal by default; pass ``modal=False`` to let the rest of the app stay
+    interactive (e.g. browse other tabs) while a long pass runs.
+    """
+
+    def __init__(self, master, title="Working…", on_cancel=None, modal=True):
         self.top = tk.Toplevel(master)
         self.top.title(title)
         self.top.geometry("440x160")
         self.top.transient(master)
-        self.top.grab_set()
+        self._modal = modal
+        if modal:
+            self.top.grab_set()
         self.top.resizable(False, False)
         # Closing the window acts as Cancel (if cancellable), else no-op.
         self.top.protocol("WM_DELETE_WINDOW", (lambda: self._cancel()) if on_cancel else (lambda: None))
@@ -296,7 +302,8 @@ class ProgressDialog:
     def close(self):
         try:
             self.bar.stop()
-            self.top.grab_release()
+            if self._modal:
+                self.top.grab_release()
             self.top.destroy()
         except tk.TclError:
             pass

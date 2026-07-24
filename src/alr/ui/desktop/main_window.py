@@ -85,7 +85,43 @@ class CustomTerminalText(tk.Text):
         self._fg_tag = None
         self._bg_tag = None
         self._bright = False
+        # When False (default) the developer-noise lines (DebugLog banners,
+        # separator rules, raw LLM response dumps) are filtered out so the log
+        # reads as a plain activity feed. Toggled by the "Verbose log" checkbox.
+        self.verbose = False
+        self._suppressing = False
         self._poll_write_queue()
+
+    def _strip_ansi(self, line):
+        return self._ANSI_RE.sub("", line).strip()
+
+    def _filter_noise(self, chunk):
+        """Drop developer-noise lines from ``chunk`` when not in verbose mode."""
+        kept = []
+        for line in chunk.split("\n"):
+            clean = self._strip_ansi(line)
+            upper = clean.upper()
+            if self._suppressing:
+                if "RAW LLM RESPONSE" in upper and "END" in upper:
+                    self._suppressing = False
+                continue
+            if "RAW LLM RESPONSE" in upper:
+                if "START" in upper:
+                    self._suppressing = True
+                continue  # drop single-line markers too
+            if clean == "DebugLog":
+                continue
+            # A pure rule of one repeated punctuation char (e.g. "////", "====").
+            if len(clean) >= 10 and len(set(clean)) == 1 and clean[0] in "/\\*=-_":
+                continue
+            kept.append(line)
+        # Collapse runs of blank lines the filtering can leave behind.
+        out = []
+        for line in kept:
+            if self._strip_ansi(line) == "" and out and self._strip_ansi(out[-1]) == "":
+                continue
+            out.append(line)
+        return "\n".join(out)
 
     def _configure_ansi_tags(self):
         for code, colour in self._FG.items():
@@ -144,8 +180,12 @@ class CustomTerminalText(tk.Text):
     def _poll_write_queue(self):
         try:
             while True:
-                self._insert_ansi(self._write_queue.get_nowait())
-                self.see(tk.END)
+                chunk = self._write_queue.get_nowait()
+                if not self.verbose:
+                    chunk = self._filter_noise(chunk)
+                if chunk:
+                    self._insert_ansi(chunk)
+                    self.see(tk.END)
         except queue.Empty:
             pass
         except tk.TclError:
@@ -167,6 +207,7 @@ class AutomatedLiteratureUI(tk.Tk):
 
         self.title("Automated Literature Review Support Tool")
         self.geometry("900x750")
+        self.minsize(900, 650)  # keep the layout usable; don't let it be shrunk to nothing
         self.username = os.environ.get("USERNAME", "User")
         
         # Track active manager objects
@@ -196,6 +237,7 @@ class AutomatedLiteratureUI(tk.Tk):
         greeting_lbl.pack(side="left", padx=10)
         ttk.Button(top_bar, text="API Keys...", command=self._manage_api_keys_action).pack(side="right", padx=10)
         ttk.Button(top_bar, text="Open Review Tool", command=lambda: open_review_app(self)).pack(side="right", padx=4)
+        ttk.Button(top_bar, text="Help", command=self._show_current_tab_help).pack(side="right", padx=4)
 
         # Status strip: the currently selected LLM provider, its model, and
         # whether an API key is stored for it -- visible before you act instead
@@ -240,22 +282,29 @@ class AutomatedLiteratureUI(tk.Tk):
         self.notebook.pack(fill="both", expand=True)
         body.add(notebook_pane, weight=3)
 
-        # Build individual Tabs
+        # Build individual Tabs. The Section Editor is a side tool, so it sits
+        # at the end instead of interrupting the collect -> analyze -> visualize
+        # -> evaluate -> enrich pipeline order.
         self._build_collect_tab()
         self._build_analyze_tab()
         self._build_visualize_tab()
-        self._build_section_editor_tab()
         self._build_evaluation_tab()
         self._build_enrichment_tab()
+        self._build_section_editor_tab()
 
         # Console pane -> bottom. A one-line status label above it echoes the
         # last action's result, so the user doesn't have to read the raw log.
         console_pane = ttk.Frame(body)
 
+        console_head = ttk.Frame(console_pane)
+        console_head.pack(fill="x", padx=4, pady=(2, 0))
         self.last_result_var = tk.StringVar(value="Ready.")
-        self._last_result_lbl = tk.Label(console_pane, textvariable=self.last_result_var,
+        self._last_result_lbl = tk.Label(console_head, textvariable=self.last_result_var,
                                          anchor="w", font=("Arial", 9))
-        self._last_result_lbl.pack(fill="x", padx=4, pady=(2, 0))
+        self._last_result_lbl.pack(side="left", fill="x", expand=True)
+        self.verbose_log_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(console_head, text="Verbose log", variable=self.verbose_log_var,
+                        command=self._toggle_verbose_log).pack(side="right")
 
         terminal_frame = tk.LabelFrame(console_pane, text="Console Output Log")
         terminal_frame.pack(fill="both", expand=True)
@@ -297,6 +346,52 @@ class AutomatedLiteratureUI(tk.Tk):
         self.status_key_var.set("● API key set" if has_key else "○ API key missing")
         if hasattr(self, "_status_key_lbl"):
             self._status_key_lbl.configure(foreground="#1a7f37" if has_key else "#b3261e")
+
+    # Short, plain-language help for each tab (keyed by the numeric prefix of
+    # the tab title, so it survives re-labelling of the rest of the title).
+    _TAB_HELP = {
+        "1": ("Collect Literature",
+              "Enter your Research Area and Question, then (optionally) derive a scope.\n"
+              "Build a keyword list (suggest via LLM, add your own, or import a file) and\n"
+              "tick the ones to use. Generate search phrases, pick the ranked ones, and run\n"
+              "the publication search (OpenAlex or Google Scholar, with automatic fallback).\n"
+              "Afterwards you can classify the collected publications by your keywords."),
+        "2": ("Analyze Literature",
+              "Point at a PDF or a folder of PDFs and choose what to extract (sections,\n"
+              "abstract, introduction, results & conclusion, references, DOI, classification,\n"
+              "and optional RAG databases). Existing results are reused instead of recomputed.\n"
+              "The folder you analyze into becomes the active storage space for the next tabs."),
+        "3": ("Visualize & Query",
+              "Run a RAG query against the active storage space (or the common database).\n"
+              "Pick which section types to search and which attributes to add as columns.\n"
+              "Set top-k, and optionally harvest the matched files next to the report."),
+        "4": ("Evaluation",
+              "Score analyzed documents in the active storage space: grounding of the\n"
+              "abstract/intro/results against the source, plus lexical, distance and cosine\n"
+              "metrics. You can also compare two pasted texts directly."),
+        "5": ("Enrichment",
+              "Run standalone passes over an already-analyzed space: DOI/metadata lookup,\n"
+              "title/abstract classification, custom-tag classification, and question-scored\n"
+              "classification. Uses the active storage space and LLM service."),
+        "6": ("Section Editor",
+              "A side tool to open and restructure the section JSON files a document produced,\n"
+              "editing their content before it feeds the databases and evaluation."),
+    }
+
+    def _show_current_tab_help(self):
+        """Show plain-language help for whichever tab is currently open."""
+        try:
+            title = self.notebook.tab(self.notebook.select(), "text")
+        except tk.TclError:
+            return
+        key = title.split(".", 1)[0].strip()
+        name, body = self._TAB_HELP.get(key, (title, "No help available for this tab."))
+        messagebox.showinfo(f"Help — {name}", body)
+
+    def _toggle_verbose_log(self):
+        """Show or hide the developer-noise lines in the console log."""
+        if hasattr(self, "terminal_output"):
+            self.terminal_output.verbose = bool(self.verbose_log_var.get())
 
     def _set_last_result(self, text, ok=True):
         """Echo the last action's outcome on the one-line status label above the
@@ -623,7 +718,7 @@ class AutomatedLiteratureUI(tk.Tk):
         ra = self.ra_entry.get().strip()
         rq = self.rq_entry.get().strip()
         if not ra or not rq:
-            messagebox.showerror("Error", "Please clarify both Research Area and Research Question items first.")
+            messagebox.showerror("Missing details", "Enter both the Research Area and the Research Question first.")
             return False
 
         if self.CM is None:
@@ -1327,7 +1422,7 @@ class AutomatedLiteratureUI(tk.Tk):
         service = _provider_code(self.llm_choice_an.get())
 
         if not input_target:
-            messagebox.showerror("Error", "Please input or select a valid target path destination first.")
+            messagebox.showerror("No input selected", "Select a PDF file or a folder of PDFs to analyze first.")
             return
 
         if not self._ensure_api_key(service):
@@ -1337,7 +1432,7 @@ class AutomatedLiteratureUI(tk.Tk):
         print(f"\n[Validation Log Check] Processing input detected structure template parameters: {result.kind}")
 
         if result.kind not in ("pdf_file", "folder"):
-            messagebox.showerror("Error", "Input verified path target structure configuration not recognized or invalid.")
+            messagebox.showerror("Invalid input", "That path isn't a PDF file or a folder. Choose a .pdf file or a folder that contains PDFs.")
             return
 
         # Setup Framework Data Storage Analyzer Config instance parameters
@@ -1628,8 +1723,18 @@ class AutomatedLiteratureUI(tk.Tk):
         the answer. Workers with the plain ``(progress, should_cancel)`` signature
         are called unchanged.
         """
+        # Only one background pass at a time. The progress dialog is now
+        # non-modal (the user can browse other tabs while it runs), so guard
+        # against a second pass being launched on top of a running one.
+        if getattr(self, "_busy", False):
+            messagebox.showinfo("Please wait",
+                                "A task is already running. Let it finish (or cancel it) "
+                                "before starting another.")
+            return
+        self._busy = True
+
         cancel_event = threading.Event()
-        dlg = ProgressDialog(self, title, on_cancel=cancel_event.set)
+        dlg = ProgressDialog(self, title, on_cancel=cancel_event.set, modal=False)
         q = queue.Queue()
         outcome = {}
 
@@ -1676,6 +1781,7 @@ class AutomatedLiteratureUI(tk.Tk):
                 q.put(("done", result))
 
         def finish():
+            self._busy = False
             dlg.close()
             if "error" in outcome:
                 self._set_last_result(f"{title}: failed — {outcome['error']}", ok=False)
@@ -2119,7 +2225,7 @@ class AutomatedLiteratureUI(tk.Tk):
             if query_common and not storage_choice:
                 messagebox.showerror("Error", "Query target is the Common DB, but no Common DB folder is set below.")
             else:
-                messagebox.showerror("Error", "Please make sure to supply both data engine reference destination parameters and active query statements strings text models templates.")
+                messagebox.showerror("Missing query inputs", "Enter both a storage space and a query before running.")
             return
 
         try:
@@ -2184,7 +2290,7 @@ class AutomatedLiteratureUI(tk.Tk):
     # TAB 4: SECTION JSON EDITOR
     # ==========================================
     def _build_section_editor_tab(self):
-        tab = self._make_scrollable_tab("4. Section Editor")
+        tab = self._make_scrollable_tab("6. Section Editor")
 
         header = ttk.Frame(tab)
         header.pack(fill="x", padx=10, pady=(8, 0))
@@ -2265,7 +2371,7 @@ class AutomatedLiteratureUI(tk.Tk):
         self._build_embedding_selector(shared).pack(fill="x", padx=5, pady=(0, 8))
 
     def _build_evaluation_tab(self):
-        tab = self._make_scrollable_tab("5. Evaluation")
+        tab = self._make_scrollable_tab("4. Evaluation")
         self._build_shared_eval_inputs(tab)
 
         # ================= EVALUATION =================
@@ -2382,7 +2488,7 @@ class AutomatedLiteratureUI(tk.Tk):
                   wraplength=860, justify="left").pack(anchor="w", padx=8, pady=(0, 6))
 
     def _build_enrichment_tab(self):
-        tab = self._make_scrollable_tab("6. Enrichment")
+        tab = self._make_scrollable_tab("5. Enrichment")
         self._build_shared_eval_inputs(tab)
 
         # ================= ENRICHMENT =================
@@ -2946,34 +3052,31 @@ class AutomatedLiteratureUI(tk.Tk):
 
     def _choose_model_action(self, provider_code):
         """
-        Fetch the live list of available models for the selected provider
-        ('B' = Blablador, 'C' = Chat AI, 'O' = DLR Ollama), let the user pick
-        one, and store it as the session model used by all subsequent LLM calls.
+        Show the model list for the selected provider ('B' = Blablador,
+        'C' = Chat AI, 'O' = DLR Ollama) and let the user pick one, stored as
+        the session model for all subsequent LLM calls.
+
+        The list comes from the **stored** cache (no network) — the dialog's
+        “Refresh list” button re-fetches it live on demand.
         """
         code = _provider_code(provider_code)
         service = _CODE_TO_SERVICE.get(code, "BlaBla")
 
-        print(f"Fetching available {service} models...")
         try:
-            models = list_available_models(service)
+            models = list_available_models(service)   # cached (fetch once on a miss)
         except Exception as e:
-            messagebox.showerror("Model list failed", f"Could not fetch models for {service}:\n{e}")
+            messagebox.showerror("Model list failed",
+                                 f"Could not read models for {service}:\n{e}")
             return
-
-        if not models:
-            messagebox.showwarning("No models", f"No models returned for {service}.\nKeeping current: {get_selected_model(service)}")
-            return
-
-        current = get_selected_model(service)
 
         dialog = tk.Toplevel(self)
         dialog.title(f"Select {service} Model")
-        dialog.geometry("560x400")
+        dialog.geometry("560x420")
         dialog.transient(self)
         dialog.grab_set()
 
-        ttk.Label(dialog, text=f"Available {service} models (current: {current}):",
-                  font=("Arial", 10, "bold")).pack(padx=10, pady=8, anchor="w")
+        header = ttk.Label(dialog, font=("Arial", 10, "bold"))
+        header.pack(padx=10, pady=8, anchor="w")
 
         list_frame = ttk.Frame(dialog)
         list_frame.pack(fill="both", expand=True, padx=10, pady=5)
@@ -2983,23 +3086,53 @@ class AutomatedLiteratureUI(tk.Tk):
         scrollbar.pack(side="right", fill="y")
         listbox.pack(side="left", fill="both", expand=True)
 
-        for m in models:
-            listbox.insert(tk.END, m)
-        if current in models:
-            idx = models.index(current)
-            listbox.selection_set(idx)
-            listbox.see(idx)
+        state = {"models": list(models)}
+
+        def _populate():
+            listbox.delete(0, tk.END)
+            for m in state["models"]:
+                listbox.insert(tk.END, m)
+            cur = get_selected_model(service)
+            header.config(text=f"Available {service} models (current: {cur}):"
+                          if state["models"]
+                          else f"No stored models for {service} — press "
+                               "“Refresh list”.")
+            if cur in state["models"]:
+                idx = state["models"].index(cur)
+                listbox.selection_set(idx)
+                listbox.see(idx)
+
+        def _refresh():
+            header.config(text=f"Refreshing {service} models…")
+            dialog.update_idletasks()
+            try:
+                fresh = list_available_models(service, force_refresh=True)
+            except Exception as e:
+                messagebox.showerror("Refresh failed",
+                                     f"Could not fetch models for {service}:\n{e}")
+                _populate()
+                return
+            if fresh:                      # keep the stored list on an empty fetch
+                state["models"] = list(fresh)
+            _populate()
 
         def _on_confirm():
             sel = listbox.curselection()
             if not sel:
-                messagebox.showinfo("No selection", "Please select a model, or close the dialog to keep the current one.")
+                messagebox.showinfo("No selection", "Please select a model, or "
+                                    "close the dialog to keep the current one.")
                 return
-            set_selected_model(service, models[sel[0]])
+            set_selected_model(service, state["models"][sel[0]])
             self._refresh_provider_status(code)
             dialog.destroy()
 
-        ttk.Button(dialog, text="Use Selected Model", command=_on_confirm).pack(pady=10)
+        _populate()
+        btns = ttk.Frame(dialog)
+        btns.pack(pady=10)
+        ttk.Button(btns, text="🔄 Refresh list",
+                   command=_refresh).pack(side="left", padx=6)
+        ttk.Button(btns, text="Use Selected Model",
+                   command=_on_confirm).pack(side="left", padx=6)
 
     # ==========================================
     # EMBEDDING ENGINE SELECTION (vector DBs / cosine similarity)
@@ -3089,38 +3222,30 @@ class AutomatedLiteratureUI(tk.Tk):
 
     def _choose_embedding_model_action(self):
         """
-        Fetch the live list of embedding models for the selected embedding
-        service ('B' = Blablador, 'C' = Chat AI, 'O' = DLR Ollama), let the
-        user pick one, and store it as the session embedding model. Mirrors
-        _choose_model_action.
+        Show the embedding-model list for the selected embedding service
+        ('B' = Blablador, 'C' = Chat AI, 'O' = DLR Ollama) and let the user
+        pick one, stored as the session embedding model. Mirrors
+        _choose_model_action: the list is the stored cache; the dialog's
+        “Refresh list” button re-fetches it live on demand.
         """
         service_code = _provider_code(self.embed_service_var.get())
         service = _CODE_TO_SERVICE.get(service_code, "BlaBla")
 
-        print(f"Fetching available {service} embedding models...")
         try:
-            models = list_embedding_models(service)
+            models = list_embedding_models(service)   # cached (fetch once on a miss)
         except Exception as e:
-            messagebox.showerror("Model list failed", f"Could not fetch embedding models for {service}:\n{e}")
+            messagebox.showerror("Model list failed",
+                                 f"Could not read embedding models for {service}:\n{e}")
             return
-
-        if not models:
-            messagebox.showwarning(
-                "No embedding models",
-                f"No embedding models returned for {service}.\n"
-                f"Keeping current: {self._embed_model_choice.get(service_code) or 'auto (service default)'}")
-            return
-
-        current = self._embed_model_choice.get(service_code)
 
         dialog = tk.Toplevel(self)
         dialog.title(f"Select {service} Embedding Model")
-        dialog.geometry("560x400")
+        dialog.geometry("560x420")
         dialog.transient(self)
         dialog.grab_set()
 
-        ttk.Label(dialog, text=f"Available {service} embedding models (current: {current or 'auto'}):",
-                  font=("Arial", 10, "bold")).pack(padx=10, pady=8, anchor="w")
+        header = ttk.Label(dialog, font=("Arial", 10, "bold"))
+        header.pack(padx=10, pady=8, anchor="w")
 
         list_frame = ttk.Frame(dialog)
         list_frame.pack(fill="both", expand=True, padx=10, pady=5)
@@ -3130,25 +3255,56 @@ class AutomatedLiteratureUI(tk.Tk):
         scrollbar.pack(side="right", fill="y")
         listbox.pack(side="left", fill="both", expand=True)
 
-        for m in models:
-            listbox.insert(tk.END, m)
-        if current in models:
-            idx = models.index(current)
-            listbox.selection_set(idx)
-            listbox.see(idx)
+        state = {"models": list(models)}
+
+        def _populate():
+            listbox.delete(0, tk.END)
+            for m in state["models"]:
+                listbox.insert(tk.END, m)
+            current = self._embed_model_choice.get(service_code)
+            header.config(
+                text=(f"Available {service} embedding models "
+                      f"(current: {current or 'auto'}):" if state["models"]
+                      else f"No stored embedding models for {service} — press "
+                           "“Refresh list”."))
+            if current in state["models"]:
+                idx = state["models"].index(current)
+                listbox.selection_set(idx)
+                listbox.see(idx)
+
+        def _refresh():
+            header.config(text=f"Refreshing {service} embedding models…")
+            dialog.update_idletasks()
+            try:
+                fresh = list_embedding_models(service, force_refresh=True)
+            except Exception as e:
+                messagebox.showerror("Refresh failed",
+                                     f"Could not fetch embedding models for {service}:\n{e}")
+                _populate()
+                return
+            if fresh:
+                state["models"] = list(fresh)
+            _populate()
 
         def _on_confirm():
             sel = listbox.curselection()
             if not sel:
-                messagebox.showinfo("No selection", "Please select a model, or close the dialog to keep the current one.")
+                messagebox.showinfo("No selection", "Please select a model, or "
+                                    "close the dialog to keep the current one.")
                 return
-            chosen = models[sel[0]]
+            chosen = state["models"][sel[0]]
             set_selected_embedding_model(service, chosen)
             self._embed_model_choice[service_code] = chosen
             self._apply_embedding_backend()
             dialog.destroy()
 
-        ttk.Button(dialog, text="Use Selected Embedding Model", command=_on_confirm).pack(pady=10)
+        _populate()
+        btns = ttk.Frame(dialog)
+        btns.pack(pady=10)
+        ttk.Button(btns, text="🔄 Refresh list",
+                   command=_refresh).pack(side="left", padx=6)
+        ttk.Button(btns, text="Use Selected Embedding Model",
+                   command=_on_confirm).pack(side="left", padx=6)
 
 
 if __name__ == "__main__":
