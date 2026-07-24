@@ -27,6 +27,20 @@ from alr.common.LLM_Config import get_stored_api_key, set_api_key, KEY_ENV_NAMES
 # BlaBla first, then Chat AI, then DLR Ollama.
 _CODE_TO_SERVICE = {"B": "BlaBla", "C": "Chat AI", "O": "DLR Ollama"}
 _CODE_TO_KEY_TYPE = {"B": "BlaBla Door", "C": "Chat AI", "O": "DLR Ollama"}
+
+# Friendly names shown in the provider dropdowns (mapped back to codes when
+# read). The dropdowns display these instead of the cryptic single letters.
+_CODE_TO_DISPLAY = {"B": "Blablador", "C": "Chat AI", "O": "DLR Ollama"}
+_PROVIDER_DISPLAY_VALUES = list(_CODE_TO_DISPLAY.values())
+_DISPLAY_TO_CODE = {v.lower(): k for k, v in _CODE_TO_DISPLAY.items()}
+
+
+def _provider_code(value):
+    """Accept a provider code ('B') or a display label ('Blablador') -> code."""
+    s = str(value).strip()
+    if s.upper() in _CODE_TO_SERVICE:
+        return s.upper()
+    return _DISPLAY_TO_CODE.get(s.lower(), "B")
 from alr.common.sql_store import sync_storage_to_sql
 from alr.common import crash_logger
 from alr.ui.desktop.review_app import open_review_app, ProgressDialog
@@ -177,21 +191,37 @@ class AutomatedLiteratureUI(tk.Tk):
 
         # Top bar: greeting + global actions (fixed height at the top).
         top_bar = tk.Frame(self)
-        top_bar.pack(fill="x", pady=10)
+        top_bar.pack(fill="x", pady=(10, 0))
         greeting_lbl = tk.Label(top_bar, text=f"Hello, {self.username}! Automated Literature Review Support Tool", font=("Arial", 12, "bold"))
         greeting_lbl.pack(side="left", padx=10)
         ttk.Button(top_bar, text="API Keys...", command=self._manage_api_keys_action).pack(side="right", padx=10)
         ttk.Button(top_bar, text="Open Review Tool", command=lambda: open_review_app(self)).pack(side="right", padx=4)
 
-        # Body holds the notebook and the console. They are placed with fixed
-        # height fractions so the console always occupies ~40% of the body height
-        # (notebook 60% / console 40%), regardless of how tall the tab content is.
-        body = tk.Frame(self)
+        # Status strip: the currently selected LLM provider, its model, and
+        # whether an API key is stored for it -- visible before you act instead
+        # of only surfacing as an error mid-run.
+        status_bar = tk.Frame(self)
+        status_bar.pack(fill="x", padx=10, pady=(2, 8))
+        self.status_provider_var = tk.StringVar()
+        self.status_key_var = tk.StringVar()
+        ttk.Label(status_bar, textvariable=self.status_provider_var,
+                  foreground="#444").pack(side="left")
+        self._status_key_lbl = ttk.Label(status_bar, textvariable=self.status_key_var,
+                                          font=("Arial", 9, "bold"))
+        self._status_key_lbl.pack(side="left", padx=(10, 0))
+        ttk.Separator(self, orient="horizontal").pack(fill="x")
+
+        # Body: a draggable vertical split between the notebook (top) and the
+        # console (bottom). Unlike the old fixed 60/40 place() layout, the user
+        # can drag the sash to give the tabs more room or expand the console.
+        body = ttk.PanedWindow(self, orient="vertical")
         body.pack(fill="both", expand=True)
 
-        # Tab Control (Notebook) -> top 60%.
-        self.notebook = ttk.Notebook(body)
-        self.notebook.place(relx=0, rely=0, relwidth=1, relheight=0.6)
+        # Tab Control (Notebook) -> top pane.
+        notebook_pane = ttk.Frame(body)
+        self.notebook = ttk.Notebook(notebook_pane)
+        self.notebook.pack(fill="both", expand=True)
+        body.add(notebook_pane, weight=3)
 
         # Build individual Tabs
         self._build_collect_tab()
@@ -201,9 +231,17 @@ class AutomatedLiteratureUI(tk.Tk):
         self._build_evaluation_tab()
         self._build_enrichment_tab()
 
-        # Integrated Console Terminal Output Box -> bottom 40%.
-        terminal_frame = tk.LabelFrame(body, text="Console Output Log")
-        terminal_frame.place(relx=0, rely=0.6, relwidth=1, relheight=0.4)
+        # Console pane -> bottom. A one-line status label above it echoes the
+        # last action's result, so the user doesn't have to read the raw log.
+        console_pane = ttk.Frame(body)
+
+        self.last_result_var = tk.StringVar(value="Ready.")
+        self._last_result_lbl = tk.Label(console_pane, textvariable=self.last_result_var,
+                                         anchor="w", font=("Arial", 9))
+        self._last_result_lbl.pack(fill="x", padx=4, pady=(2, 0))
+
+        terminal_frame = tk.LabelFrame(console_pane, text="Console Output Log")
+        terminal_frame.pack(fill="both", expand=True)
 
         self.terminal_output = CustomTerminalText(terminal_frame, wrap="word", background="black", foreground="white", font=("Courier New", 10))
         scrollbar = ttk.Scrollbar(terminal_frame, command=self.terminal_output.yview)
@@ -211,12 +249,46 @@ class AutomatedLiteratureUI(tk.Tk):
 
         scrollbar.pack(side="right", fill="y")
         self.terminal_output.pack(side="left", fill="both", expand=True)
+        body.add(console_pane, weight=2)
 
         # Restore the storage paths / inputs from the last session, and save
         # them again when the window closes (so the tool starts where it was
         # left off).
         self._restore_session_state()
+        self._refresh_provider_status()
         self.protocol("WM_DELETE_WINDOW", self._on_close)
+
+    def _refresh_provider_status(self, provider_code=None):
+        """
+        Update the top status strip with the active LLM provider, its selected
+        model and whether an API key is stored. ``provider_code`` defaults to
+        the Collect tab's provider (the first one the user meets).
+        """
+        if not hasattr(self, "status_provider_var"):
+            return
+        code = _provider_code(provider_code) if provider_code else _provider_code(
+            self.llm_choice_col.get() if hasattr(self, "llm_choice_col") else "B")
+        service = _CODE_TO_SERVICE.get(code, "BlaBla")
+        display = _CODE_TO_DISPLAY.get(code, service)
+        try:
+            model = get_selected_model(service) or "service default"
+        except Exception:  # noqa: BLE001
+            model = "service default"
+        self.status_provider_var.set(f"LLM: {display}   ·   Model: {model}")
+
+        has_key = bool(get_stored_api_key(_CODE_TO_KEY_TYPE.get(code, "BlaBla Door")))
+        self.status_key_var.set("● API key set" if has_key else "○ API key missing")
+        if hasattr(self, "_status_key_lbl"):
+            self._status_key_lbl.configure(foreground="#1a7f37" if has_key else "#b3261e")
+
+    def _set_last_result(self, text, ok=True):
+        """Echo the last action's outcome on the one-line status label above the
+        console (green when ok, red on failure/cancel)."""
+        if not hasattr(self, "last_result_var"):
+            return
+        self.last_result_var.set(text)
+        if hasattr(self, "_last_result_lbl"):
+            self._last_result_lbl.configure(foreground="#1a7f37" if ok else "#b3261e")
 
     # ------------------------------------------------------------------
     # Session state: remember the storage paths and inputs across runs
@@ -320,10 +392,11 @@ class AutomatedLiteratureUI(tk.Tk):
         self.rq_entry.grid(row=1, column=1, padx=5, pady=5)
 
         ttk.Label(inputs_frame, text="LLM Provider:").grid(row=2, column=0, padx=5, pady=5, sticky="w")
-        self.llm_choice_col = ttk.Combobox(inputs_frame, values=["B", "C", "O"], width=5, state="readonly")
-        self.llm_choice_col.set("B")
+        self.llm_choice_col = ttk.Combobox(inputs_frame, values=_PROVIDER_DISPLAY_VALUES, width=16, state="readonly")
+        self.llm_choice_col.set(_CODE_TO_DISPLAY["B"])
         self.llm_choice_col.grid(row=2, column=1, padx=5, pady=5, sticky="w")
-        ttk.Label(inputs_frame, text="(B = BlaBla LLM models | C = Chat AI | O = DLR ollama Nimbus Service)").grid(row=2, column=1, padx=70, pady=5, sticky="w")
+        self.llm_choice_col.bind("<<ComboboxSelected>>",
+                                 lambda e: self._refresh_provider_status(_provider_code(self.llm_choice_col.get())))
 
         ttk.Button(inputs_frame, text="Choose Model...",
                    command=lambda: self._choose_model_action(self.llm_choice_col.get())
@@ -478,7 +551,7 @@ class AutomatedLiteratureUI(tk.Tk):
 
         self.CM.update_Research_Area(ra)
         self.CM.update_Research_Question(rq)
-        self.CM.update_llm_service(self.llm_choice_col.get())
+        self.CM.update_llm_service(_provider_code(self.llm_choice_col.get()))
         return True
 
     def _current_scope(self):
@@ -493,7 +566,7 @@ class AutomatedLiteratureUI(tk.Tk):
 
         ra = self.ra_entry.get().strip()
         rq = self.rq_entry.get().strip()
-        service = self.llm_choice_col.get()
+        service = _provider_code(self.llm_choice_col.get())
 
         if not self._ensure_collection_manager():
             return
@@ -757,7 +830,7 @@ class AutomatedLiteratureUI(tk.Tk):
         (checked), replacing the old refinement pop-up."""
         from alr.common.llm_utils import llm_call
 
-        service = self.llm_choice_col.get()
+        service = _provider_code(self.llm_choice_col.get())
         if not self._ensure_collection_manager():
             return
         if not self._ensure_api_key(service):
@@ -814,7 +887,7 @@ class AutomatedLiteratureUI(tk.Tk):
                                           "(suggest via LLM or add manually).")
             return
 
-        service = self.llm_choice_col.get()
+        service = _provider_code(self.llm_choice_col.get())
         if not self._ensure_collection_manager():
             return
         if not self._ensure_api_key(service):
@@ -1033,7 +1106,7 @@ class AutomatedLiteratureUI(tk.Tk):
             messagebox.showerror("Classify Publications",
                                  "Check at least one keyword to use as a classification tag.")
             return
-        service = self.llm_choice_col.get()
+        service = _provider_code(self.llm_choice_col.get())
         if not self._ensure_api_key(service):
             return
 
@@ -1095,9 +1168,11 @@ class AutomatedLiteratureUI(tk.Tk):
         llm_frame = ttk.Frame(tab)
         llm_frame.pack(fill="x", padx=10, pady=10)
         ttk.Label(llm_frame, text="LLM Processing Service Engine:").pack(side="left", padx=5)
-        self.llm_choice_an = ttk.Combobox(llm_frame, values=["B", "C", "O"], width=5, state="readonly")
-        self.llm_choice_an.set("B")
+        self.llm_choice_an = ttk.Combobox(llm_frame, values=_PROVIDER_DISPLAY_VALUES, width=16, state="readonly")
+        self.llm_choice_an.set(_CODE_TO_DISPLAY["B"])
         self.llm_choice_an.pack(side="left", padx=5)
+        self.llm_choice_an.bind("<<ComboboxSelected>>",
+                                lambda e: self._refresh_provider_status(_provider_code(self.llm_choice_an.get())))
         ttk.Button(llm_frame, text="Choose Model...",
                    command=lambda: self._choose_model_action(self.llm_choice_an.get())
                    ).pack(side="left", padx=5)
@@ -1162,7 +1237,7 @@ class AutomatedLiteratureUI(tk.Tk):
 
     def _run_analysis_action(self):
         input_target = self.analysis_input_entry.get().strip()
-        service = self.llm_choice_an.get()
+        service = _provider_code(self.llm_choice_an.get())
 
         if not input_target:
             messagebox.showerror("Error", "Please input or select a valid target path destination first.")
@@ -1512,19 +1587,23 @@ class AutomatedLiteratureUI(tk.Tk):
         def finish():
             dlg.close()
             if "error" in outcome:
+                self._set_last_result(f"{title}: failed — {outcome['error']}", ok=False)
                 msg = str(outcome["error"])
                 if outcome.get("error_log"):
                     msg += f"\n\nA full traceback was saved to:\n{outcome['error_log']}"
                 messagebox.showerror(title, msg)
             elif cancel_event.is_set():
+                self._set_last_result(f"{title}: cancelled.", ok=False)
                 if on_cancelled is not None:
                     on_cancelled(outcome.get("n"))
                 else:
                     messagebox.showinfo(title, f"{title}: cancelled after {result_word} "
                                                f"{outcome.get('n', 0)} document(s).")
             elif on_success is not None:
+                self._set_last_result(f"{title}: done.")
                 on_success(outcome.get("n"))
             else:
+                self._set_last_result(f"{title}: {result_word} {outcome.get('n', 0)} document(s).")
                 messagebox.showinfo(title, f"{title}: {result_word} {outcome.get('n', 0)} document(s).")
 
         def poll():
@@ -2051,7 +2130,7 @@ class AutomatedLiteratureUI(tk.Tk):
         """
         if not hasattr(self, "eval_storage_var"):
             self.eval_storage_var = tk.StringVar(value="")
-            self.eval_llm_var = tk.StringVar(value="B")
+            self.eval_llm_var = tk.StringVar(value=_CODE_TO_DISPLAY["B"])
 
         shared = tk.LabelFrame(tab, text="Storage Space & LLM Service (shared between the Evaluation and Enrichment tabs)")
         shared.pack(fill="x", padx=10, pady=(10, 5))
@@ -2067,9 +2146,11 @@ class AutomatedLiteratureUI(tk.Tk):
         llm_row = ttk.Frame(shared)
         llm_row.pack(fill="x", padx=5, pady=(0, 8))
         ttk.Label(llm_row, text="LLM Processing Service Engine:").pack(side="left", padx=5)
-        combo = ttk.Combobox(llm_row, values=["B", "C", "O"], width=5, state="readonly",
+        combo = ttk.Combobox(llm_row, values=_PROVIDER_DISPLAY_VALUES, width=16, state="readonly",
                              textvariable=self.eval_llm_var)
         combo.pack(side="left", padx=5)
+        combo.bind("<<ComboboxSelected>>",
+                   lambda e: self._refresh_provider_status(_provider_code(self.eval_llm_var.get())))
         self.llm_choice_eval = combo
         ttk.Button(llm_row, text="Choose Model...",
                    command=lambda: self._choose_model_action(self.eval_llm_var.get())
@@ -2379,7 +2460,7 @@ class AutomatedLiteratureUI(tk.Tk):
             messagebox.showerror("Error", str(e))
             return
 
-        service = self.eval_llm_var.get()
+        service = _provider_code(self.eval_llm_var.get())
         if not self._ensure_api_key(service):
             return
         source = self.custom_source_var.get()
@@ -2433,7 +2514,7 @@ class AutomatedLiteratureUI(tk.Tk):
 
         # API-key checks happen up front on the main thread (they may pop a
         # modal dialog), before any background work starts.
-        classify_service = self.llm_choice_eval.get()
+        classify_service = _provider_code(self.llm_choice_eval.get())
         if mode in ("abstract", "references"):
             if not self._ensure_api_key("B") and not self._ensure_api_key("O"):
                 return
@@ -2585,7 +2666,7 @@ class AutomatedLiteratureUI(tk.Tk):
         if not title:
             messagebox.showerror("Error", "Please enter a publication title to classify.")
             return
-        service = self.llm_choice_eval.get()
+        service = _provider_code(self.llm_choice_eval.get())
         if not self._ensure_api_key(service):
             return
 
@@ -2729,16 +2810,21 @@ class AutomatedLiteratureUI(tk.Tk):
 
     def _ensure_api_key(self, provider_code):
         """
-        Ensure a key exists for the selected provider ('B'/'C'/'O'). If missing,
-        open the key dialog. Returns True if a key is now present, else False.
+        Ensure a key exists for the selected provider (code or display name). If
+        missing, open the key dialog. Returns True if a key is now present.
         """
-        key_type = _CODE_TO_KEY_TYPE.get(str(provider_code).upper(), "BlaBla Door")
+        code = _provider_code(provider_code)
+        key_type = _CODE_TO_KEY_TYPE.get(code, "BlaBla Door")
         if get_stored_api_key(key_type):
+            self._refresh_provider_status(code)
             return True
         messagebox.showinfo("API key required",
-                            f"No API key found for {key_type}. Please enter it to continue.")
+                            f"No API key found for {_CODE_TO_DISPLAY.get(code, key_type)}. "
+                            "Please enter it to continue.")
         self._manage_api_keys_action()
-        return bool(get_stored_api_key(key_type))
+        present = bool(get_stored_api_key(key_type))
+        self._refresh_provider_status(code)
+        return present
 
     # ==========================================
     # GLOBAL UTILITY OPERATIONS HELPER MAPPINGS
@@ -2761,7 +2847,8 @@ class AutomatedLiteratureUI(tk.Tk):
         ('B' = Blablador, 'C' = Chat AI, 'O' = DLR Ollama), let the user pick
         one, and store it as the session model used by all subsequent LLM calls.
         """
-        service = _CODE_TO_SERVICE.get(str(provider_code).upper(), "BlaBla")
+        code = _provider_code(provider_code)
+        service = _CODE_TO_SERVICE.get(code, "BlaBla")
 
         print(f"Fetching available {service} models...")
         try:
@@ -2806,6 +2893,7 @@ class AutomatedLiteratureUI(tk.Tk):
                 messagebox.showinfo("No selection", "Please select a model, or close the dialog to keep the current one.")
                 return
             set_selected_model(service, models[sel[0]])
+            self._refresh_provider_status(code)
             dialog.destroy()
 
         ttk.Button(dialog, text="Use Selected Model", command=_on_confirm).pack(pady=10)
@@ -2843,7 +2931,7 @@ class AutomatedLiteratureUI(tk.Tk):
                 default_service = "B"
 
             self.embed_method_var = tk.StringVar(value=default_method)
-            self.embed_service_var = tk.StringVar(value=default_service)
+            self.embed_service_var = tk.StringVar(value=_CODE_TO_DISPLAY[default_service])
             self.embed_model_var = tk.StringVar(value="")
             self._embed_service_boxes = []
             self._embed_model_buttons = []
@@ -2858,7 +2946,7 @@ class AutomatedLiteratureUI(tk.Tk):
         method_box.bind("<<ComboboxSelected>>", lambda e: self._apply_embedding_backend())
 
         ttk.Label(row, text="Service:").pack(side="left", padx=(10, 2))
-        service_box = ttk.Combobox(row, values=["B", "C", "O"], width=5, state="readonly",
+        service_box = ttk.Combobox(row, values=_PROVIDER_DISPLAY_VALUES, width=16, state="readonly",
                                    textvariable=self.embed_service_var)
         service_box.pack(side="left", padx=5)
         service_box.bind("<<ComboboxSelected>>", lambda e: self._apply_embedding_backend())
@@ -2879,7 +2967,7 @@ class AutomatedLiteratureUI(tk.Tk):
         enable/disable the API-only controls (service box + model button).
         """
         method = "local" if self.embed_method_var.get() == "Local" else "api"
-        service_code = self.embed_service_var.get().upper()
+        service_code = _provider_code(self.embed_service_var.get())
         service = _CODE_TO_SERVICE.get(service_code, "BlaBla")
         set_embedding_backend(method=method, service=service)
 
@@ -2903,7 +2991,7 @@ class AutomatedLiteratureUI(tk.Tk):
         user pick one, and store it as the session embedding model. Mirrors
         _choose_model_action.
         """
-        service_code = self.embed_service_var.get().upper()
+        service_code = _provider_code(self.embed_service_var.get())
         service = _CODE_TO_SERVICE.get(service_code, "BlaBla")
 
         print(f"Fetching available {service} embedding models...")

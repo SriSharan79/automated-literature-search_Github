@@ -8,6 +8,8 @@ reachable from the UI. It is meant as a backlog for surfacing existing value.
 
 **Session state:** the tool **starts where it was left off** — the storage-path fields (collect, analyze, visualize, evaluate), their custom-path flags, and the Research Area/Question inputs are saved to `ui_session_state.json` when the window closes and restored on the next launch.
 
+**Shell / status:** the window carries a **status strip** under the greeting showing the active **LLM provider + selected model** and whether an **API key** is stored for it (green ●) or missing (red ○) — updated live when the provider, model or key changes, so you see the state before acting instead of only on an error. The provider dropdowns everywhere now show **full names** ("Blablador / Chat AI / DLR Ollama") instead of the cryptic `B/C/O` codes. The notebook and the console log sit in a **draggable vertical split** (a `PanedWindow`, replacing the old fixed 60/40 layout) so either can be grown, and a **one-line result label above the console** echoes the last action's outcome (green on success, red on failure/cancel).
+
 ## 1. Currently in the desktop UI
 
 | Tab / area | Functionality | Backend entry points |
