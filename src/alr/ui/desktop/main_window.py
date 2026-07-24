@@ -201,7 +201,7 @@ class AutomatedLiteratureUI(tk.Tk):
         # whether an API key is stored for it -- visible before you act instead
         # of only surfacing as an error mid-run.
         status_bar = tk.Frame(self)
-        status_bar.pack(fill="x", padx=10, pady=(2, 8))
+        status_bar.pack(fill="x", padx=10, pady=(2, 4))
         self.status_provider_var = tk.StringVar()
         self.status_key_var = tk.StringVar()
         ttk.Label(status_bar, textvariable=self.status_provider_var,
@@ -209,6 +209,23 @@ class AutomatedLiteratureUI(tk.Tk):
         self._status_key_lbl = ttk.Label(status_bar, textvariable=self.status_key_var,
                                           font=("Arial", 9, "bold"))
         self._status_key_lbl.pack(side="left", padx=(10, 0))
+
+        # Active storage space: one folder that the Analyze, Visualize and
+        # Evaluate tabs default to, so it is chosen once instead of re-browsed in
+        # every tab. Each of those tabs keeps a "Use active space" toggle for a
+        # per-tab override.
+        space_bar = tk.Frame(self)
+        space_bar.pack(fill="x", padx=10, pady=(0, 8))
+        ttk.Label(space_bar, text="Active storage space:").pack(side="left")
+        self.active_space_var = tk.StringVar(value="")
+        self._active_space_consumers = []  # filled as consuming tabs are built
+        ttk.Entry(space_bar, textvariable=self.active_space_var, width=58).pack(side="left", padx=5)
+        ttk.Button(space_bar, text="Browse...", command=self._browse_active_space).pack(side="left", padx=2)
+        ttk.Label(space_bar, text="(used by Analyze · Visualize · Evaluate)",
+                  foreground="#777").pack(side="left", padx=8)
+        # Any manual edit of the field re-syncs the consuming tabs.
+        self.active_space_var.trace_add("write", lambda *a: self._apply_active_space())
+
         ttk.Separator(self, orient="horizontal").pack(fill="x")
 
         # Body: a draggable vertical split between the notebook (top) and the
@@ -291,6 +308,60 @@ class AutomatedLiteratureUI(tk.Tk):
             self._last_result_lbl.configure(foreground="#1a7f37" if ok else "#b3261e")
 
     # ------------------------------------------------------------------
+    # Active storage space shared across the Analyze / Visualize / Evaluate tabs
+    # ------------------------------------------------------------------
+    def _browse_active_space(self):
+        folder = filedialog.askdirectory(title="Select the active storage space")
+        if folder:
+            self.active_space_var.set(str(Path(folder).resolve()))
+
+    def _set_active_space(self, path):
+        """Point the shared active space at ``path`` (updates every tab whose
+        'Use active space' toggle is on)."""
+        if path:
+            self.active_space_var.set(str(path))
+
+    def _register_active_space_consumer(self, toggle_var, entry, side_widgets=()):
+        """
+        Register a tab's storage entry so it mirrors the active space while its
+        ``toggle_var`` is on (entry + browse buttons disabled), and becomes an
+        editable override when the toggle is off. The toggle's Checkbutton should
+        call ``_apply_active_space`` as its command.
+        """
+        self._active_space_consumers.append((toggle_var, entry, tuple(side_widgets)))
+        self._apply_active_space()
+
+    def _apply_active_space(self):
+        """Push the active-space path into every consumer whose toggle is on."""
+        path = self.active_space_var.get()
+        for toggle_var, entry, side_widgets in getattr(self, "_active_space_consumers", []):
+            use_active = bool(toggle_var.get())
+            if use_active:
+                # Mirror the active path, then lock the entry + its browse button.
+                self._set_entry_text(entry, path)
+                entry.configure(state="disabled")
+                for w in side_widgets:
+                    w.configure(state="disabled")
+            else:
+                entry.configure(state="normal")
+                for w in side_widgets:
+                    w.configure(state="normal")
+
+    @staticmethod
+    def _set_entry_text(entry, text):
+        """Set an Entry's text regardless of its current state (StringVar-backed
+        entries update via their variable; plain entries are toggled to normal)."""
+        var_name = entry.cget("textvariable")
+        if var_name:
+            entry.setvar(var_name, text or "")
+            return
+        prev = str(entry.cget("state"))
+        entry.configure(state="normal")
+        entry.delete(0, "end")
+        entry.insert(0, text or "")
+        entry.configure(state=prev)
+
+    # ------------------------------------------------------------------
     # Session state: remember the storage paths and inputs across runs
     # ------------------------------------------------------------------
     @staticmethod
@@ -339,6 +410,20 @@ class AutomatedLiteratureUI(tk.Tk):
         # Re-sync the custom-path browse buttons with the restored flags.
         self._toggle_collect_path_btn()
         self._toggle_analyze_path_btn()
+        # Restore the shared active storage space (propagates to the tabs whose
+        # "Use active space" toggle is on). On first upgrade there is no saved
+        # active space yet -- seed it from a restored analyze/visualize/eval path
+        # so the mirrored tabs aren't blanked.
+        active = state.get("active_space")
+        if not (isinstance(active, str) and active):
+            for cand in (self.analyze_storage_entry.get(),
+                         self.visualize_storage_entry.get(),
+                         self.eval_storage_var.get() if hasattr(self, "eval_storage_var") else ""):
+                if cand and cand.strip():
+                    active = cand.strip()
+                    break
+        if isinstance(active, str) and active and hasattr(self, "active_space_var"):
+            self.active_space_var.set(active)
         print("[Session] Restored storage paths and inputs from the last session.")
 
     def _save_session_state(self):
@@ -350,6 +435,8 @@ class AutomatedLiteratureUI(tk.Tk):
                     "value": entry.get().strip(),
                     "enabled": bool(flag.get()) if flag is not None else True,
                 }
+            if hasattr(self, "active_space_var"):
+                state["active_space"] = self.active_space_var.get().strip()
             self._session_state_path().write_text(
                 _json.dumps(state, indent=2), encoding="utf-8")
         except Exception as e:  # noqa: BLE001 - closing must not fail on this
@@ -1260,6 +1347,10 @@ class AutomatedLiteratureUI(tk.Tk):
         else:
             self.MF = DataAnalyzeManager()
 
+        # Make this the active space so Visualize / Evaluate default to whatever
+        # was just analyzed, instead of the user re-browsing to it.
+        self._set_active_space(str(self.MF.folder))
+
         self.MF.update_llm_service(service)
         MF = self.MF
         skip_dupes = self.skip_dupes_var.get()
@@ -1652,9 +1743,15 @@ class AutomatedLiteratureUI(tk.Tk):
         db_path_frame.pack(fill="x", padx=5, pady=10)
 
         ttk.Label(db_path_frame, text="Select Data Storage Engine Source Directory Path:").pack(anchor="w", padx=5)
-        self.visualize_storage_entry = ttk.Entry(db_path_frame, width=65)
+        self.visualize_storage_entry = ttk.Entry(db_path_frame, width=55)
         self.visualize_storage_entry.pack(side="left", padx=5, pady=5)
-        ttk.Button(db_path_frame, text="Browse...", command=lambda: self._browse_folder(self.visualize_storage_entry)).pack(side="left", padx=2, pady=5)
+        viz_browse = ttk.Button(db_path_frame, text="Browse...",
+                                command=lambda: self._browse_folder(self.visualize_storage_entry))
+        viz_browse.pack(side="left", padx=2, pady=5)
+        self.viz_use_active_var = tk.BooleanVar(value=True)
+        ttk.Checkbutton(db_path_frame, text="Use active space", variable=self.viz_use_active_var,
+                        command=self._apply_active_space).pack(side="left", padx=8, pady=5)
+        self._register_active_space_consumer(self.viz_use_active_var, self.visualize_storage_entry, [viz_browse])
 
         # Query target: the storage space above, or the combined common DB
         # maintained in the frame below.
@@ -2131,6 +2228,8 @@ class AutomatedLiteratureUI(tk.Tk):
         if not hasattr(self, "eval_storage_var"):
             self.eval_storage_var = tk.StringVar(value="")
             self.eval_llm_var = tk.StringVar(value=_CODE_TO_DISPLAY["B"])
+            # One toggle governs both copies (they share eval_storage_var).
+            self.eval_use_active_var = tk.BooleanVar(value=True)
 
         shared = tk.LabelFrame(tab, text="Storage Space & LLM Service (shared between the Evaluation and Enrichment tabs)")
         shared.pack(fill="x", padx=10, pady=(10, 5))
@@ -2138,10 +2237,14 @@ class AutomatedLiteratureUI(tk.Tk):
         row = ttk.Frame(shared)
         row.pack(fill="x", padx=5, pady=8)
         ttk.Label(row, text="Storage folder:").pack(side="left", padx=5)
-        entry = ttk.Entry(row, width=55, textvariable=self.eval_storage_var)
+        entry = ttk.Entry(row, width=50, textvariable=self.eval_storage_var)
         entry.pack(side="left", padx=5)
         self.eval_storage_entry = entry
-        ttk.Button(row, text="Browse...", command=lambda: self._browse_folder(entry)).pack(side="left", padx=2)
+        eval_browse = ttk.Button(row, text="Browse...", command=lambda: self._browse_folder(entry))
+        eval_browse.pack(side="left", padx=2)
+        ttk.Checkbutton(row, text="Use active space", variable=self.eval_use_active_var,
+                        command=self._apply_active_space).pack(side="left", padx=8)
+        self._register_active_space_consumer(self.eval_use_active_var, entry, [eval_browse])
 
         llm_row = ttk.Frame(shared)
         llm_row.pack(fill="x", padx=5, pady=(0, 8))
