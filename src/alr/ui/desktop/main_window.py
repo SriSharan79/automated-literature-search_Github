@@ -469,7 +469,7 @@ class AutomatedLiteratureUI(tk.Tk):
     def _session_fields(self):
         """Map of session-state key -> (Entry widget, BooleanVar or None)."""
         fields = {
-            "collect_path": (self.collect_path_entry, self.custom_path_var_col),
+            "collect_path": (self.collect_path_entry, None),
             "analyze_storage": (self.analyze_storage_entry, self.custom_path_var_an),
             "visualize_storage": (self.visualize_storage_entry, None),
             "research_area": (self.ra_entry, None),
@@ -504,8 +504,11 @@ class AutomatedLiteratureUI(tk.Tk):
             entry.insert(0, saved.get("value", "") or "")
             if flag is not None and not flag.get():
                 entry.configure(state="disabled")
+        # Restore the collection "use active space" toggle (defaults on).
+        if hasattr(self, "collect_use_active_var"):
+            self.collect_use_active_var.set(bool(state.get("collect_use_active", True)))
         # Re-sync the custom-path browse buttons with the restored flags.
-        self._toggle_collect_path_btn()
+        self._apply_active_space()
         self._toggle_analyze_path_btn()
         # Restore the shared active storage space (propagates to the tabs whose
         # "Use active space" toggle is on). On first upgrade there is no saved
@@ -534,6 +537,8 @@ class AutomatedLiteratureUI(tk.Tk):
                 }
             if hasattr(self, "active_space_var"):
                 state["active_space"] = self.active_space_var.get().strip()
+            if hasattr(self, "collect_use_active_var"):
+                state["collect_use_active"] = bool(self.collect_use_active_var.get())
             self._session_state_path().write_text(
                 _json.dumps(state, indent=2), encoding="utf-8")
         except Exception as e:  # noqa: BLE001 - closing must not fail on this
@@ -549,19 +554,34 @@ class AutomatedLiteratureUI(tk.Tk):
     def _build_collect_tab(self):
         tab = self._make_scrollable_tab("1. Collect Literature")
 
-        # Storage Path configuration
+        # Storage Path configuration. Collection now rides the shared active
+        # storage space (the same space the Analyze tab produces): its whole
+        # CollectionManager tree lives under a "collection" sub-folder of that
+        # space. Untick "Use active storage space" to point collection at a
+        # custom folder instead (its tree then lives under <folder>/collection).
         path_frame = tk.LabelFrame(tab, text="Data Storage Configuration")
         path_frame.pack(fill="x", padx=10, pady=5)
 
-        self.custom_path_var_col = tk.BooleanVar(value=False)
-        chk = ttk.Checkbutton(path_frame, text="Use Custom Storage Path?", variable=self.custom_path_var_col, command=self._toggle_collect_path_btn)
+        self.collect_use_active_var = tk.BooleanVar(value=True)
+        chk = ttk.Checkbutton(path_frame, text="Use active storage space",
+                              variable=self.collect_use_active_var,
+                              command=self._apply_active_space)
         chk.grid(row=0, column=0, padx=5, pady=5, sticky="w")
 
         self.collect_path_entry = ttk.Entry(path_frame, width=50, state="disabled")
         self.collect_path_entry.grid(row=0, column=1, padx=5, pady=5)
-        
+
         self.collect_path_btn = ttk.Button(path_frame, text="Browse...", state="disabled", command=lambda: self._browse_folder(self.collect_path_entry))
         self.collect_path_btn.grid(row=0, column=2, padx=5, pady=5)
+
+        ttk.Label(path_frame,
+                  text="Collection files are stored under <space>/collection.",
+                  foreground="#555").grid(row=1, column=1, columnspan=2, padx=5, sticky="w")
+
+        # Mirror the active space into the entry while the toggle is on (locked);
+        # untick to type a custom collection space.
+        self._register_active_space_consumer(
+            self.collect_use_active_var, self.collect_path_entry, [self.collect_path_btn])
 
         # Inputs Frame
         inputs_frame = tk.LabelFrame(tab, text="Research Scope & Details")
@@ -702,13 +722,21 @@ class AutomatedLiteratureUI(tk.Tk):
         self.pub_count_var = tk.StringVar(value="No publications collected yet.")
         ttk.Label(exec_frame, textvariable=self.pub_count_var).pack(side="left", padx=15)
 
-    def _toggle_collect_path_btn(self):
-        if self.custom_path_var_col.get():
-            self.collect_path_entry.configure(state="normal")
-            self.collect_path_btn.configure(state="normal")
+    def _collection_root(self):
+        """
+        Resolve the CollectionManager root: a ``collection`` sub-folder of the
+        active storage space (when the toggle is on), or of a custom folder
+        (when it's off). Returns None to fall back to the default 01_Collection
+        space -- e.g. before any active space exists and no custom path is set.
+        """
+        if self.collect_use_active_var.get():
+            base = self.active_space_var.get().strip()
         else:
-            self.collect_path_entry.configure(state="disabled")
-            self.collect_path_btn.configure(state="disabled")
+            base = self.collect_path_entry.get().strip()
+            base = clean_folder_path(base) if base else ""
+        if not base:
+            return None
+        return str(Path(base) / "collection")
 
     def _ensure_collection_manager(self):
         """
@@ -724,11 +752,8 @@ class AutomatedLiteratureUI(tk.Tk):
             return False
 
         if self.CM is None:
-            if self.custom_path_var_col.get() and self.collect_path_entry.get().strip():
-                clean_path = clean_folder_path(self.collect_path_entry.get().strip())
-                self.CM = CollectionManager(clean_path)
-            else:
-                self.CM = CollectionManager()
+            root = self._collection_root()
+            self.CM = CollectionManager(root) if root else CollectionManager()
             # Handle ID assignment (once per manager)
             topic_id = generate_unique_id(ra, extract_column(self.CM.keywords_list_log_path, 'UUID'))
             self.CM.update_topic_files(topic_id)
