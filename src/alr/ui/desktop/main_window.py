@@ -2333,7 +2333,10 @@ class AutomatedLiteratureUI(tk.Tk):
         def on_success(n):
             messagebox.showinfo("Query finished",
                                 f"Query report built across {n or 0} section(s). "
-                                "See the console log for the report location.")
+                                "The enriched overview sits in the query folder, the "
+                                "per-attribute Excels in its Attribute_Query_Results sub-folder, "
+                                "and the run is recorded in Querry_results/Query_Log.xlsx. "
+                                "See the console log for the exact paths.")
 
         self._run_threaded(work, "RAG Query", on_success=on_success)
 

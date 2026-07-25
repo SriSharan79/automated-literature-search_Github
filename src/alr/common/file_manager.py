@@ -521,6 +521,10 @@ class Vec_DB_Manager:
         self.results = self.folder/ "Querry_results"
         self.results.mkdir(exist_ok=True)
 
+        # Rolling log of every query run against this vector-DB space (model
+        # used, space queried, query text, time taken, overview name/path, ...).
+        self.query_log_excel = self.results / "Query_Log.xlsx"
+
         self.DB_update_logger= self.Abstract_DB / "DB_update_logger.json"
 
         # Core Excel Files
@@ -585,6 +589,12 @@ class Vec_DB_Manager:
         # 4. Set the final storage path
         self.query_storage = date_folder / query_name
         self.query_storage.mkdir(exist_ok=True)
+
+        # Per-query folder holding the individual attribute-search result Excels,
+        # kept separate from the overview so the attribute Excels are not
+        # scattered next to (or repeated alongside) the enriched overview. Path
+        # only -- created on first save by the query executor.
+        self.query_attr_storage = self.query_storage / "Attribute_Query_Results"
 
         # Harvest destinations. These are paths only -- none of them is created
         # here, because a query needs at most the ones its selected attributes

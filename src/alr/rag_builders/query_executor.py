@@ -189,37 +189,63 @@ def generate_query_report(query_list, storage_path, search_root='/remotedata/U/D
 
     for idx, query in enumerate(query_list, 1):
         print(f"\n{Back.BLUE}{Fore.WHITE}{Style.BRIGHT} [{idx}/{len(query_list)}] Processing query: '{query}' ")
+        started_at = datetime.now()
         vdb.update_query_folder(query)
 
-        # 1. Generate individual attribute reports
+        # 1. Generate individual attribute reports (into the per-query
+        #    Attribute_Query_Results sub-folder).
         print(f"{Fore.CYAN} > [Step 1] Generating individual attribute reports...")
         for attr, (_ex, _j, bin_path) in sec_map.items():
             process_attribute_query(query, attr, _ex, bin_path, vdb, top_k=top_k)
             tick(f"Searched section: {attr}")
 
-        # 2. Generate the Overview Report
+        # 2. Generate the Overview Report from the attribute Excels (which now
+        #    live in their own sub-folder, so the overview sits alone in the
+        #    query folder root instead of amongst repeated attribute Excels).
         print(f"{Fore.CYAN} > [Step 2] Aggregating results into Overview Report...")
         overview_path = Path(vdb.query_storage) / f"{query}_query_Overview_report.xlsx"
         overview_path = sanitize_path_length(overview_path)
-        aggregate_query_excel_data(vdb.query_storage, "Title", overview_path)
+        aggregate_query_excel_data(vdb.query_attr_storage, "Title", overview_path)
         print(f"{Fore.GREEN}   - Overview saved: {overview_path}")
         tick("Aggregated the overview report")
 
-        # 3. Enrich the overview; copying files next to the report is the
-        #    user's choice (harvest_files) and off by default.
+        # 3. Enrich the overview with the analyzed attribute data. This ALWAYS
+        #    runs -- data enrichment no longer depends on the optional file
+        #    harvest. Harvesting (copying the JSON files next to the report) is
+        #    still the user's choice; when it's off we read the JSONs straight
+        #    from the space's analysis folders, falling back to a search of
+        #    ``search_root`` so a common/combined DB (whose own analysis folders
+        #    are empty) still gets enriched.
         if harvest_files:
-            print(f"{Fore.CYAN} > [Step 3] Harvesting associated resources (PDFs/JSONs)...")
+            print(f"{Fore.CYAN} > [Step 3] Harvesting associated resources (PDFs/JSONs) and enriching...")
             harvest_query_resources(overview_path, search_root, vdb, mf, enrich_keys=enrich_keys)
             tick("Harvested analysis JSONs and enriched the report")
         else:
             print(f"{Fore.CYAN} > [Step 3] No file harvest (user choice) — enriching the "
-                  "overview straight from the storage space's analysis JSONs...")
+                  "overview from the space's analysis JSONs (with a search-root fallback)...")
             enrich_overview_with_abstracts(overview_path, {
                 "abstract": mf.AD_Abstract,
                 "intro": mf.AD_Intro,
                 "rescon": mf.AD_ResCon,
-            }, enrich_keys=enrich_keys)
+            }, enrich_keys=enrich_keys, search_root=search_root)
             tick("Enriched the report from the storage space")
+
+        # 4. Append this query's details to the space's rolling query log.
+        elapsed = (datetime.now() - started_at).total_seconds()
+        _log_query_run(vdb.query_log_excel, {
+            "Timestamp": started_at.strftime("%Y-%m-%d %H:%M:%S"),
+            "Query": query,
+            "Space Queried": str(storage_path),
+            "Model Used": _embedding_model_label(),
+            "Sections Queried": ", ".join(sec_map.keys()),
+            "Attributes Included": ", ".join(
+                enrich_keys if enrich_keys is not None else [s.key for s in _default_enrich_sections()]),
+            "Top K": top_k,
+            "Files Harvested": "Yes" if harvest_files else "No",
+            "Time Taken (s)": round(elapsed, 2),
+            "Overview Excel": Path(overview_path).name,
+            "Overview Path": str(overview_path),
+        })
 
         print(f"{Fore.GREEN}{Style.BRIGHT}Workflow complete for: '{query}'")
         print(f"{Fore.LIGHTBLACK_EX}Path: {vdb.query_storage}")
@@ -235,7 +261,6 @@ def process_attribute_query(query, attr, excel_ref, bin_path, vdb, top_k: int = 
         return
 
     print(f"{Fore.LIGHTBLUE_EX}   - Processing attribute: {attr}")
-    vdb.update_key_folder(attr)
     index = faiss.read_index(str(bin_path))
     strings = extract_column(excel_ref, "Content")
 
@@ -260,11 +285,14 @@ def process_attribute_query(query, attr, excel_ref, bin_path, vdb, top_k: int = 
     df = pd.DataFrame(result_data)
     query_safe = query.replace(" ", "_")
     file_name = f"{attr}_query_{query_safe}_report.xlsx"
-    
-    for target_dir in [vdb.key_folder, vdb.query_storage]:
-        save_path = Path(target_dir) / file_name
-        save_path = sanitize_path_length(save_path)
-        df.to_excel(save_path, index=False, engine="openpyxl")
+
+    # Attribute result Excels live in the per-query "Attribute_Query_Results"
+    # sub-folder only -- kept out of the query folder root so they are not
+    # scattered next to (or repeated alongside) the enriched overview.
+    attr_dir = Path(vdb.query_attr_storage)
+    attr_dir.mkdir(parents=True, exist_ok=True)
+    save_path = sanitize_path_length(attr_dir / file_name)
+    df.to_excel(save_path, index=False, engine="openpyxl")
 
 # Which harvested JSON file holds each analysis source, and the folder attribute
 # on Vec_DB_Manager the harvest step copies it into.
@@ -304,7 +332,69 @@ def _enrich_keys_by_source(enrich_keys=None):
     return grouped
 
 
-def enrich_overview_with_abstracts(overview_path, json_folders, enrich_keys=None):
+def _default_enrich_sections():
+    """The abstract sections, used as the default attribute set for enrich/log."""
+    from alr.common.sections import ALR_SECTIONS
+    return ALR_SECTIONS
+
+
+def _embedding_model_label() -> str:
+    """A human label for the embedding backend used by the vector search, so
+    the query log records which model produced the matches."""
+    try:
+        from alr.common.llm_utils import get_embedding_backend, embedding_model_repo_id
+        cfg = get_embedding_backend()
+        if cfg.get("method") == "local":
+            return f"local ({embedding_model_repo_id})"
+        service = cfg.get("service") or "unknown"
+        return f"api ({service})"
+    except Exception:  # noqa: BLE001 - logging must never break the query
+        return "unknown"
+
+
+def _log_query_run(log_path, row: dict) -> None:
+    """Append one row of query details to the rolling query-log Excel, creating
+    it on first use. Never raises -- logging is best-effort."""
+    try:
+        log_path = Path(log_path)
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        if log_path.exists():
+            try:
+                existing = pd.read_excel(log_path)
+            except Exception:
+                existing = pd.DataFrame()
+            df = pd.concat([existing, pd.DataFrame([row])], ignore_index=True)
+        else:
+            df = pd.DataFrame([row])
+        df.to_excel(log_path, index=False, engine="openpyxl")
+        print(f"{Fore.LIGHTBLACK_EX}   - Query logged to: {log_path}")
+    except Exception as e:  # noqa: BLE001
+        print(f"{Fore.RED}   [!] Could not write the query log: {e}")
+
+
+def _index_jsons_under_root(wanted_names, search_root):
+    """
+    One recursive pass over ``search_root`` mapping each wanted
+    ``<uuid><suffix>`` filename to its path. Used as a fallback source when a
+    JSON isn't present in the space's own analysis folders (e.g. a common/
+    combined DB). Returns ``{}`` for a missing/empty root or target set.
+    """
+    found = {}
+    targets = set(wanted_names)
+    if not search_root or not targets:
+        return found
+    root = Path(search_root)
+    if not root.is_dir():
+        return found
+    for p in root.rglob("*.json"):
+        if p.name in targets:
+            found[p.name] = p
+            if len(found) == len(targets):
+                break
+    return found
+
+
+def enrich_overview_with_abstracts(overview_path, json_folders, enrich_keys=None, search_root=None):
     """
     Add one column per selected analyzed attribute to the query overview Excel,
     reading each document's analysis JSONs by ``Original_UUID``.
@@ -334,6 +424,25 @@ def enrich_overview_with_abstracts(overview_path, json_folders, enrich_keys=None
             if field not in df.columns:
                 df[field] = None
 
+    # Fallback index: for each source, the JSON filenames we may need that are
+    # NOT already sitting in the provided folder are located once under
+    # search_root. This lets data enrichment succeed even when the queried
+    # space (e.g. a common/combined DB) holds no analysis JSONs of its own.
+    uuids = [str(u) for u in df['Original_UUID'].tolist()]
+    fallback_index = {}
+    for source, keys in grouped.items():
+        suffix, _ = _ENRICH_SOURCES[source]
+        folder = json_folders.get(source)
+        missing = []
+        for uuid in uuids:
+            name = f"{uuid}{suffix}"
+            if not (folder and (Path(folder) / name).exists()):
+                missing.append(name)
+        if missing:
+            fallback_index[source] = _index_jsons_under_root(missing, search_root)
+        else:
+            fallback_index[source] = {}
+
     updated_count = 0
 
     for index, row in df.iterrows():
@@ -341,12 +450,13 @@ def enrich_overview_with_abstracts(overview_path, json_folders, enrich_keys=None
         found_any = False
 
         for source, keys in grouped.items():
-            folder = json_folders.get(source)
-            if not folder:
-                continue
             suffix, _ = _ENRICH_SOURCES[source]
-            json_file = Path(folder) / f"{uuid}{suffix}"
-            if not json_file.exists():
+            folder = json_folders.get(source)
+            json_file = Path(folder) / f"{uuid}{suffix}" if folder else None
+            if json_file is None or not json_file.exists():
+                # Not in the space's own folder -- try the search-root fallback.
+                json_file = fallback_index.get(source, {}).get(f"{uuid}{suffix}")
+            if not json_file or not Path(json_file).exists():
                 continue
             try:
                 with open(json_file, 'r', encoding='utf-8') as f:
@@ -397,9 +507,11 @@ def harvest_query_resources(overview_path, search_root, vdb, mf, enrich_keys=Non
         if not _remove_if_empty(dest):
             json_folders[source] = dest
 
-    # 3. New Step: Enrich Excel with data from those JSONs
+    # 3. New Step: Enrich Excel with data from those JSONs (search_root stays
+    #    available as a fallback for any UUID the harvest copy missed).
     print(f"{Fore.CYAN} > [Step 4] Merging JSON metadata into Excel...")
-    enrich_overview_with_abstracts(overview_path, json_folders, enrich_keys=enrich_keys)
+    enrich_overview_with_abstracts(overview_path, json_folders,
+                                   enrich_keys=enrich_keys, search_root=search_root)
 
 
 
