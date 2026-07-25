@@ -146,7 +146,7 @@ def generate_query_report_RA_KC(query_list, Storage_path, top_k: int = 20):
 
 def generate_query_report(query_list, storage_path, search_root='/remotedata/U/DLR+kata_du/ALR DATA', top_k: int = 50,
                           section_keys=None, enrich_keys=None, harvest_files=False,
-                          progress_callback=None):
+                          progress_callback=None, resolve_search_root=None):
     """
     section_keys: optional iterable of section keys to query (any mix of
     abstract, Introduction and Results & Conclusion attributes — see
@@ -216,19 +216,33 @@ def generate_query_report(query_list, storage_path, search_root='/remotedata/U/D
         #    from the space's analysis folders, falling back to a search of
         #    ``search_root`` so a common/combined DB (whose own analysis folders
         #    are empty) still gets enriched.
+        space_folders = {
+            "abstract": mf.AD_Abstract,
+            "intro": mf.AD_Intro,
+            "rescon": mf.AD_ResCon,
+        }
         if harvest_files:
             print(f"{Fore.CYAN} > [Step 3] Harvesting associated resources (PDFs/JSONs) and enriching...")
-            harvest_query_resources(overview_path, search_root, vdb, mf, enrich_keys=enrich_keys)
-            tick("Harvested analysis JSONs and enriched the report")
+            enriched = harvest_query_resources(overview_path, search_root, vdb, mf, enrich_keys=enrich_keys)
         else:
             print(f"{Fore.CYAN} > [Step 3] No file harvest (user choice) — enriching the "
                   "overview from the space's analysis JSONs (with a search-root fallback)...")
-            enrich_overview_with_abstracts(overview_path, {
-                "abstract": mf.AD_Abstract,
-                "intro": mf.AD_Intro,
-                "rescon": mf.AD_ResCon,
-            }, enrich_keys=enrich_keys, search_root=search_root)
-            tick("Enriched the report from the storage space")
+            enriched = enrich_overview_with_abstracts(
+                overview_path, space_folders, enrich_keys=enrich_keys, search_root=search_root)
+
+        # If nothing could be enriched (the space holds no analysis JSONs and the
+        # current search root didn't turn any up), ask the caller for a better
+        # search root and retry once. The UI pops a folder picker and remembers
+        # the choice for the next queries.
+        if not enriched and resolve_search_root is not None:
+            print(f"{Fore.YELLOW}   - No attribute data found under the current search root; "
+                  "asking for a search location...")
+            new_root = resolve_search_root()
+            if new_root:
+                search_root = new_root
+                enriched = enrich_overview_with_abstracts(
+                    overview_path, space_folders, enrich_keys=enrich_keys, search_root=new_root)
+        tick("Enriched the report")
 
         # 4. Append this query's details to the space's rolling query log.
         elapsed = (datetime.now() - started_at).total_seconds()
@@ -480,6 +494,7 @@ def enrich_overview_with_abstracts(overview_path, json_folders, enrich_keys=None
     df.to_excel(overview_path, index=False, engine="openpyxl")
     print(f"{Fore.GREEN}   - Enrichment complete. {updated_count} rows updated "
           f"across {len(grouped)} analysis source(s).")
+    return updated_count
 
 def harvest_query_resources(overview_path, search_root, vdb, mf, enrich_keys=None):
     """
@@ -510,8 +525,8 @@ def harvest_query_resources(overview_path, search_root, vdb, mf, enrich_keys=Non
     # 3. New Step: Enrich Excel with data from those JSONs (search_root stays
     #    available as a fallback for any UUID the harvest copy missed).
     print(f"{Fore.CYAN} > [Step 4] Merging JSON metadata into Excel...")
-    enrich_overview_with_abstracts(overview_path, json_folders,
-                                   enrich_keys=enrich_keys, search_root=search_root)
+    return enrich_overview_with_abstracts(overview_path, json_folders,
+                                          enrich_keys=enrich_keys, search_root=search_root)
 
 
 

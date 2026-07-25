@@ -412,6 +412,33 @@ class AutomatedLiteratureUI(tk.Tk):
         if folder:
             self.active_space_var.set(str(Path(folder).resolve()))
 
+    def _browse_into_var(self, var, title="Select a folder"):
+        """Pick a directory and store it in a StringVar."""
+        folder = filedialog.askdirectory(title=title)
+        if folder:
+            var.set(str(Path(folder).resolve()))
+
+    def _prompt_search_root(self):
+        """
+        Main-thread handler (called via ``_run_threaded``'s ``ask``) that asks
+        the user to pick the folder to search for the analysis JSONs and
+        remembers it for next queries. Returns the chosen path or "".
+        """
+        messagebox.showinfo(
+            "Analysis JSONs not found",
+            "The analysis JSON files for these results weren't found in the queried "
+            "space or the current search root.\n\nPick the folder that holds the "
+            "analyzed data (it will be searched recursively and remembered for next "
+            "queries).")
+        folder = filedialog.askdirectory(title="Select the analysis-JSON search root")
+        if not folder:
+            return ""
+        resolved = str(Path(folder).resolve())
+        self.search_root_var.set(resolved)
+        # Remember immediately so a crash/close before the next save keeps it.
+        self._save_session_state()
+        return resolved
+
     def _set_active_space(self, path):
         """Point the shared active space at ``path`` (updates every tab whose
         'Use active space' toggle is on)."""
@@ -466,21 +493,37 @@ class AutomatedLiteratureUI(tk.Tk):
         from alr.common.file_manager import ALR_main_folder
         return Path(ALR_main_folder) / "ui_session_state.json"
 
-    def _session_fields(self):
-        """Map of session-state key -> (Entry widget, BooleanVar or None)."""
-        fields = {
-            "collect_path": (self.collect_path_entry, None),
-            "analyze_storage": (self.analyze_storage_entry, self.custom_path_var_an),
-            "visualize_storage": (self.visualize_storage_entry, None),
-            "research_area": (self.ra_entry, None),
-            "research_question": (self.rq_entry, None),
-        }
-        # Built in a later tab; guard in case the layout changes.
-        if hasattr(self, "eval_storage_entry"):
-            fields["eval_storage"] = (self.eval_storage_entry, None)
-        return fields
+    # Display-only / transient vars and throwaway entry boxes that must NOT be
+    # cached (status strip, last-result line, live counts, "Add" text boxes).
+    _CACHE_DENYLIST = frozenset({
+        "last_result_var", "pub_count_var", "status_key_var", "status_provider_var",
+        "kw_add_entry", "sp_add_entry",
+    })
+
+    def _cacheable_items(self):
+        """
+        Every user-input widget/variable to persist, keyed by its attribute
+        name. Discovered generically from the instance so new inputs on any tab
+        are cached automatically; display-only vars are excluded via
+        ``_CACHE_DENYLIST``. Returns ``{name: (kind, obj)}`` where kind is
+        "var" | "combo" | "spin" | "entry".
+        """
+        items = {}
+        for name, obj in vars(self).items():
+            if name in self._CACHE_DENYLIST:
+                continue
+            if isinstance(obj, (tk.StringVar, tk.BooleanVar, tk.IntVar, tk.DoubleVar)):
+                items[name] = ("var", obj)
+            elif isinstance(obj, ttk.Combobox):       # subclass of Entry -> check first
+                items[name] = ("combo", obj)
+            elif isinstance(obj, ttk.Spinbox):        # subclass of Entry -> check first
+                items[name] = ("spin", obj)
+            elif isinstance(obj, (ttk.Entry, tk.Entry)):
+                items[name] = ("entry", obj)
+        return items
 
     def _restore_session_state(self):
+        """Pre-fill every cached tab input from the last session's cache file."""
         import json as _json
         try:
             path = self._session_state_path()
@@ -490,57 +533,59 @@ class AutomatedLiteratureUI(tk.Tk):
         except Exception as e:  # noqa: BLE001 - never block startup on this
             print(f"[Session] Could not load saved state: {e}")
             return
+        if not isinstance(state, dict):
+            return
 
-        for key, (entry, flag) in self._session_fields().items():
-            saved = state.get(key)
-            if not isinstance(saved, dict):
+        items = self._cacheable_items()
+        for name, value in state.items():
+            found = items.get(name)
+            if found is None:
                 continue
-            if flag is not None:
-                flag.set(bool(saved.get("enabled", True)))
-            # Enable to write, then restore the disabled look for unticked
-            # custom-path entries.
-            entry.configure(state="normal")
-            entry.delete(0, "end")
-            entry.insert(0, saved.get("value", "") or "")
-            if flag is not None and not flag.get():
-                entry.configure(state="disabled")
-        # Restore the collection "use active space" toggle (defaults on).
-        if hasattr(self, "collect_use_active_var"):
-            self.collect_use_active_var.set(bool(state.get("collect_use_active", True)))
-        # Re-sync the custom-path browse buttons with the restored flags.
+            kind, obj = found
+            try:
+                if kind == "var":
+                    obj.set(value)
+                elif kind in ("combo", "spin"):
+                    obj.set("" if value is None else value)
+                else:  # plain entry (handles disabled + textvariable-backed)
+                    self._set_entry_text(obj, "" if value is None else str(value))
+            except Exception as e:  # noqa: BLE001 - one bad field must not abort the rest
+                print(f"[Session] Skipped restoring '{name}': {e}")
+
+        # Re-sync widgets whose enabled/mirrored state depends on toggles just
+        # restored (active-space consumers + the analyze custom-path entry).
         self._apply_active_space()
         self._toggle_analyze_path_btn()
-        # Restore the shared active storage space (propagates to the tabs whose
-        # "Use active space" toggle is on). On first upgrade there is no saved
-        # active space yet -- seed it from a restored analyze/visualize/eval path
-        # so the mirrored tabs aren't blanked.
+        # First upgrade (no cached active space): seed it from a restored
+        # analyze/visualize/eval path so the mirrored tabs aren't blanked.
         active = state.get("active_space")
-        if not (isinstance(active, str) and active):
+        if not (isinstance(active, str) and active.strip()):
             for cand in (self.analyze_storage_entry.get(),
                          self.visualize_storage_entry.get(),
                          self.eval_storage_var.get() if hasattr(self, "eval_storage_var") else ""):
                 if cand and cand.strip():
-                    active = cand.strip()
+                    self.active_space_var.set(cand.strip())
                     break
-        if isinstance(active, str) and active and hasattr(self, "active_space_var"):
-            self.active_space_var.set(active)
-        print("[Session] Restored storage paths and inputs from the last session.")
+        # Refresh the provider status strip for the restored collect provider.
+        if hasattr(self, "llm_choice_col"):
+            try:
+                self._refresh_provider_status(_provider_code(self.llm_choice_col.get()))
+            except Exception:  # noqa: BLE001
+                pass
+        print("[Session] Restored all tab inputs from the last session.")
 
     def _save_session_state(self):
+        """Cache every user input across all tabs to the session cache file."""
         import json as _json
         try:
             state = {}
-            for key, (entry, flag) in self._session_fields().items():
-                state[key] = {
-                    "value": entry.get().strip(),
-                    "enabled": bool(flag.get()) if flag is not None else True,
-                }
-            if hasattr(self, "active_space_var"):
-                state["active_space"] = self.active_space_var.get().strip()
-            if hasattr(self, "collect_use_active_var"):
-                state["collect_use_active"] = bool(self.collect_use_active_var.get())
+            for name, (kind, obj) in self._cacheable_items().items():
+                try:
+                    state[name] = obj.get()
+                except Exception:  # noqa: BLE001 - skip anything that won't read
+                    continue
             self._session_state_path().write_text(
-                _json.dumps(state, indent=2), encoding="utf-8")
+                _json.dumps(state, indent=2, default=str), encoding="utf-8")
         except Exception as e:  # noqa: BLE001 - closing must not fail on this
             print(f"[Session] Could not save state: {e}")
 
@@ -1955,6 +2000,20 @@ class AutomatedLiteratureUI(tk.Tk):
                         text="Harvest matched files (copy JSONs into the query folder)",
                         variable=self.query_harvest_var).pack(side="left", padx=15)
 
+        # Where to look for the analysis JSONs when the queried space doesn't
+        # hold them (e.g. a common/combined DB). Remembered across sessions; if
+        # left blank (or nothing is found there) the query prompts for a folder
+        # and stores the choice here for next time.
+        sr_frame = ttk.Frame(v_frame)
+        sr_frame.pack(fill="x", padx=5, pady=(0, 5))
+        ttk.Label(sr_frame, text="Enrichment JSON search root:").pack(side="left", padx=5)
+        self.search_root_var = tk.StringVar(value="")
+        ttk.Entry(sr_frame, textvariable=self.search_root_var, width=48).pack(side="left", padx=5)
+        ttk.Button(sr_frame, text="Browse...",
+                   command=lambda: self._browse_into_var(self.search_root_var,
+                                                         "Select the analysis-JSON search root")
+                   ).pack(side="left", padx=2)
+
         btn_run_query = ttk.Button(v_frame, text="Generate Query Report", command=self._run_visualization_query_action)
         btn_run_query.pack(pady=20, ipadx=10, ipady=5)
 
@@ -2317,16 +2376,28 @@ class AutomatedLiteratureUI(tk.Tk):
         if harvest_files:
             print("[Query Report] Harvest ticked: matched JSONs will be copied into the query folder.")
 
+        # Remembered search root for the enrichment fallback (may be blank ->
+        # the backend default applies until the user picks one on the prompt).
+        search_root = self.search_root_var.get().strip()
+
         # The query itself (vector search + report building + enrichment) runs
         # on the worker thread with a determinate bar: one tick per searched
-        # section plus the overview and enrich/harvest steps.
-        def work(progress, should_cancel):
+        # section plus the overview and enrich/harvest steps. The 3rd arg (ask)
+        # lets the enrichment pop a "pick the search root" dialog mid-run when
+        # the analysis JSONs can't be located.
+        def work(progress, should_cancel, ask):
             progress(text=f"Querying {len(query_sections)} section(s)…")
-            generate_query_report(
-                [query_text], storage_choice, top_k=top_k,
-                section_keys=query_sections, enrich_keys=enrich_keys,
-                harvest_files=harvest_files,
+
+            def resolve_root():
+                return ask(lambda app: app._prompt_search_root())
+
+            kwargs = dict(
+                top_k=top_k, section_keys=query_sections, enrich_keys=enrich_keys,
+                harvest_files=harvest_files, resolve_search_root=resolve_root,
                 progress_callback=lambda d, t, txt: progress(done=d, total=t, text=txt))
+            if search_root:
+                kwargs["search_root"] = search_root
+            generate_query_report([query_text], storage_choice, **kwargs)
             print("Query Generation Suite Logging Executed successfully.")
             return len(query_sections)
 
