@@ -15,13 +15,14 @@ tabs:
 
 import csv
 import os
-import queue
-import sys
-import threading
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 
 from alr.common import crash_logger
+# Shared UI plumbing (progress dialog, threaded runner) lives in _async so the
+# main window and this tool stay in lock-step. ProgressDialog is re-exported here
+# for backward compatibility.
+from alr.ui.desktop._async import ProgressDialog, run_threaded  # noqa: F401
 
 from alr.common.document_inspector import (
     SEARCH_MODES,
@@ -251,64 +252,6 @@ def sql_target_for_type(type_key):
     return ("sync", None)
 
 
-class ProgressDialog:
-    """A small dialog with a status message, progress bar and Cancel.
-
-    Modal by default; pass ``modal=False`` to let the rest of the app stay
-    interactive (e.g. browse other tabs) while a long pass runs.
-    """
-
-    def __init__(self, master, title="Working…", on_cancel=None, modal=True):
-        self.top = tk.Toplevel(master)
-        self.top.title(title)
-        self.top.geometry("440x160")
-        self.top.transient(master)
-        self._modal = modal
-        if modal:
-            self.top.grab_set()
-        self.top.resizable(False, False)
-        # Closing the window acts as Cancel (if cancellable), else no-op.
-        self.top.protocol("WM_DELETE_WINDOW", (lambda: self._cancel()) if on_cancel else (lambda: None))
-
-        self._on_cancel = on_cancel
-        self.label = ttk.Label(self.top, text="Starting…", wraplength=410, anchor="w", justify="left")
-        self.label.pack(padx=16, pady=(18, 8), fill="x")
-        self.bar = ttk.Progressbar(self.top, mode="indeterminate", length=406)
-        self.bar.pack(padx=16, pady=8)
-        self.bar.start(12)
-
-        if on_cancel:
-            self.cancel_btn = ttk.Button(self.top, text="Cancel", command=self._cancel)
-            self.cancel_btn.pack(pady=(4, 8))
-
-    def _cancel(self):
-        if self._on_cancel:
-            self._on_cancel()
-        self.label.config(text="Cancelling — finishing the current item…")
-        if hasattr(self, "cancel_btn"):
-            self.cancel_btn.config(state="disabled", text="Cancelling…")
-
-    def apply(self, done=None, total=None, text=None):
-        if text is not None:
-            self.label.config(text=text)
-        if done is not None and total:
-            # Switch to a determinate bar once we know the item count, and reset
-            # the maximum whenever the total changes (e.g. across phases).
-            if str(self.bar.cget("mode")) != "determinate" or int(self.bar.cget("maximum")) != int(total):
-                self.bar.stop()
-                self.bar.config(mode="determinate", maximum=total)
-            self.bar.config(value=done)
-
-    def close(self):
-        try:
-            self.bar.stop()
-            if self._modal:
-                self.top.grab_release()
-            self.top.destroy()
-        except tk.TclError:
-            pass
-
-
 class ReviewApp:
     """Builds the whole review tool inside a given Tk container (window)."""
 
@@ -371,106 +314,38 @@ class ReviewApp:
         self.logs_list = tk.Listbox(dl_frame, height=4)
         self.logs_list.pack(side="left", fill="both", expand=True, padx=(0, 4))
         ttk.Button(dl_frame, text="Import bibliographic data", command=self._import_download_log).pack(side="right", padx=4, pady=4)
-        
-    def on_link_database_clicked(self):
-        # 1. Disable the button so the user can't click it twice
-        self.link_db_button.config(state="disabled")
-
-        # 2. Create the Progress Bar and Label UI elements
-        self.progress_var = tk.DoubleVar()
-        self.status_var = tk.StringVar(value="Preparing to sync...")
-        
-        self.progress_bar = ttk.Progressbar(self.parent_frame, variable=self.progress_var, maximum=100)
-        self.progress_bar.pack(fill="x", pady=(10, 2))
-        
-        self.status_label = ttk.Label(self.parent_frame, textvariable=self.status_var)
-        self.status_label.pack(pady=(0, 10))
-
-        # 3. Create a thread-safe Queue
-        self.progress_queue = queue.Queue()
-
-        # 4. Define the callback that sql_store.py will trigger
-        def progress_callback(current, total, current_uuid):
-            # Push progress to the queue (don't update Tkinter directly from the thread!)
-            self.progress_queue.put(("progress", current, total, current_uuid))
-
-        # 5. Define the worker function that runs in the background
-        def worker():
-            try:
-                total_synced = sync_storage_to_sql(self.manager, progress_callback=progress_callback)
-                self.progress_queue.put(("done", total_synced))
-            except Exception as e:
-                self.progress_queue.put(("error", str(e)))
-
-        # 6. Start the background thread
-        threading.Thread(target=worker, daemon=True).start()
-        
-        # 7. Start polling the queue on the main Tkinter thread
-        self._poll_progress_queue()
-
-    def _poll_progress_queue(self):
-        """Check the queue for updates every 100ms and update the Tkinter UI."""
-        try:
-            while True:
-                msg = self.progress_queue.get_nowait()
-                
-                if msg[0] == "progress":
-                    _, current, total, uuid = msg
-                    pct = (current / total * 100) if total > 0 else 0
-                    self.progress_var.set(pct)
-                    self.status_var.set(f"Syncing: {current} / {total} (UUID: {uuid})")
-                    
-                elif msg[0] == "done":
-                    total_synced = msg[1]
-                    self.progress_var.set(100)
-                    self.status_var.set(f"Success! Synced {total_synced} documents.")
-                    self.link_db_button.config(state="normal")
-                    
-                    # Optional: Destroy the progress bar after 3 seconds
-                    self.parent_frame.after(3000, self._cleanup_progress_ui)
-                    return  # Stop polling
-                    
-                elif msg[0] == "error":
-                    self.status_var.set(f"Sync failed: {msg[1]}")
-                    self.link_db_button.config(state="normal")
-                    return  # Stop polling
-                    
-        except queue.Empty:
-            pass
-
-        # If not done/error, schedule this function to run again in 100ms
-        self.parent_frame.after(100, self._poll_progress_queue)
-
-    def _cleanup_progress_ui(self):
-        """Hide the progress elements once finished."""
-        if hasattr(self, 'progress_bar') and self.progress_bar.winfo_exists():
-            self.progress_bar.pack_forget()
-        if hasattr(self, 'status_label') and self.status_label.winfo_exists():
-            self.status_label.pack_forget()
 
     def _scan_folder(self):
         folder = filedialog.askdirectory(title="Select a folder to scan for storage spaces")
         if not folder:
             return
-        self.container.config(cursor="watch"); self.container.update()
-        try:
-            self.spaces = detect_storage_spaces(folder)
-            self.download_logs = find_download_logs(folder)
-        finally:
-            self.container.config(cursor="")
 
-        self.spaces_tree.delete(*self.spaces_tree.get_children())
-        for i, s in enumerate(self.spaces):
-            self.spaces_tree.insert("", "end", iid=str(i),
-                                    values=(s.status, s.n_registry, s.n_abstracts, s.n_pdfs, s.path))
-        self.logs_list.delete(0, tk.END)
-        for log in self.download_logs:
-            self.logs_list.insert(tk.END, str(log))
-        n_complete = sum(1 for s in self.spaces if s.status == "complete")
-        self.spaces_status.config(
-            text=f"Found {len(self.spaces)} space(s) ({n_complete} complete, "
-                 f"{len(self.spaces) - n_complete} partial); "
-                 f"{len(self.download_logs)} bibliographic workbook(s).")
+        found = {}
+
+        def work(progress, should_cancel):
+            progress(text=f"Scanning '{os.path.basename(folder)}' for storage spaces…")
+            found["spaces"] = detect_storage_spaces(folder)
+            progress(text="Looking for bibliographic workbooks…")
+            found["logs"] = find_download_logs(folder)
+            return len(found["spaces"])
+
+        def on_success(_n):
+            self.spaces = found.get("spaces", [])
+            self.download_logs = found.get("logs", [])
+            self.spaces_tree.delete(*self.spaces_tree.get_children())
+            for i, s in enumerate(self.spaces):
+                self.spaces_tree.insert("", "end", iid=str(i),
+                                        values=(s.status, s.n_registry, s.n_abstracts, s.n_pdfs, s.path))
+            self.logs_list.delete(0, tk.END)
+            for log in self.download_logs:
+                self.logs_list.insert(tk.END, str(log))
+            n_complete = sum(1 for s in self.spaces if s.status == "complete")
+            self.spaces_status.config(
+                text=f"Found {len(self.spaces)} space(s) ({n_complete} complete, "
+                     f"{len(self.spaces) - n_complete} partial); "
+                     f"{len(self.download_logs)} bibliographic workbook(s).")
+
+        self._run_threaded(work, "Scan for storage spaces", "found", on_success=on_success)
 
     def _selected_space(self):
         sel = self.spaces_tree.selection()
@@ -481,68 +356,16 @@ class ReviewApp:
 
     def _run_threaded(self, work, title, result_word="processed", on_success=None):
         """
-        Run ``work(progress, should_cancel)`` on a background thread with a modal
-        progress dialog (with a Cancel button). The worker only communicates
-        through a thread-safe queue; all Tk access happens on the main thread via
-        a poller scheduled with ``after`` (calling Tk from a worker thread is
-        unsafe). ``progress(done=?, total=?, text=?)`` enqueues an update;
-        ``should_cancel()`` returns True once Cancel is pressed; ``work`` returns
-        an int count. On completion a result/cancel/error message is shown and
-        the views are refreshed; ``on_success(count)`` runs on the main thread
-        after an uncancelled, error-free completion.
+        Run a long pass on a background thread with a modal progress dialog.
+
+        Thin wrapper over the shared :func:`alr.ui.desktop._async.run_threaded`
+        (the same plumbing as the main window). The dialog stays modal here and a
+        ``self.container._busy`` guard blocks a second pass; every pass ends by
+        refreshing the views. ``on_success(count)`` runs on the main thread after
+        an uncancelled, error-free completion (replacing the default result box).
         """
-        cancel_event = threading.Event()
-        dlg = ProgressDialog(self.container, title, on_cancel=cancel_event.set)
-        q = queue.Queue()
-        outcome = {}
-
-        def progress(**kw):
-            q.put(("progress", kw))
-
-        def worker():
-            try:
-                q.put(("done", work(progress, cancel_event.is_set)))
-            except Exception as e:  # noqa: BLE001 - surface any failure to the UI
-                log_path = crash_logger.write_crash_log(
-                    *sys.exc_info(), origin=f"background task: {title}")
-                q.put(("error", (e, log_path)))
-
-        def finish():
-            dlg.close()
-            if "error" in outcome:
-                msg = str(outcome["error"])
-                if outcome.get("error_log"):
-                    msg += f"\n\nA full traceback was saved to:\n{outcome['error_log']}"
-                messagebox.showerror(title, msg)
-            elif cancel_event.is_set():
-                messagebox.showinfo(title, f"{title}: cancelled after {result_word} "
-                                           f"{outcome.get('n', 0)} document(s).")
-            else:
-                messagebox.showinfo(title, f"{title}: {result_word} {outcome.get('n', 0)} document(s).")
-                if on_success:
-                    on_success(outcome.get("n", 0))
-            self._refresh_all()
-
-        def poll():
-            try:
-                while True:
-                    kind, payload = q.get_nowait()
-                    if kind == "progress":
-                        dlg.apply(**payload)
-                    elif kind == "done":
-                        outcome["n"] = payload
-                        finish()
-                        return
-                    elif kind == "error":
-                        outcome["error"], outcome["error_log"] = payload
-                        finish()
-                        return
-            except queue.Empty:
-                pass
-            self.container.after(80, poll)
-
-        threading.Thread(target=worker, daemon=True).start()
-        self.container.after(80, poll)
+        run_threaded(self.container, work, title, result_word, on_success,
+                     modal=True, after=self._refresh_all)
 
     def _link_selected(self):
         s = self._selected_space()
@@ -654,23 +477,22 @@ class ReviewApp:
         ``merge_metadata_workbook`` (DOI/publisher/container/year/authors —
         fill-if-empty, matched by UUID or File_Name).
         """
-        import pandas as pd
         sel = self.logs_list.curselection()
         if not sel:
             messagebox.showinfo("No selection", "Select a workbook first.")
             return
         path = self.download_logs[sel[0]]
-        try:
+
+        def work(progress, should_cancel):
+            import pandas as pd
+            progress(text=f"Reading '{os.path.basename(str(path))}'…")
             df = pd.read_excel(path)
+            progress(text="Merging bibliographic data into the database…")
             if "_download_log" in os.path.basename(str(path)).lower():
-                n = self.store.merge_download_log(df)
-            else:
-                n = self.store.merge_metadata_workbook(df)
-            messagebox.showinfo("Import bibliographic data",
-                                f"Updated {n} document(s) with bibliographic data.")
-        except Exception as e:
-            messagebox.showerror("Import bibliographic data", str(e))
-        self._refresh_all()
+                return self.store.merge_download_log(df)
+            return self.store.merge_metadata_workbook(df)
+
+        self._run_threaded(work, "Import bibliographic data", "updated")
 
     # ============================================================= Documents
     def _build_documents_tab(self):
@@ -1810,21 +1632,30 @@ class ReviewApp:
     def _df_scan(self):
         if not self._df_managers:
             return
-        self.container.config(cursor="watch")
-        self.container.update()
-        try:
-            self._df_files = {c: [] for c in DATA_FILE_CATEGORIES}
-            self._df_path_space = {}
-            for manager in self._df_managers:
+
+        def work(progress, should_cancel):
+            files = {c: [] for c in DATA_FILE_CATEGORIES}
+            path_space = {}
+            managers = self._df_managers
+            for i, manager in enumerate(managers, 1):
+                if should_cancel():
+                    break
                 space_name = os.path.basename(str(manager.folder).rstrip("/\\")) or str(manager.folder)
+                progress(done=i - 1, total=len(managers),
+                         text=f"Scanning data files in '{space_name}'  ({i}/{len(managers)})…")
                 found = discover_space_data_files(manager)
                 for cat in DATA_FILE_CATEGORIES:
                     for p in found.get(cat, []):
-                        self._df_files[cat].append(p)
-                        self._df_path_space[p] = space_name
-        finally:
-            self.container.config(cursor="")
+                        files[cat].append(p)
+                        path_space[p] = space_name
+            self._df_files = files
+            self._df_path_space = path_space
+            return sum(len(v) for v in files.values())
 
+        self._run_threaded(work, "Scan data files", "found", on_success=lambda _n: self._df_render_scan())
+
+    def _df_render_scan(self):
+        """Rebuild the Data Files checkbox grid + preview from the last scan."""
         multi = len(self._df_managers) > 1
         for w in self._df_inner.winfo_children():
             w.destroy()
@@ -2072,6 +1903,7 @@ def open_review_app(master=None):
         crash_logger.attach_to_tk(win)
     win.title("Automated Literature Review — Review Tool")
     win.geometry("1050x760")
+    win.minsize(900, 640)  # keep the data-grid tabs from being crushed on resize
     # Same clam theme as the main tool (the theme is interpreter-wide, so a
     # Toplevel opened from the main app already has it; this covers the
     # standalone review_main.py launch).

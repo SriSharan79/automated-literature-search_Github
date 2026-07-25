@@ -1,9 +1,7 @@
-import inspect
 import os
 import re
 import sys
 import queue
-import threading
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 from pathlib import Path
@@ -43,7 +41,8 @@ def _provider_code(value):
     return _DISPLAY_TO_CODE.get(s.lower(), "B")
 from alr.common.sql_store import sync_storage_to_sql
 from alr.common import crash_logger
-from alr.ui.desktop.review_app import open_review_app, ProgressDialog
+from alr.ui.desktop.review_app import open_review_app
+from alr.ui.desktop._async import run_threaded, make_scrollable_tab
 from alr.data_analysis.Pdf_File_processor import process_pdf_mode_file
 from alr.rag_builders.db_manager import generate_databases
 from alr.rag_builders.query_executor import generate_query_report
@@ -1887,140 +1886,18 @@ class AutomatedLiteratureUI(tk.Tk):
     def _run_threaded(self, work, title, result_word="processed", on_success=None,
                       on_cancelled=None):
         """
-        Run ``work(progress, should_cancel)`` on a background thread with a modal
-        progress dialog (with Cancel). The worker only touches a thread-safe queue;
-        all Tk access happens on the main thread via an ``after``-scheduled poller
-        (calling Tk from a worker thread is unsafe). ``progress(done=?, total=?,
-        text=?)`` enqueues an update; ``should_cancel()`` returns True once Cancel
-        is pressed; ``work`` returns a value passed to ``on_success`` (or, by
-        default, treated as an int document count).
+        Run a long pass on a background thread with a non-modal progress dialog.
 
-        ``on_success(result)``, if given, is called on the main thread instead of
-        the default "processed N document(s)" message box -- for passes whose
-        result isn't a plain document count (e.g. a classification result dict,
-        a workbook path, or computed metrics text).
-
-        ``on_cancelled(result)``, if given, replaces the default "cancelled
-        after N" message box -- for passes whose worker treats Cancel as
-        "finish early with what you have" and still returns a usable result.
-
-        A worker that declares a third parameter also receives ``ask(handler)``:
-        it runs ``handler(self)`` on the **main** thread (Tk is not thread-safe)
-        and blocks until it returns, so a pass can pop a modal mid-run and act on
-        the answer. Workers with the plain ``(progress, should_cancel)`` signature
-        are called unchanged.
+        Thin wrapper over the shared :func:`alr.ui.desktop._async.run_threaded`
+        (the plumbing is shared with the Review tool). ``work(progress,
+        should_cancel[, ask])``; a worker declaring a third parameter also
+        receives ``ask(handler)`` to pop a modal mid-run. ``on_success(result)``
+        replaces the default "processed N" box; ``on_cancelled(result)`` replaces
+        the "cancelled after N" box. The main window's last-result strip is fed
+        via ``status``.
         """
-        # Only one background pass at a time. The progress dialog is now
-        # non-modal (the user can browse other tabs while it runs), so guard
-        # against a second pass being launched on top of a running one.
-        if getattr(self, "_busy", False):
-            messagebox.showinfo("Please wait",
-                                "A task is already running. Let it finish (or cancel it) "
-                                "before starting another.")
-            return
-        self._busy = True
-
-        cancel_event = threading.Event()
-        dlg = ProgressDialog(self, title, on_cancel=cancel_event.set, modal=False)
-        q = queue.Queue()
-        outcome = {}
-
-        def progress(**kw):
-            q.put(("progress", kw))
-
-        def ask(handler):
-            """Run ``handler(self)`` on the main thread; block for its result."""
-            done = threading.Event()
-            holder = {}
-            q.put(("ask", (handler, holder, done)))
-            done.wait()
-            return holder.get("result")
-
-        def worker():
-            result, failed = None, False
-            try:
-                args = [progress, cancel_event.is_set]
-                try:
-                    if len(inspect.signature(work).parameters) >= 3:
-                        args.append(ask)
-                except (TypeError, ValueError):
-                    pass
-                result = work(*args)
-            except Exception as e:  # noqa: BLE001 - surface any failure to the UI
-                failed = True
-                log_path = crash_logger.write_crash_log(
-                    *sys.exc_info(), origin=f"background task: {title}")
-                q.put(("error", (e, log_path)))
-
-            # Every pass tidies up after itself. The managers build their whole
-            # folder tree on construction, so any run can leave empty folders
-            # behind; each one registers its root, and this prunes exactly those
-            # trees. Runs on this worker thread (it is file I/O), and after a
-            # failure or a cancel too -- that is when strays are most likely.
-            try:
-                progress(text="Cleaning up empty files and folders…")
-                from alr.common.artifact_cleanup import prune_touched_folders
-                prune_touched_folders()
-            except Exception as e:  # noqa: BLE001 - cleanup must never fail a pass
-                print(f"[Cleanup] Skipped/failed: {e}")
-
-            if not failed:
-                q.put(("done", result))
-
-        def finish():
-            self._busy = False
-            dlg.close()
-            if "error" in outcome:
-                self._set_last_result(f"{title}: failed — {outcome['error']}", ok=False)
-                msg = str(outcome["error"])
-                if outcome.get("error_log"):
-                    msg += f"\n\nA full traceback was saved to:\n{outcome['error_log']}"
-                messagebox.showerror(title, msg)
-            elif cancel_event.is_set():
-                self._set_last_result(f"{title}: cancelled.", ok=False)
-                if on_cancelled is not None:
-                    on_cancelled(outcome.get("n"))
-                else:
-                    messagebox.showinfo(title, f"{title}: cancelled after {result_word} "
-                                               f"{outcome.get('n', 0)} document(s).")
-            elif on_success is not None:
-                self._set_last_result(f"{title}: done.")
-                on_success(outcome.get("n"))
-            else:
-                self._set_last_result(f"{title}: {result_word} {outcome.get('n', 0)} document(s).")
-                messagebox.showinfo(title, f"{title}: {result_word} {outcome.get('n', 0)} document(s).")
-
-        def poll():
-            try:
-                while True:
-                    kind, payload = q.get_nowait()
-                    if kind == "progress":
-                        dlg.apply(**payload)
-                    elif kind == "ask":
-                        # Main-thread modal requested by the worker; it is blocked
-                        # on `done` until we hand the answer back.
-                        handler, holder, done = payload
-                        try:
-                            holder["result"] = handler(self)
-                        except Exception as e:  # noqa: BLE001 - never strand the worker
-                            print(f"[Dialog] {e}")
-                            holder["result"] = None
-                        finally:
-                            done.set()
-                    elif kind == "done":
-                        outcome["n"] = payload
-                        finish()
-                        return
-                    elif kind == "error":
-                        outcome["error"], outcome["error_log"] = payload
-                        finish()
-                        return
-            except queue.Empty:
-                pass
-            self.after(80, poll)
-
-        threading.Thread(target=worker, daemon=True).start()
-        self.after(80, poll)
+        run_threaded(self, work, title, result_word, on_success, on_cancelled,
+                     modal=False, status=self._set_last_result)
 
     # ==========================================
     # TAB 3: VISUALIZE & RAG QUERY
@@ -2510,22 +2387,11 @@ class AutomatedLiteratureUI(tk.Tk):
     # ==========================================
     def _make_scrollable_tab(self, title):
         """
-        Add a notebook tab whose content can grow past the window height:
-        the content lives inside a vertical-scroll canvas. Returns the inner
-        frame that tab content should be packed into.
+        Add a notebook tab whose content can grow past the window height (thin
+        wrapper over the shared :func:`alr.ui.desktop._async.make_scrollable_tab`).
+        Returns the inner frame that tab content should be packed into.
         """
-        outer = ttk.Frame(self.notebook)
-        self.notebook.add(outer, text=title)
-        canvas = tk.Canvas(outer, highlightthickness=0)
-        vsb = ttk.Scrollbar(outer, orient="vertical", command=canvas.yview)
-        canvas.configure(yscrollcommand=vsb.set)
-        vsb.pack(side="right", fill="y")
-        canvas.pack(side="left", fill="both", expand=True)
-        tab = ttk.Frame(canvas)
-        tab_window = canvas.create_window((0, 0), window=tab, anchor="nw")
-        tab.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
-        canvas.bind("<Configure>", lambda e: canvas.itemconfig(tab_window, width=e.width))
-        return tab
+        return make_scrollable_tab(self.notebook, title)
 
     def _build_shared_eval_inputs(self, tab):
         """

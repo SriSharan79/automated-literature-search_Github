@@ -49,7 +49,14 @@ and an Open button — a raw DB browser, read-only SQL, a **column-picker Excel 
 cross-space stats (incl.
 abstract-classified/evaluated counts), custom overviews (field-picker, filters, grouped charts,
 per-topic counts, saved templates, natural-language requests; exports match the previewed
-table), and a built-in **Guide tab** explaining every feature with examples.
+table), and a built-in **Guide tab** explaining every feature with examples. The Review tool
+and the main window now share one piece of async UI plumbing (`ui/desktop/_async.py`:
+`ProgressDialog`, `run_threaded`, `make_scrollable_tab`) rather than each carrying its own copy;
+the Review tool inherits the **busy guard** (one background pass at a time), the mid-run `ask`
+round-trip and the empty-folder cleanup for free. Its previously synchronous scans — **scan a
+folder for storage spaces**, **import a bibliographic workbook**, and **scan a space's data
+files** — now run on that background thread with progress + cancel instead of freezing the
+window, and the window carries a `minsize` so the data-grid tabs are not crushed on resize.
 
 The CLI (`alr.ui.cli.pipeline`) exposes roughly the same Collect / Analyze / Visualize
 surface (now with model selection), plus it is the only place the console API-key prompt runs.

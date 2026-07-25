@@ -18,6 +18,7 @@ def main():
     crash_logger.attach_to_tk(root)
     root.title("Automated Literature Review — Review Tool")
     root.geometry("1050x760")
+    root.minsize(900, 640)  # keep the data-grid tabs from being crushed on resize
     ReviewApp(root)
     root.mainloop()
 
