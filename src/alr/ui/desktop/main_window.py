@@ -288,6 +288,8 @@ class AutomatedLiteratureUI(tk.Tk):
         self._build_visualize_tab()
         self._build_evaluation_tab()
         self._build_enrichment_tab()
+        # Tuck Evaluation & Enrichment behind a browser-style "+" tab.
+        self._setup_optional_tabs()
 
         # Console pane -> bottom. A one-line status label above it echoes the
         # last action's result, so the user doesn't have to read the raw log.
@@ -374,11 +376,100 @@ class AutomatedLiteratureUI(tk.Tk):
     }
 
     def _select_tab_by_prefix(self, prefix):
-        """Bring the notebook tab whose title starts with ``prefix`` to the front."""
+        """Bring the notebook tab whose title starts with ``prefix`` to the front,
+        un-hiding it first if it is one of the '+'-tucked optional tabs."""
         for tab_id in self.notebook.tabs():
             if self.notebook.tab(tab_id, "text").startswith(prefix):
+                if str(self.notebook.tab(tab_id, "state")) == "hidden":
+                    self.notebook.tab(tab_id, state="normal")
                 self.notebook.select(tab_id)
                 return
+
+    # ------------------------------------------------------------------
+    # Browser-style optional tabs: Evaluation & Enrichment are hidden by
+    # default and opened from a "+" tab pinned at the end of the strip.
+    # ------------------------------------------------------------------
+    _OPTIONAL_TAB_PREFIXES = ("4.", "5.")
+
+    def _setup_optional_tabs(self):
+        """Tuck the Evaluation & Enrichment tabs behind a trailing '+' tab."""
+        # A '+' tab pinned last; selecting it opens the "add a section" menu.
+        self._plus_frame = ttk.Frame(self.notebook)
+        self.notebook.add(self._plus_frame, text="  +  ")
+        self._plus_tab = self.notebook.tabs()[-1]
+        # Hide the optional tabs so only Collect · Analyze · Query · + show.
+        for tab_id in list(self.notebook.tabs()):
+            if self.notebook.tab(tab_id, "text").startswith(self._OPTIONAL_TAB_PREFIXES):
+                self.notebook.tab(tab_id, state="hidden")
+        self._last_real_tab = self.notebook.tabs()[0]
+        self.notebook.bind("<<NotebookTabChanged>>", self._on_tab_changed, add="+")
+        # Right-click / control-click a closeable tab to hide it again.
+        for seq in ("<Button-3>", "<Button-2>", "<Control-Button-1>"):
+            self.notebook.bind(seq, self._on_tab_right_click, add="+")
+
+    def _hidden_optional_tabs(self):
+        """[(tab_id, title), …] for optional tabs currently hidden."""
+        out = []
+        for tab_id in self.notebook.tabs():
+            txt = self.notebook.tab(tab_id, "text")
+            if txt.startswith(self._OPTIONAL_TAB_PREFIXES) \
+                    and str(self.notebook.tab(tab_id, "state")) == "hidden":
+                out.append((tab_id, txt))
+        return out
+
+    def _on_tab_changed(self, event=None):
+        """Bounce off the '+' tab (never stay on it) and pop the add-menu."""
+        try:
+            cur = self.notebook.select()
+        except tk.TclError:
+            return
+        if cur == getattr(self, "_plus_tab", None):
+            self.notebook.select(self._last_real_tab)
+            self._open_add_tab_menu()
+        else:
+            self._last_real_tab = cur
+
+    def _open_add_tab_menu(self):
+        """Menu of the hidden optional tabs, opened from the '+' tab."""
+        menu = tk.Menu(self, tearoff=0)
+        hidden = self._hidden_optional_tabs()
+        if hidden:
+            for tab_id, title in hidden:
+                menu.add_command(label=f"Open  {title}",
+                                 command=lambda t=tab_id: self._reveal_tab(t))
+        else:
+            menu.add_command(label="All sections are open", state="disabled")
+        menu.tk_popup(self.winfo_pointerx(), self.winfo_pointery())
+
+    def _reveal_tab(self, tab_id):
+        """Un-hide an optional tab and bring it to the front."""
+        self.notebook.tab(tab_id, state="normal")
+        self.notebook.select(tab_id)
+        self._last_real_tab = self.notebook.select()
+
+    def _on_tab_right_click(self, event):
+        """Offer to hide (close) a right-clicked optional tab, browser-style."""
+        try:
+            idx = self.notebook.index(f"@{event.x},{event.y}")
+        except tk.TclError:
+            return
+        tabs = self.notebook.tabs()
+        if idx >= len(tabs):
+            return
+        tab_id = tabs[idx]
+        txt = self.notebook.tab(tab_id, "text")
+        if not txt.startswith(self._OPTIONAL_TAB_PREFIXES):
+            return
+        menu = tk.Menu(self, tearoff=0)
+        menu.add_command(label=f"Hide  {txt}", command=lambda: self._hide_tab(tab_id))
+        menu.tk_popup(event.x_root, event.y_root)
+
+    def _hide_tab(self, tab_id):
+        """Hide an optional tab, moving selection off it first if needed."""
+        if self.notebook.select() == tab_id:
+            fallback = self._last_real_tab if self._last_real_tab != tab_id else self.notebook.tabs()[0]
+            self.notebook.select(fallback)
+        self.notebook.tab(tab_id, state="hidden")
 
     def _show_current_tab_help(self):
         """Show plain-language help for whichever tab is currently open."""
