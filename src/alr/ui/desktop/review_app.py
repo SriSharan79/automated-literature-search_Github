@@ -262,21 +262,44 @@ class ReviewApp:
         self.download_logs = []
         self._field_vars = {}  # column -> BooleanVar
 
+        # The tabs are grouped into two functional categories. The outer
+        # notebook holds the two category frames; each carries an inner notebook
+        # with the tabs that belong to it:
+        #   Import & Enrich  — bring storage spaces / data files into the review
+        #                      database and prepare it (link, DOI, classify,
+        #                      evaluate, import workbooks, merge data files, edit
+        #                      section JSON).
+        #   Review & Explore — read, query, report on and export what is in the
+        #                      database (documents, inspector, raw browser,
+        #                      overviews, guide).
         self.notebook = ttk.Notebook(container)
         self.notebook.pack(fill="both", expand=True, padx=6, pady=6)
 
-        self._build_spaces_tab()
-        self._build_documents_tab()
-        self._build_inspector_tab()
-        self._build_database_tab()
-        self._build_overviews_tab()
-        self._build_data_files_tab()
-        self._build_section_editor_tab()
-        self._build_help_tab()
+        cat_import = ttk.Frame(self.notebook)
+        self.notebook.add(cat_import, text="Import & Enrich")
+        self.import_notebook = ttk.Notebook(cat_import)
+        self.import_notebook.pack(fill="both", expand=True, padx=4, pady=4)
+
+        cat_review = ttk.Frame(self.notebook)
+        self.notebook.add(cat_review, text="Review & Explore")
+        self.review_notebook = ttk.Notebook(cat_review)
+        self.review_notebook.pack(fill="both", expand=True, padx=4, pady=4)
+
+        # Import & Enrich
+        self._build_spaces_tab(self.import_notebook)
+        self._build_data_files_tab(self.import_notebook)
+        self._build_section_editor_tab(self.import_notebook)
+
+        # Review & Explore
+        self._build_documents_tab(self.review_notebook)
+        self._build_inspector_tab(self.review_notebook)
+        self._build_database_tab(self.review_notebook)
+        self._build_overviews_tab(self.review_notebook)
+        self._build_help_tab(self.review_notebook)
 
     # ================================================================ Spaces
-    def _build_spaces_tab(self):
-        tab = make_scrollable_tab(self.notebook, "Storage Spaces")
+    def _build_spaces_tab(self, nb):
+        tab = make_scrollable_tab(nb, "Storage Spaces")
 
         bar = ttk.Frame(tab)
         bar.pack(fill="x", padx=8, pady=6)
@@ -494,13 +517,13 @@ class ReviewApp:
         self._run_threaded(work, "Import bibliographic data", "updated")
 
     # ============================================================= Documents
-    def _build_documents_tab(self):
-        tab = make_scrollable_tab(self.notebook, "Documents")
+    def _build_documents_tab(self, nb):
+        tab = make_scrollable_tab(nb, "Documents")
         self.review_view = ReviewDataView(tab)
 
     # ===================================================== Document Inspector
-    def _build_inspector_tab(self):
-        tab = make_scrollable_tab(self.notebook, "Document Inspector")
+    def _build_inspector_tab(self, nb):
+        tab = make_scrollable_tab(nb, "Document Inspector")
 
         top = ttk.LabelFrame(tab, text="Find a document (SQL first; the storage space fills whatever is missing)")
         top.pack(fill="x", padx=8, pady=6)
@@ -786,8 +809,8 @@ class ReviewApp:
         return chosen.get("path")
 
     # ============================================================== Database
-    def _build_database_tab(self):
-        tab = make_scrollable_tab(self.notebook, "Database")
+    def _build_database_tab(self, nb):
+        tab = make_scrollable_tab(nb, "Database")
 
         # -- cross-space stats panel
         stats_frame = ttk.LabelFrame(tab, text="Database statistics")
@@ -972,8 +995,8 @@ class ReviewApp:
         ttk.Button(btns, text="Cancel", command=dlg.destroy).pack(side="left", padx=8)
 
     # ============================================================= Overviews
-    def _build_overviews_tab(self):
-        tab = make_scrollable_tab(self.notebook, "Overviews")
+    def _build_overviews_tab(self, nb):
+        tab = make_scrollable_tab(nb, "Overviews")
 
         # Field picker (scrollable checkboxes)
         picker = ttk.LabelFrame(tab, text="Columns to include")
@@ -1482,14 +1505,14 @@ class ReviewApp:
          "exist, then 'Open PDF' opens it."),
     ]
 
-    def _build_section_editor_tab(self):
+    def _build_section_editor_tab(self, nb):
         """Host the section JSON editor here (moved out of the main tool)."""
         from alr.ui.desktop.section_rewriter_view import JSONRestructurerUI
-        tab = make_scrollable_tab(self.notebook, "Section Editor")
+        tab = make_scrollable_tab(nb, "Section Editor")
         self.section_editor = JSONRestructurerUI(tab)
 
-    def _build_help_tab(self):
-        tab = make_scrollable_tab(self.notebook, "Guide")
+    def _build_help_tab(self, nb):
+        tab = make_scrollable_tab(nb, "Guide")
 
         txt = tk.Text(tab, wrap="word", padx=14, pady=10, borderwidth=0,
                       background=ttk.Style().lookup("TFrame", "background") or "#f5f5f5")
@@ -1513,8 +1536,8 @@ class ReviewApp:
         self.help_text = txt
 
     # ============================================================= Data Files
-    def _build_data_files_tab(self):
-        tab = make_scrollable_tab(self.notebook, "Data Files")
+    def _build_data_files_tab(self, nb):
+        tab = make_scrollable_tab(nb, "Data Files")
 
         self._df_managers = []      # one DataAnalyzeManager per loaded space
         self._df_space_folders = [] # their folder paths (as str)

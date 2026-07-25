@@ -34,7 +34,12 @@ limiter** (10 requests/60 s across chat + embeddings) — the flat `time.sleep(3
 per-classifier `time.sleep(1.5)`s and the off-by-one window guard are gone.
 
 The standalone **Review tool** (`alr.ui.desktop.review_app`, launched from the top bar or
-`review_main.py`) additionally covers: storage-space detection (complete/partial), DB linking,
+`review_main.py`) groups its tabs into **two functional categories** (an outer notebook of two
+category tabs, each holding an inner notebook of its tabs): **Import & Enrich** — bring storage
+spaces / data files into the review database and prepare it (*Storage Spaces*, *Data Files*,
+*Section Editor*) — and **Review & Explore** — read, query, report on and export what is in the
+database (*Documents*, *Document Inspector*, *Database*, *Overviews*, *Guide*). It covers:
+storage-space detection (complete/partial), DB linking,
 DOI enrichment, **title + abstract classification** and **data evaluation** per space (each
 synced to SQL first), a **Document Inspector tab** (`common/document_inspector.py`) — search
 one document by **UUID, Title or Filename** (user-picked mode); the lookup **always starts in
