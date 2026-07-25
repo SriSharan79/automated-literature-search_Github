@@ -57,6 +57,11 @@ round-trip and the empty-folder cleanup for free. Its previously synchronous sca
 folder for storage spaces**, **import a bibliographic workbook**, and **scan a space's data
 files** — now run on that background thread with progress + cancel instead of freezing the
 window, and the window carries a `minsize` so the data-grid tabs are not crushed on resize.
+**Every Review tab is now a vertical-scroll container** (the same `make_scrollable_tab` the main
+window uses): the inner frame is kept at least as tall as the viewport, so expand-to-fill
+treeviews still fill the tab when there is room and the outer scrollbar only engages once the
+content genuinely overflows; the mouse wheel scrolls the tab except over a widget that scrolls
+itself (treeview / text / listbox / inner canvas), which keeps its own wheel behaviour.
 
 The CLI (`alr.ui.cli.pipeline`) exposes roughly the same Collect / Analyze / Visualize
 surface (now with model selection), plus it is the only place the console API-key prompt runs.

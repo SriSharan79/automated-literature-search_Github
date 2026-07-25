@@ -85,11 +85,23 @@ class ProgressDialog:
             pass
 
 
+# Widget classes that own their vertical scrolling; the wheel is left to them
+# rather than hijacked by the enclosing scroll canvas.
+_SELF_SCROLLING = {"Treeview", "Text", "Listbox", "Canvas"}
+
+
 def make_scrollable_tab(notebook, title):
     """
     Add a notebook tab whose content can grow past the window height: the
     content lives inside a vertical-scroll canvas. Returns the inner frame that
     tab content should be packed into.
+
+    The inner frame is kept **at least as tall as the viewport**, so children
+    that ``expand`` to fill (e.g. data-grid treeviews) still fill the tab when
+    there is room, and the outer scrollbar only engages once the content is
+    genuinely taller than the window. The mouse wheel scrolls the tab, except
+    over a widget that scrolls itself (a treeview/text/listbox/inner canvas),
+    which keeps its own wheel behaviour.
     """
     outer = ttk.Frame(notebook)
     notebook.add(outer, text=title)
@@ -100,8 +112,44 @@ def make_scrollable_tab(notebook, title):
     canvas.pack(side="left", fill="both", expand=True)
     tab = ttk.Frame(canvas)
     tab_window = canvas.create_window((0, 0), window=tab, anchor="nw")
-    tab.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
-    canvas.bind("<Configure>", lambda e: canvas.itemconfig(tab_window, width=e.width))
+
+    def _fit(width=None, height=None):
+        if width is not None:
+            canvas.itemconfig(tab_window, width=width)
+        # Never let the inner frame be shorter than the viewport, so expand-fill
+        # children still fill; let it grow taller so real overflow scrolls.
+        vh = height if height is not None else canvas.winfo_height()
+        canvas.itemconfig(tab_window, height=max(tab.winfo_reqheight(), vh))
+        canvas.configure(scrollregion=canvas.bbox("all"))
+
+    tab.bind("<Configure>", lambda e: _fit())
+    canvas.bind("<Configure>", lambda e: _fit(width=e.width, height=e.height))
+
+    def _on_wheel(e):
+        # Leave the wheel to a widget that scrolls itself.
+        w = tab.winfo_containing(e.x_root, e.y_root)
+        while w is not None and w is not tab:
+            if w.winfo_class() in _SELF_SCROLLING:
+                return
+            w = getattr(w, "master", None)
+        if e.num == 5 or e.delta < 0:
+            canvas.yview_scroll(1, "units")
+        elif e.num == 4 or e.delta > 0:
+            canvas.yview_scroll(-1, "units")
+
+    def _bind_wheel(_e):
+        canvas.bind_all("<MouseWheel>", _on_wheel)
+        canvas.bind_all("<Button-4>", _on_wheel)
+        canvas.bind_all("<Button-5>", _on_wheel)
+
+    def _unbind_wheel(_e):
+        canvas.unbind_all("<MouseWheel>")
+        canvas.unbind_all("<Button-4>")
+        canvas.unbind_all("<Button-5>")
+
+    # Rebind on enter so only the visible tab's canvas owns the wheel.
+    tab.bind("<Enter>", _bind_wheel)
+    tab.bind("<Leave>", _unbind_wheel)
     return tab
 
 

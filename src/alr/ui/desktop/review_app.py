@@ -19,10 +19,10 @@ import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 
 from alr.common import crash_logger
-# Shared UI plumbing (progress dialog, threaded runner) lives in _async so the
-# main window and this tool stay in lock-step. ProgressDialog is re-exported here
-# for backward compatibility.
-from alr.ui.desktop._async import ProgressDialog, run_threaded  # noqa: F401
+# Shared UI plumbing (progress dialog, threaded runner, scrollable tabs) lives in
+# _async so the main window and this tool stay in lock-step. ProgressDialog is
+# re-exported here for backward compatibility.
+from alr.ui.desktop._async import ProgressDialog, run_threaded, make_scrollable_tab  # noqa: F401
 
 from alr.common.document_inspector import (
     SEARCH_MODES,
@@ -276,8 +276,7 @@ class ReviewApp:
 
     # ================================================================ Spaces
     def _build_spaces_tab(self):
-        tab = ttk.Frame(self.notebook)
-        self.notebook.add(tab, text="Storage Spaces")
+        tab = make_scrollable_tab(self.notebook, "Storage Spaces")
 
         bar = ttk.Frame(tab)
         bar.pack(fill="x", padx=8, pady=6)
@@ -496,14 +495,12 @@ class ReviewApp:
 
     # ============================================================= Documents
     def _build_documents_tab(self):
-        tab = ttk.Frame(self.notebook)
-        self.notebook.add(tab, text="Documents")
+        tab = make_scrollable_tab(self.notebook, "Documents")
         self.review_view = ReviewDataView(tab)
 
     # ===================================================== Document Inspector
     def _build_inspector_tab(self):
-        tab = ttk.Frame(self.notebook)
-        self.notebook.add(tab, text="Document Inspector")
+        tab = make_scrollable_tab(self.notebook, "Document Inspector")
 
         top = ttk.LabelFrame(tab, text="Find a document (SQL first; the storage space fills whatever is missing)")
         top.pack(fill="x", padx=8, pady=6)
@@ -790,8 +787,7 @@ class ReviewApp:
 
     # ============================================================== Database
     def _build_database_tab(self):
-        tab = ttk.Frame(self.notebook)
-        self.notebook.add(tab, text="Database")
+        tab = make_scrollable_tab(self.notebook, "Database")
 
         # -- cross-space stats panel
         stats_frame = ttk.LabelFrame(tab, text="Database statistics")
@@ -977,8 +973,7 @@ class ReviewApp:
 
     # ============================================================= Overviews
     def _build_overviews_tab(self):
-        tab = ttk.Frame(self.notebook)
-        self.notebook.add(tab, text="Overviews")
+        tab = make_scrollable_tab(self.notebook, "Overviews")
 
         # Field picker (scrollable checkboxes)
         picker = ttk.LabelFrame(tab, text="Columns to include")
@@ -1490,13 +1485,11 @@ class ReviewApp:
     def _build_section_editor_tab(self):
         """Host the section JSON editor here (moved out of the main tool)."""
         from alr.ui.desktop.section_rewriter_view import JSONRestructurerUI
-        tab = ttk.Frame(self.notebook)
-        self.notebook.add(tab, text="Section Editor")
+        tab = make_scrollable_tab(self.notebook, "Section Editor")
         self.section_editor = JSONRestructurerUI(tab)
 
     def _build_help_tab(self):
-        tab = ttk.Frame(self.notebook)
-        self.notebook.add(tab, text="Guide")
+        tab = make_scrollable_tab(self.notebook, "Guide")
 
         txt = tk.Text(tab, wrap="word", padx=14, pady=10, borderwidth=0,
                       background=ttk.Style().lookup("TFrame", "background") or "#f5f5f5")
@@ -1521,8 +1514,7 @@ class ReviewApp:
 
     # ============================================================= Data Files
     def _build_data_files_tab(self):
-        tab = ttk.Frame(self.notebook)
-        self.notebook.add(tab, text="Data Files")
+        tab = make_scrollable_tab(self.notebook, "Data Files")
 
         self._df_managers = []      # one DataAnalyzeManager per loaded space
         self._df_space_folders = [] # their folder paths (as str)
