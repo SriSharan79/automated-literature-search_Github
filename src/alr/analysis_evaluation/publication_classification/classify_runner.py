@@ -292,7 +292,9 @@ def classify_custom_space(manager, topic, tags, source="title", db_path=None,
     sql_col = register_custom_column(topic, db_path=db_path)
     safe_topic = re.sub(r"[^A-Za-z0-9_\- ]+", "", str(topic).strip()).strip().replace(" ", "_") or sql_col
     current_date = datetime.now().strftime("%Y-%m-%d")
-    excel_path = str(manager.classification_subfolder / f"{current_date}_{safe_topic}_Classification.xlsx")
+    from alr.common.file_handlers import safe_path
+    # A long topic tag can make this filename overflow the OS path limit; guard it.
+    excel_path = str(safe_path(manager.classification_subfolder / f"{current_date}_{safe_topic}_Classification.xlsx"))
 
     text_field = "abstract_text" if source == "abstract" else "title"
     kind = "abstract" if source == "abstract" else "title"

@@ -2,6 +2,7 @@ import sys
 import threading
 
 from alr.common.general_utils import print_with_separator
+from alr.common.file_handlers import safe_path
 import os
 import pandas as pd
 from pathlib import Path
@@ -150,13 +151,14 @@ class CollectionManager:
         self.ensure_folders()
         self.topic_id = doc_id
 
-        self.keywords_list_json = os.path.join(self.keywords_list_folder, f"{doc_id}_keywords_list.json")
+        # Per-search collection outputs, length-guarded (no-op for normal paths).
+        self.keywords_list_json = str(safe_path(os.path.join(self.keywords_list_folder, f"{doc_id}_keywords_list.json")))
 
-        self.search_phrase_list_excel = os.path.join(self.search_phrase_list_folder, f"{doc_id}_search_phrase_list.xlsx")
-        self.search_phrase_sorted_list_excel = os.path.join(self.search_phrase_list_folder, f"{doc_id}_search_phrase_sorted_list.xlsx")
+        self.search_phrase_list_excel = str(safe_path(os.path.join(self.search_phrase_list_folder, f"{doc_id}_search_phrase_list.xlsx")))
+        self.search_phrase_sorted_list_excel = str(safe_path(os.path.join(self.search_phrase_list_folder, f"{doc_id}_search_phrase_sorted_list.xlsx")))
 
-        self.publications_list_excel = os.path.join(self.publications_list_folder, f"{doc_id}_publications_list.xlsx")
-        self.classified_publications_excel = os.path.join(self.classified_publications_folder, f"{doc_id}_classified_publications.xlsx")
+        self.publications_list_excel = str(safe_path(os.path.join(self.publications_list_folder, f"{doc_id}_publications_list.xlsx")))
+        self.classified_publications_excel = str(safe_path(os.path.join(self.classified_publications_folder, f"{doc_id}_classified_publications.xlsx")))
 
         
         print_with_separator("DebugLog",'/')
@@ -316,20 +318,24 @@ class DataAnalyzeManager:
         Updates the specific JSON paths for a given document ID.
         Replaces the old 'Update_ID_Files' global logic.
         """
-        self.current_id = doc_id        
-        self.raw_sec_json_path = os.path.join(self.raw_section_subfolder, f"{doc_id}_raw_sections.json")
-        self.raw_chunks_json_path = os.path.join(self.raw_chunks_subfolder, f"{doc_id}_raw_chunks.json")
-        self.file_usage_log_path = os.path.join(self.Files_Usage_Log_subfolder, f"{doc_id}_file_usage.log")
-        self.ref_json_path = os.path.join(self.references_subfolder, f"{doc_id}_References.json")
-        self.abstract_json_path=os.path.join(self.AD_Abstract, f"{doc_id}_Abstract.json")
-        self.intro_json_path=os.path.join(self.AD_Intro, f"{doc_id}_Intro.json")
-        self.rescon_json_path=os.path.join(self.AD_ResCon, f"{doc_id}_Results_Conclusion.json")
-        
-        # Seperate table folder
-        self.tables_storage_path = self.tables_subfolder / f"{doc_id}_Tables_files"
+        self.current_id = doc_id
+        # Every per-document path goes through safe_path so a very deep storage
+        # tree (or an unusually long id) can't push it past the OS path limit and
+        # make the write silently fail. safe_path is a no-op for normal-length
+        # paths, so on-disk names are unchanged in the common case.
+        self.raw_sec_json_path = str(safe_path(os.path.join(self.raw_section_subfolder, f"{doc_id}_raw_sections.json")))
+        self.raw_chunks_json_path = str(safe_path(os.path.join(self.raw_chunks_subfolder, f"{doc_id}_raw_chunks.json")))
+        self.file_usage_log_path = str(safe_path(os.path.join(self.Files_Usage_Log_subfolder, f"{doc_id}_file_usage.log")))
+        self.ref_json_path = str(safe_path(os.path.join(self.references_subfolder, f"{doc_id}_References.json")))
+        self.abstract_json_path = str(safe_path(os.path.join(self.AD_Abstract, f"{doc_id}_Abstract.json")))
+        self.intro_json_path = str(safe_path(os.path.join(self.AD_Intro, f"{doc_id}_Intro.json")))
+        self.rescon_json_path = str(safe_path(os.path.join(self.AD_ResCon, f"{doc_id}_Results_Conclusion.json")))
+
+        # Seperate per-document table / image folders (also length-guarded).
+        self.tables_storage_path = safe_path(self.tables_subfolder / f"{doc_id}_Tables_files")
         self.tables_storage_path.mkdir(exist_ok=True)
-        
-        self.image_storage_path = self.images_subfolder / f"{doc_id}_Images_files"
+
+        self.image_storage_path = safe_path(self.images_subfolder / f"{doc_id}_Images_files")
         self.image_storage_path.mkdir(exist_ok=True)
 
         # print(f"File paths updated for ID: {doc_id}")

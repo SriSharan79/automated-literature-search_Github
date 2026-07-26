@@ -226,8 +226,9 @@ class DoclingExtractor:
             # 3. Create the subfolder if it doesn't exist yet
             excel_output_dir.mkdir(parents=True, exist_ok=True)
 
-            # 4. Define the final file path and save
-            table_path = excel_output_dir / table_name
+            # 4. Define the final file path and save (length-guarded)
+            from alr.common.file_handlers import safe_path
+            table_path = safe_path(excel_output_dir / table_name)
             df.to_excel(table_path, index=False)
 
             tables_data.append({
@@ -268,7 +269,8 @@ class DoclingExtractor:
                 # self.image_hashes.add(image_hash)
 
                 image_name = f"_page_{page_no}_picture_{picture_counter}.png"
-                image_path = self.images_output_path / image_name
+                from alr.common.file_handlers import safe_path
+                image_path = safe_path(self.images_output_path / image_name)
                 with image_path.open("wb") as fp:
                     element.get_image(doc).save(fp, "PNG")
 

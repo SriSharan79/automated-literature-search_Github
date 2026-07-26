@@ -41,13 +41,13 @@ Workbook locations come from :func:`alr.common.sections.build_metric_workbooks_m
 
 from __future__ import annotations
 
-import hashlib
 import importlib
 import re
 from pathlib import Path
 
 from colorama import Fore
 
+from alr.common.file_handlers import safe_path
 from alr.common.file_manager import DataAnalyzeManager, Vec_DB_Manager
 from alr.common.sections import (
     ALR_SECTIONS, INTRO_SECTIONS, RESCON_SECTIONS,
@@ -403,24 +403,8 @@ def _sentence_detail_path(details_dir, uuid, sql_label, max_length=250):
     write, even when the directory alone is very long. The common (short) case
     returns the natural, fully readable path untouched and quietly.
     """
-    details_dir = Path(details_dir)
-    suffix = "_Sentence_Metrics.json"
-    stem = f"{uuid}_{sql_label}"
-    naive = details_dir / f"{stem}{suffix}"
-    if len(str(naive)) <= max_length:
-        return naive
-
-    digest = hashlib.sha1(stem.encode("utf-8")).hexdigest()[:8]
-    allowed = max_length - (len(str(details_dir)) + 1) - len(suffix)
-    if allowed <= len(digest):
-        # Directory leaves (almost) no room; use just the unique hash. The path
-        # may still exceed the conservative budget, but it is the shortest valid
-        # unique filename we can offer (best effort for an over-long directory).
-        name = digest if allowed <= 0 else digest[:allowed]
-    else:
-        keep = allowed - 1 - len(digest)      # room for "_" + hash
-        name = f"{stem[:keep]}_{digest}"
-    return details_dir / f"{name}{suffix}"
+    return safe_path(Path(details_dir) / f"{uuid}_{sql_label}_Sentence_Metrics.json",
+                     max_length=max_length)
 
 
 def _write_sentence_detail_json(details_dir, uuid, sql_label, payload) -> None:

@@ -104,7 +104,8 @@ def classify_publications_list(CM, tags, service=None,
     current_date = datetime.now().strftime("%Y-%m-%d")
     base = Path(CM.classified_publications_excel).name if getattr(
         CM, "classified_publications_excel", None) else "classified_publications.xlsx"
-    out_path = CM.classified_publications_folder / f"{current_date}_{base}"
+    from alr.common.file_handlers import safe_path
+    out_path = safe_path(CM.classified_publications_folder / f"{current_date}_{base}")
     pd.DataFrame(rows).to_excel(out_path, index=False)
 
     print(f"Classified {len(rows)} publication(s) against {len(tags)} keyword tag(s) "

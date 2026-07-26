@@ -1,4 +1,5 @@
 import pandas as pd
+import hashlib
 import os
 import shutil
 from pathlib import Path
@@ -52,35 +53,52 @@ def move_matching_pdfs(filenames_to_find, search_root, destination_folder):
 #     except Exception as e:
 #         print(f"Error copying file: {e}")
 
-def sanitize_path_length(file_path,max_length=250):
-    path_obj = Path(file_path)
-    full_path_str = str(path_obj)
-    
-    if len(full_path_str) <= max_length:
-        print(f"{Fore.GREEN}Path is safe ({len(full_path_str)} chars).")
-        return full_path_str
-    
-    # Calculate how much we need to trim
-    # We keep the parent directory and the extension intact
-    directory = path_obj.parent
-    extension = path_obj.suffix
-    stem = path_obj.stem
-    
-    # Calculate available space for the stem
-    # (Max - directory length - separator - extension length)
-    allowed_stem_len = max_length - len(str(directory)) - 1 - len(extension)
-    
-    if allowed_stem_len <= 0:
-        print(f"{Fore.RED}Error: Directory path is too long to even fit an extension.")
-        return str(directory) 
 
-    trimmed_stem = stem[:allowed_stem_len]
-    new_path = directory / f"{trimmed_stem}{extension}"
-    
-    print(f"{Fore.YELLOW}Path too long ({len(full_path_str)} chars).")
-    print(f"{Fore.CYAN}Trimmed to: {new_path}")
-    
-    return str(new_path)
+def safe_path(file_path, max_length=250):
+    """
+    Return a filesystem path guaranteed to be a real, writable FILE whose total
+    length stays within ``max_length`` — so a long name (a filename-derived id,
+    a title) or a deeply nested storage tree can't push the path past the OS
+    limit and make the write fail.
+
+    A short path is returned unchanged (as a ``Path``). When it is too long the
+    stem is shortened to ``<readable-prefix>_<8-hex-hash><ext>``: the hash of
+    the ORIGINAL stem keeps every distinct name unique (no collisions from a
+    trimmed shared prefix), and the function is deterministic, so a later read
+    resolves to exactly the file the write produced. Unlike a plain stem-trim it
+    never degenerates into a bare directory — there is always a filename to
+    write, even when the directory alone is very long (the returned path may
+    then still exceed the conservative budget, but it is the shortest valid
+    unique name we can offer for that directory).
+    """
+    path_obj = Path(file_path)
+    if len(str(path_obj)) <= max_length:
+        return path_obj
+
+    directory = path_obj.parent
+    ext = path_obj.suffix
+    stem = path_obj.stem
+    digest = hashlib.sha1(stem.encode("utf-8")).hexdigest()[:8]
+    allowed = max_length - (len(str(directory)) + 1) - len(ext)
+
+    if allowed <= len(digest):
+        # Directory leaves (almost) no room; use just the unique hash.
+        name = digest if allowed <= 0 else digest[:allowed]
+    else:
+        keep = allowed - 1 - len(digest)      # room for "_" + hash
+        name = f"{stem[:keep]}_{digest}"
+    new_path = directory / f"{name}{ext}"
+    print(f"{Fore.YELLOW}Path too long ({len(str(path_obj))} chars) — writing to: {new_path}")
+    return new_path
+
+
+def sanitize_path_length(file_path, max_length=250):
+    """
+    Backwards-compatible wrapper over :func:`safe_path` that returns a ``str``.
+    Prefer ``safe_path`` in new code (it returns a ``Path`` and never yields a
+    bare directory).
+    """
+    return str(safe_path(file_path, max_length=max_length))
 
 def copy_matching_jsons(filenames, search_root, dest_folder):
     # Ensure destination exists
