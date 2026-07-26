@@ -235,6 +235,7 @@ class AutomatedLiteratureUI(tk.Tk):
         greeting_lbl.pack(side="left", padx=10)
         ttk.Button(top_bar, text="API Keys...", command=self._manage_api_keys_action).pack(side="right", padx=10)
         ttk.Button(top_bar, text="Open Review Tool", command=lambda: open_review_app(self)).pack(side="right", padx=4)
+        ttk.Button(top_bar, text="AI Chat", command=self._open_ai_chat).pack(side="right", padx=4)
         ttk.Button(top_bar, text="Help", command=self._show_current_tab_help).pack(side="right", padx=4)
 
         # Status strip: the currently selected LLM provider, its model, and
@@ -479,6 +480,11 @@ class AutomatedLiteratureUI(tk.Tk):
         key = title.split(".", 1)[0].strip()
         name, body = self._TAB_HELP.get(key, (title, "No help available for this tab."))
         messagebox.showinfo(f"Help — {name}", body)
+
+    def _open_ai_chat(self):
+        """Open the shared AI chat window (plain chat; pick service + model)."""
+        from alr.ui.desktop.chat_view import open_chat_window
+        open_chat_window(self, title="AI Chat")
 
     def _toggle_verbose_log(self):
         """Show or hide the developer-noise lines in the console log."""

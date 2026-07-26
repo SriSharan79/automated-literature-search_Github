@@ -272,6 +272,13 @@ class ReviewApp:
         #   Review & Explore — read, query, report on and export what is in the
         #                      database (documents, inspector, raw browser,
         #                      overviews, guide).
+        # Top bar: AI chat (with a document-data context picker).
+        topbar = ttk.Frame(container)
+        topbar.pack(fill="x", padx=8, pady=(6, 0))
+        ttk.Button(topbar, text="AI Chat", command=self._open_ai_chat).pack(side="right")
+        ttk.Label(topbar, text="Review Tool",
+                  font=("TkDefaultFont", 11, "bold")).pack(side="left")
+
         self.notebook = ttk.Notebook(container)
         self.notebook.pack(fill="both", expand=True, padx=6, pady=6)
 
@@ -296,6 +303,13 @@ class ReviewApp:
         self._build_database_tab(self.review_notebook)
         self._build_overviews_tab(self.review_notebook)
         self._build_help_tab(self.review_notebook)
+
+    def _open_ai_chat(self):
+        """Open the AI chat with a document-data context picker (single or many
+        documents, chosen attributes) sourced from the review database."""
+        from alr.ui.desktop.chat_view import open_chat_window, DocumentContextController
+        open_chat_window(self.container, title="AI Chat — Review",
+                         context_controller=DocumentContextController(self.store))
 
     # ================================================================ Spaces
     def _build_spaces_tab(self, nb):
