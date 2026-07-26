@@ -28,8 +28,23 @@ def _is_subset_match(content_str, abs_txt):
 # MODULAR EXCEL HELPERS
 # =====================================================================
 
+def safe_sheet_title(name):
+    """
+    Excel worksheet titles are capped at 31 characters and cannot contain
+    ``[ ] : * ? / \\``. openpyxl otherwise *silently truncates* a longer name
+    (e.g. the Results & Conclusion section "Limitations or Boundary Conditions",
+    34 chars), which breaks read-back-by-name: the next run looks up the full
+    name, misses the truncated sheet, and appends a duplicate. Normalizing here
+    (deterministically) keeps section-sheet writes idempotent and silences the
+    "Title is more than 31 characters" warning.
+    """
+    s = re.sub(r"[\[\]:*?/\\]", "-", str(name)).strip()
+    return s[:31] or "Sheet"
+
+
 def _is_duplicate_in_sheet(file_path, sheet_name, target_uuid):
     """Checks if a UUID already exists in a given Excel sheet."""
+    sheet_name = safe_sheet_title(sheet_name)
     if file_path.exists() and file_path.stat().st_size > 0:
         try:
             with pd.ExcelFile(file_path, engine='openpyxl') as xls:
@@ -46,6 +61,7 @@ def _is_duplicate_in_sheet(file_path, sheet_name, target_uuid):
 def _write_section_sheet_flat(file_path, sheet_name, data_entry):
     """Appends or updates a data entry for section files ensuring single row flat format per UUID."""
     try:
+        sheet_name = safe_sheet_title(sheet_name)
         df_new = pd.DataFrame([data_entry])
         all_sheets = {}
         sheet_order = []

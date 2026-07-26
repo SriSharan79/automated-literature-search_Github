@@ -55,7 +55,7 @@ from alr.common.sections import (
     build_sections_map_vdb, build_metric_workbooks_map,
 )
 from alr.analysis_evaluation.data_evaluator import (
-    _write_section_sheet_flat, _fetch_metadata,
+    _write_section_sheet_flat, _fetch_metadata, safe_sheet_title,
     _load_abstract_json, _load_intro_json, _load_rescon_json,
     _load_recorded_abstracts, _load_recorded_intros, _load_recorded_rescons,
 )
@@ -360,6 +360,7 @@ def _write_section_rows(file_path, sheet_name, uuid, rows) -> None:
     if not rows:
         return
     try:
+        sheet_name = safe_sheet_title(sheet_name)
         file_path = Path(file_path)
         df_new = pd.DataFrame(rows)
         all_sheets = {}
@@ -772,9 +773,13 @@ def evaluate_space_metrics(storage_path, kinds, target="abstract", db_path=None,
             title, file_name = _fetch_metadata(MF, uuid)
             json_data = cfg["loader"](MF, uuid)
             if not json_data:
+                print(Fore.YELLOW + f"⏭️ No {target} analysis JSON for {uuid}; "
+                      "no metric detail written (run the analysis for this target first).")
                 continue
             reference = str(json_data.get(cfg["text_key"], "") or "")
             if not reference.strip():
+                print(Fore.YELLOW + f"⏭️ Empty reference text ('{cfg['text_key']}') for {uuid}; "
+                      f"skipping {target} metrics (no JSON written).")
                 continue
 
             # Sentence-level references: every attribute value is measured
@@ -885,7 +890,9 @@ def evaluate_space_metrics(storage_path, kinds, target="abstract", db_path=None,
             count += 1
             print(Fore.GREEN + f"✅ Metrics ({', '.join(sorted(kinds))}) recorded for {uuid} ({target}).")
         except Exception as e:
+            import traceback
             print(Fore.YELLOW + f"⚠️ Metric evaluation failed for {uuid}: {e}")
+            traceback.print_exc()
         if progress_callback:
             progress_callback(i, total)
 
