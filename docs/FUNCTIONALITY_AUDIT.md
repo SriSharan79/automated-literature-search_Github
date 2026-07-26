@@ -42,7 +42,11 @@ database (*Documents*, *Document Inspector*, *Database*, *Overviews*, *Guide*). 
 **AI Chat** button opens the shared chat window (`chat_view`) with a **document-data context
 picker**: the user searches and multi-selects one or several documents from the review database
 and ticks which attributes to include, and that data is attached as context to each question
-(pick service + model as in the main tool; runs on a background thread). It covers:
+(pick service + model as in the main tool; runs on a background thread). The attached context
+is **token-budget-guarded** (`chat_view.truncate_to_tokens`, tiktoken with a char fallback): the
+picker's status line shows the live token estimate and warns when the selection exceeds the
+budget, and on send the context is trimmed at a token boundary with a note in the transcript so a
+few large documents/attributes can't overflow the model's context window. It covers:
 storage-space detection (complete/partial), DB linking,
 DOI enrichment, **title + abstract classification** and **data evaluation** per space (each
 synced to SQL first), a **Document Inspector tab** (`common/document_inspector.py`) — search

@@ -38,6 +38,64 @@ CHAT_SYS_PROMPT = (
     "say so when the answer is not covered by the attached data."
 )
 
+# Attached document context is capped so a few large documents/attributes can't
+# blow past the model's context window. Truncation happens at a token boundary
+# and the user is told (in the transcript + the picker status line).
+DEFAULT_CONTEXT_TOKEN_BUDGET = 6000
+
+
+# ---------------------------------------------------------------------------
+# Token estimation / budget guard (tiktoken when available, char heuristic else)
+# ---------------------------------------------------------------------------
+_ENCODING = None
+
+
+def _get_encoding():
+    """Lazily load a tiktoken encoding once; False if tiktoken is unavailable."""
+    global _ENCODING
+    if _ENCODING is None:
+        try:
+            import tiktoken
+            _ENCODING = tiktoken.get_encoding("cl100k_base")
+        except Exception:
+            _ENCODING = False
+    return _ENCODING or None
+
+
+def estimate_tokens(text) -> int:
+    """Approximate token count of ``text`` (tiktoken, or ~4 chars/token)."""
+    if not text:
+        return 0
+    enc = _get_encoding()
+    if enc is not None:
+        try:
+            return len(enc.encode(text))
+        except Exception:
+            pass
+    return max(1, len(text) // 4)
+
+
+def truncate_to_tokens(text, max_tokens):
+    """
+    Return ``(text, was_truncated)`` trimmed to at most ``max_tokens`` tokens.
+    ``max_tokens`` None/<=0 disables the guard.
+    """
+    if not text or not max_tokens or max_tokens <= 0:
+        return text, False
+    enc = _get_encoding()
+    if enc is not None:
+        try:
+            toks = enc.encode(text)
+            if len(toks) <= max_tokens:
+                return text, False
+            return enc.decode(toks[:max_tokens]), True
+        except Exception:
+            pass
+    limit = max_tokens * 4  # ~4 chars/token fallback
+    if len(text) <= limit:
+        return text, False
+    return text[:limit], True
+
 
 # ---------------------------------------------------------------------------
 # Pure logic (no Tk) — easy to unit-test.
@@ -182,10 +240,15 @@ class DocumentContextController:
         return [c for c, v in self._attr_vars.items() if v.get()]
 
     def _update_status(self):
-        if self.status_var is not None:
-            self.status_var.set(
-                f"{len(self.selected_uuids())} document(s) × "
-                f"{len(self.selected_attrs())} attribute(s) attached.")
+        if self.status_var is None:
+            return
+        uuids, attrs = self.selected_uuids(), self.selected_attrs()
+        ntok = estimate_tokens(self.get_context()) if (uuids and attrs) else 0
+        msg = (f"{len(uuids)} document(s) × {len(attrs)} attribute(s) "
+               f"≈ {ntok} tokens")
+        if ntok > DEFAULT_CONTEXT_TOKEN_BUDGET:
+            msg += f"  (over {DEFAULT_CONTEXT_TOKEN_BUDGET}-token budget — will be truncated)"
+        self.status_var.set(msg)
 
     def get_context(self):
         uuids, attrs = self.selected_uuids(), self.selected_attrs()
@@ -198,8 +261,10 @@ class DocumentContextController:
 # The window.
 # ---------------------------------------------------------------------------
 class ChatWindow:
-    def __init__(self, master, title="AI Chat", context_controller=None):
+    def __init__(self, master, title="AI Chat", context_controller=None,
+                 context_token_budget=DEFAULT_CONTEXT_TOKEN_BUDGET):
         self.context = context_controller
+        self.context_token_budget = context_token_budget
         self.session = ChatSession()
         self._busy = False
 
@@ -383,10 +448,18 @@ class ChatWindow:
         if not text:
             return
         context = self.context.get_context() if self.context else ""
+        truncated = False
+        if context:
+            context, truncated = truncate_to_tokens(context, self.context_token_budget)
         self._append("You", text)
         if context:
             n_docs = len(self.context.selected_uuids())
-            self._append("System", f"(attached {n_docs} document(s) as context)")
+            note = f"(attached {n_docs} document(s) as context, ~{estimate_tokens(context)} tokens"
+            if truncated:
+                note += (f"; truncated to the {self.context_token_budget}-token budget — "
+                         "deselect some documents or attributes for full coverage")
+            note += ")"
+            self._append("System", note)
         self.input.delete("1.0", "end")
 
         self._busy = True
@@ -423,6 +496,8 @@ class ChatWindow:
         self.top.after(80, poll)
 
 
-def open_chat_window(master=None, title="AI Chat", context_controller=None):
+def open_chat_window(master=None, title="AI Chat", context_controller=None,
+                     context_token_budget=DEFAULT_CONTEXT_TOKEN_BUDGET):
     """Open the AI chat window; returns the Toplevel."""
-    return ChatWindow(master, title=title, context_controller=context_controller).top
+    return ChatWindow(master, title=title, context_controller=context_controller,
+                      context_token_budget=context_token_budget).top
