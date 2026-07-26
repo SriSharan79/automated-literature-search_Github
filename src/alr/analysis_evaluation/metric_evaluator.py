@@ -41,6 +41,7 @@ Workbook locations come from :func:`alr.common.sections.build_metric_workbooks_m
 
 from __future__ import annotations
 
+import hashlib
 import importlib
 import re
 from pathlib import Path
@@ -386,6 +387,42 @@ def _write_section_rows(file_path, sheet_name, uuid, rows) -> None:
         print(Fore.RED + f"❌ Failed to write section rows to '{sheet_name}': {e}")
 
 
+def _sentence_detail_path(details_dir, uuid, sql_label, max_length=250):
+    """
+    Build the per-document detail JSON path, kept under a safe total length so a
+    deeply nested storage tree (long space folder + section subfolders) or a
+    long filename-derived ``uuid`` doesn't push the path past the OS limit and
+    silently drop the file.
+
+    When the natural name is too long it is shortened to ``<readable-prefix>_
+    <8-hex-hash>_Sentence_Metrics.json``: the hash of the full ``{uuid}_{label}``
+    keeps every document's file unique (no collisions from a trimmed common
+    prefix), and the function is deterministic, so the reader below resolves to
+    exactly the file the writer produced. Unlike a plain stem-trim it never
+    degenerates into a bare directory — there is always a real filename to
+    write, even when the directory alone is very long. The common (short) case
+    returns the natural, fully readable path untouched and quietly.
+    """
+    details_dir = Path(details_dir)
+    suffix = "_Sentence_Metrics.json"
+    stem = f"{uuid}_{sql_label}"
+    naive = details_dir / f"{stem}{suffix}"
+    if len(str(naive)) <= max_length:
+        return naive
+
+    digest = hashlib.sha1(stem.encode("utf-8")).hexdigest()[:8]
+    allowed = max_length - (len(str(details_dir)) + 1) - len(suffix)
+    if allowed <= len(digest):
+        # Directory leaves (almost) no room; use just the unique hash. The path
+        # may still exceed the conservative budget, but it is the shortest valid
+        # unique filename we can offer (best effort for an over-long directory).
+        name = digest if allowed <= 0 else digest[:allowed]
+    else:
+        keep = allowed - 1 - len(digest)      # room for "_" + hash
+        name = f"{stem[:keep]}_{digest}"
+    return details_dir / f"{name}{suffix}"
+
+
 def _write_sentence_detail_json(details_dir, uuid, sql_label, payload) -> None:
     """
     Write the per-document sentence-level metric detail file
@@ -399,7 +436,7 @@ def _write_sentence_detail_json(details_dir, uuid, sql_label, payload) -> None:
     try:
         details_dir = Path(details_dir)
         details_dir.mkdir(parents=True, exist_ok=True)
-        path = details_dir / f"{uuid}_{sql_label}_Sentence_Metrics.json"
+        path = _sentence_detail_path(details_dir, uuid, sql_label)
         with open(path, "w", encoding="utf-8") as f:
             json.dump(payload, f, ensure_ascii=False, indent=2)
     except Exception as e:
@@ -463,7 +500,7 @@ def _rows_from_detail_json(details_dir, uuid, sql_label, needed_cols):
     """
     import json
 
-    path = Path(details_dir) / f"{uuid}_{sql_label}_Sentence_Metrics.json"
+    path = _sentence_detail_path(details_dir, uuid, sql_label)
     if not path.exists():
         return None
     try:
