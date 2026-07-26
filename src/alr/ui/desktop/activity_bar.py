@@ -10,6 +10,7 @@ text-generation models and vectors produced by embedding models.
 Both the main window and the Review tool mount one at the top.
 """
 
+import time
 import tkinter as tk
 from tkinter import ttk
 
@@ -38,12 +39,17 @@ class ActivityBar:
         return self.frame
 
     @staticmethod
-    def format(snap) -> str:
+    def format(snap, now=None) -> str:
         parts = []
         a = snap.get("active")
         if a:
             verb = "Embedding" if a.get("kind") == "embed" else "Generating"
-            parts.append(f"⏳ {verb} · {a.get('model') or '?'} ({a.get('service') or '?'})")
+            seg = f"⏳ {verb} · {a.get('model') or '?'} ({a.get('service') or '?'})"
+            since = a.get("since")
+            if since is not None:
+                elapsed = max(0.0, (now if now is not None else time.time()) - since)
+                seg += f" — {elapsed:.1f}s"
+            parts.append(seg)
         c = snap.get("chat", {})
         if c.get("calls"):
             parts.append(
@@ -66,7 +72,9 @@ class ActivityBar:
             elif not active and self._running:
                 self.bar.stop()
                 self._running = False
-            self.label.config(text=self.format(snap))
-            self.frame.after(self._interval, self._tick)
+            self.label.config(text=self.format(snap, now=time.time()))
+            # Poll fast while a call runs so the elapsed timer ticks smoothly;
+            # ease off when idle.
+            self.frame.after(200 if active else self._interval, self._tick)
         except tk.TclError:
             return  # widget destroyed — stop polling
