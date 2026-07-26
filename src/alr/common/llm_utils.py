@@ -2,6 +2,7 @@ from alr.common.System_prompts import General_Sys_Prompt
 from alr.common.general_utils import caluculate_time_taken, print_with_separator
 from alr.common.LLM_Config import BLABLADOR_BASE_URL, PREFERRED_BLABLADOR_MODELS, check_api_key, get_stored_api_key,local_model_dir,model_repo_id, OLLAMA_BASE_URL, DEFAULT_BLABLADOR_MODEL, DEFAULT_OLLAMA_MODEL, CHATAI_BASE_URL, PREFERRED_CHATAI_MODELS, DEFAULT_CHATAI_MODEL, DEFAULT_CHATAI_EMBEDDING_MODEL
 from alr.common.file_manager import ALR_main_folder
+from alr.common import activity_monitor
 
 from collections import deque
 # NOTE: transformers/torch are heavyweight and only needed for the local
@@ -589,10 +590,22 @@ def get_embedding(
         return _parse_embedding_response(payload, len(batch))
 
     start_time = time.time()
-    embeddings = _embed_in_halves(list(inputs), _request,
-                                  f"{service} embedding")
+    activity_monitor.begin("embed", service, resolved_model)
+    try:
+        embeddings = _embed_in_halves(list(inputs), _request,
+                                      f"{service} embedding")
+    finally:
+        activity_monitor.end()
     result = raw_holder.get("raw")
     end_time = time.time()
+
+    try:
+        activity_monitor.record_embedding(
+            service, resolved_model, len(embeddings),
+            len(embeddings[0]) if embeddings else 0,
+            caluculate_time_taken(start_time, end_time))
+    except Exception:
+        pass
 
     print(
         Fore.GREEN
@@ -767,8 +780,21 @@ def vectorize_strings_local(input_strings: list, max_length: int = 512, batch_si
             emb = F.normalize(emb, p=2, dim=1)
             return list(emb.detach().cpu().numpy().astype(np.float32))
 
-    vectors = _embed_in_halves(list(input_strings), _encode, "local embedding")
-    return np.stack(vectors).astype(np.float32)
+    _start = time.time()
+    activity_monitor.begin("embed", "local", embedding_model_repo_id)
+    try:
+        vectors = _embed_in_halves(list(input_strings), _encode, "local embedding")
+    finally:
+        activity_monitor.end()
+    arr = np.stack(vectors).astype(np.float32)
+    try:
+        activity_monitor.record_embedding(
+            "local", embedding_model_repo_id, arr.shape[0],
+            arr.shape[1] if arr.ndim == 2 else 0,
+            caluculate_time_taken(_start, time.time()))
+    except Exception:
+        pass
+    return arr
 
 
 def count_tokens(messages, response_text, model):
@@ -826,6 +852,13 @@ def log_llm_interaction(model, service, messages, response_text,time_taken):
     # 1. Format Messages and Calculate Tokens
    
     in_tokens, out_tokens = count_tokens(messages, response_text, model)
+
+    # Surface this completed generation to the live activity monitor (which
+    # model, how many tokens) and its backend log.
+    try:
+        activity_monitor.record_chat(service, model, in_tokens, out_tokens, time_taken)
+    except Exception:
+        pass
 
     # 2. Setup Directory Structure
     base_log_dir = ALR_main_folder/"00_LLM_Log_Data"
@@ -1317,7 +1350,11 @@ def llm_call(prompt: str, system_prompt: str, service: str, model: str = None,
             set_selected_model("DLR Ollama", model)
 
     if s == 'l':
-        response = Local_Model_call(prompt, sys_prompt)
+        activity_monitor.begin("chat", "local", model_repo_id)
+        try:
+            response = Local_Model_call(prompt, sys_prompt)
+        finally:
+            activity_monitor.end()
         _record_call_info(kind="chat", requested_service="local", service_used="local",
                           model_used=model_repo_id, fallback_used=False, error=None)
         return response
@@ -1341,7 +1378,11 @@ def llm_call(prompt: str, system_prompt: str, service: str, model: str = None,
     errors = []
     for name, ask in attempt_order:
         try:
-            response = ask(prompt, sys_prompt, timeout=timeout)
+            activity_monitor.begin("chat", name, get_selected_model(name))
+            try:
+                response = ask(prompt, sys_prompt, timeout=timeout)
+            finally:
+                activity_monitor.end()
             fallback_used = name != primary_name
             if fallback_used:
                 print(Fore.YELLOW

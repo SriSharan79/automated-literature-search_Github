@@ -251,6 +251,14 @@ class AutomatedLiteratureUI(tk.Tk):
                                           font=("Arial", 9, "bold"))
         self._status_key_lbl.pack(side="left", padx=(10, 0))
 
+        # Live model-activity strip: which chat/embedding model is running now,
+        # tokens processed and vectors embedded (polled from activity_monitor).
+        from alr.ui.desktop.activity_bar import ActivityBar
+        act_wrap = ttk.LabelFrame(self, text="Model activity")
+        act_wrap.pack(fill="x", padx=10, pady=(0, 4))
+        self.activity_bar = ActivityBar(act_wrap)
+        self.activity_bar.pack(fill="x")
+
         # Active storage space: one folder that the Analyze, Visualize and
         # Evaluate tabs default to, so it is chosen once instead of re-browsed in
         # every tab. Each of those tabs keeps a "Use active space" toggle for a

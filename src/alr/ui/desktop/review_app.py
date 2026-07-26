@@ -279,6 +279,13 @@ class ReviewApp:
         ttk.Label(topbar, text="Review Tool",
                   font=("TkDefaultFont", 11, "bold")).pack(side="left")
 
+        # Live model-activity strip (shared monitor with the main tool).
+        from alr.ui.desktop.activity_bar import ActivityBar
+        act_wrap = ttk.LabelFrame(container, text="Model activity")
+        act_wrap.pack(fill="x", padx=8, pady=(4, 0))
+        self.activity_bar = ActivityBar(act_wrap)
+        self.activity_bar.pack(fill="x")
+
         self.notebook = ttk.Notebook(container)
         self.notebook.pack(fill="both", expand=True, padx=6, pady=6)
 
