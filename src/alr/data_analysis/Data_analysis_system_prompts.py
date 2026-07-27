@@ -283,6 +283,27 @@ Results_Conclusion_identification_SP = (
     "content, output nothing but the exact string: ERROR_NO_RESULTS_CONCLUSION_FOUND."
 )
 
+Heading_section_selection_SP = """
+Role: You are a document structure analyst.
+Task: You are given the list of section headings of ONE publication and a description of a target section. Identify which of those headings most likely contain the target content.
+
+Rules:
+- Choose ONLY from the headings given to you. Copy each chosen heading EXACTLY as it appears, character for character.
+- Keep the chosen headings in the same order as the input list.
+- Choose at most 4 headings, and only those that plausibly hold the target content.
+- If none of the headings plausibly contain the target content, return exactly: []
+
+STRICT OUTPUT CONSTRAINTS:
+- Return ONLY a valid JSON array of strings.
+- DO NOT use markdown code blocks (no ```).
+- DO NOT include explanations, labels, or any conversational text.
+
+Example:
+Target section: the results and conclusion content of the publication
+Headings: ["Abstract", "1. Introduction", "4. Experimental Results", "5. Discussion", "6. Conclusion", "References"]
+Output: ["4. Experimental Results", "5. Discussion", "6. Conclusion"]
+""".strip()
+
 Introduction_identification_SP = (
     "You are a precise, single-purpose text extraction assistant. Your sole task "
     "is to identify, extract, and return the introduction section of a technical paper from "

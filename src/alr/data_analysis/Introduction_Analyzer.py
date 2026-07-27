@@ -3,6 +3,7 @@ from alr.data_analysis.Data_analysis_system_prompts import  Intro_RP_KEYs_SP, In
 from alr.common.general_utils import caluculate_time_taken, clean_response_json_text,find_first_match_in_first_n_chars
 from alr.common.json_utils import get_value_by_pair, pretty_print_json_from_file, store_to_json, get_key_from_file, store_to_json_with_text,print_json_file
 from alr.common.llm_utils import llm_call
+from alr.data_analysis.section_resolver import resolve_section_text, top_up_missing_attributes
 
 import re
 import json
@@ -134,8 +135,17 @@ def get_Introduction_text(MF):
             llm_service=MF.llm_service
             Introduction_text=llm_call(User_prompt, Introduction_identification_SP,llm_service)
 
-            print(Fore.BLUE + f"\nIdentifid Introductiont Text:{Introduction_text}")
-    
+            if Introduction_text and 'ERROR_NO_INTRODUCTION_FOUND' in str(Introduction_text):
+                Introduction_text = ''
+
+            if Introduction_text:
+                print(Fore.BLUE + f"\nIdentifid Introductiont Text:{Introduction_text}")
+
+    # Nothing matched by heading or in the first chunks: ask the LLM which
+    # headings carry the introduction, then fall back to a chunk window.
+    if not Introduction_text:
+        Introduction_text, _ = resolve_section_text(MF, "intro")
+
     return Introduction_text
     
 
@@ -157,6 +167,10 @@ def analyze_Introduction(ID,MF):
         time_taken=caluculate_time_taken(start_time,end_time)
 
         store_to_json_with_text(system_output, MF.intro_json_path,time_taken,Introduction_text,'Introduction')
+
+        # Any attribute the first pass could not fill gets one more try with
+        # the next few chunks appended to the introduction text.
+        top_up_missing_attributes(MF, "intro")
 
         print(Fore.MAGENTA + "\nIdentifid Introduction Text:")
         # print(Fore.LIGHTYELLOW_EX + f"  {Introduction_text}")

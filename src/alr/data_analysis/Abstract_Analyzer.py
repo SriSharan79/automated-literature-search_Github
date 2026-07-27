@@ -3,6 +3,7 @@ from alr.data_analysis.Data_analysis_system_prompts import Abstract_RP_KEYs_SP, 
 from alr.common.general_utils import caluculate_time_taken, clean_response_json_text,find_first_match_in_first_n_chars
 from alr.common.json_utils import get_value_by_pair, pretty_print_json_from_file, store_to_json, get_key_from_file, store_to_json_with_text
 from alr.common.llm_utils import llm_call
+from alr.data_analysis.section_resolver import resolve_section_text, top_up_missing_attributes
 
 import re
 import json
@@ -138,8 +139,17 @@ def get_abstract_text(MF):
             llm_service=MF.llm_service
             abstract_text=llm_call(User_prompt, Abstrat_identification_SP,llm_service)
 
-            print(Fore.BLUE + f"\nIdentifid Abstract Text:{abstract_text}")
-    
+            if abstract_text and 'ERROR_NO_ABSTRACT_FOUND' in str(abstract_text):
+                abstract_text = ''
+
+            if abstract_text:
+                print(Fore.BLUE + f"\nIdentifid Abstract Text:{abstract_text}")
+
+    # Nothing matched by heading or by the first chunks: ask the LLM which
+    # headings carry the abstract, then fall back to a positional chunk window.
+    if not abstract_text:
+        abstract_text, _ = resolve_section_text(MF, "abstract")
+
     return abstract_text
     
 
@@ -161,6 +171,10 @@ def analyze_abstract(ID,MF):
         time_taken=caluculate_time_taken(start_time,end_time)
 
         store_to_json_with_text(system_output, MF.abstract_json_path,time_taken,abstract_text,'Abstract')
+
+        # Any attribute the first pass could not fill gets one more try with
+        # the next few chunks appended to the abstract text.
+        top_up_missing_attributes(MF, "abstract")
 
         print(Fore.MAGENTA + "\nIdentifid Abstract Text:")
         print(Fore.LIGHTYELLOW_EX + f"  {abstract_text}")

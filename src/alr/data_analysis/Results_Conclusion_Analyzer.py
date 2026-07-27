@@ -3,6 +3,7 @@ from alr.data_analysis.Data_analysis_system_prompts import ResCon_RP_KEYs_SP, Re
 from alr.common.general_utils import caluculate_time_taken, clean_response_json_text
 from alr.common.json_utils import get_key_from_file, store_to_json_with_text, print_json_file
 from alr.common.llm_utils import llm_call
+from alr.data_analysis.section_resolver import resolve_section_text, top_up_missing_attributes
 
 import re
 import json
@@ -211,6 +212,13 @@ def get_results_conclusion_text(MF):
             analyzed_sections = ["LLM identified content"]
             return rescon_text, analyzed_sections
 
+    # Nothing found by keyword, heading-like chunk or the last-chunks pass:
+    # ask the LLM which headings carry the content, then fall back to the
+    # positional chunk window for this target.
+    resolved, provenance = resolve_section_text(MF, "rescon")
+    if resolved:
+        return resolved, provenance
+
     return '', analyzed_sections
 
 
@@ -249,6 +257,10 @@ def analyze_results_conclusion(ID, MF):
             return 'F'
 
         _record_analyzed_sections(MF.rescon_json_path, analyzed_sections)
+
+        # Any attribute the first pass could not fill gets one more try with
+        # the next few chunks appended to the results/conclusion text.
+        top_up_missing_attributes(MF, "rescon")
 
         print(Fore.MAGENTA + "\nIdentified Results & Conclusion Data:")
         print_json_file(MF.rescon_json_path)

@@ -4,7 +4,11 @@ import os
 
 import PyPDF2
 import time
-from alr.data_analysis.Introduction_Analyzer import analyze_Introduction, get_Introduction_text
+from alr.data_analysis.Introduction_Analyzer import (
+    analyze_Introduction,
+    get_Introduction_text,
+    check_and_log_data as _log_intro_attributes,
+)
 from alr.data_analysis.File_Data_extraction_with_Docling import _categorise_sections, _excel_log_has_file, _extract_and_chunk, _process_sections, _save_section_outputs, _init_excel_data
 from alr.common.file_manager import DataAnalyzeManager
 from alr.common.general_utils import caluculate_time_taken, find_missing_elements, generate_unique_id,_as_path,add_hh_mm_ss
@@ -13,8 +17,20 @@ from alr.common.json_utils import get_value_by_pair,get_chunks_from_references, 
 from alr.data_analysis.title_extracter import get_title_in_the_file
 from alr.data_analysis.LLM_Reference_Extractor import process_references_from_chunks_from_Sec_JSON
 from alr.data_analysis.Refrences_log_utils import log_Ref_data_extracted, save_references_to_json
-from alr.data_analysis.Abstract_Analyzer import analyze_abstract, get_abstract_text
-from alr.data_analysis.Results_Conclusion_Analyzer import analyze_results_conclusion
+from alr.data_analysis.Abstract_Analyzer import (
+    analyze_abstract,
+    get_abstract_text,
+    check_and_log_data as _log_abstract_attributes,
+)
+from alr.data_analysis.Results_Conclusion_Analyzer import (
+    analyze_results_conclusion,
+    check_and_log_data as _log_rescon_attributes,
+)
+from alr.data_analysis.section_resolver import (
+    TARGETS,
+    needs_top_up,
+    top_up_missing_attributes,
+)
 
 from colorama import Fore, Style
 from datetime import datetime as dt      # Alias avoids conflicts
@@ -457,6 +473,59 @@ def process_pdf_references(file, storage_path=""):
         return 'F'
 
 
+def _refresh_attribute_log(MF, target, uuid):
+    """
+    Rewrite the per-attribute A/NA log row after a top-up changed the JSON, so
+    the analysis logs keep matching what is actually stored.
+    """
+    spec = TARGETS[target]
+    json_path = getattr(MF, spec.json_attr, None)
+    if not json_path or not Path(json_path).exists():
+        return
+
+    try:
+        with open(json_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except Exception:
+        return
+
+    time_taken = data.get("Time Taken (seconds)", "")
+    if target == "abstract":
+        _log_abstract_attributes(json_path, MF.AD_Abstract_log_path, uuid, time_taken)
+    elif target == "intro":
+        _log_intro_attributes(json_path, MF.AD_Intro_log_path, uuid, time_taken)
+    else:
+        _log_rescon_attributes(
+            json_path, MF.AD_ResCon_log_path, uuid, time_taken,
+            data.get("Sections Analyzed:") or [],
+        )
+
+
+def _top_up_if_incomplete(MF, target, pdf_name, uuid):
+    """
+    Cheap gap check for an already-analyzed document: read the stored analysis
+    JSON and, when attributes are still empty and no top-up has been spent yet,
+    run ONE extra extraction pass with additional chunks.
+
+    Costs a single file read per document when nothing is missing, so it is
+    safe to run on every re-pass over a storage space.
+    """
+    spec = TARGETS[target]
+    try:
+        if not needs_top_up(MF, target):
+            return
+        logger.info(
+            f"🔎 {spec.label} attributes incomplete for {pdf_name} :-: {uuid}; "
+            f"re-processing the section with additional chunks."
+        )
+        filled = top_up_missing_attributes(MF, target)
+        if filled:
+            logger.info(f"✓ {spec.label} completed from extra chunks: {', '.join(filled)}")
+        _refresh_attribute_log(MF, target, uuid)
+    except Exception as e:
+        logger.warning(f"⚠️ {spec.label} top-up check failed for {pdf_name}: {e}")
+
+
 def process_pdf_abstract(file, storage_path=""):
     file_path = Path(file)
     pdf_name = file_path.name
@@ -521,7 +590,8 @@ def process_pdf_abstract(file, storage_path=""):
                 json_path = MF.abstract_json_path
                 
                 if not has_error_token:
-                    logger.info(f"⏩ Abstract already successfully processed for {pdf_name} :-: {UUID}")        
+                    logger.info(f"⏩ Abstract already successfully processed for {pdf_name} :-: {UUID}")
+                    _top_up_if_incomplete(MF, "abstract", pdf_name, UUID)
                     # abstract_text = get_abstract_text(MF)
                     with open(json_path, 'r', encoding='utf-8') as f:
                         json_data = json.load(f)
@@ -568,7 +638,8 @@ def process_pdf_intro(file, storage_path=""):
         if log_path and log_path.exists():
             already_done = get_corresponding_value(str(log_path), "UUID", UUID, "file_path")
             if already_done:
-                logger.info(f"⏩ Introduction already processed for {pdf_name} :-: {UUID}")  
+                logger.info(f"⏩ Introduction already processed for {pdf_name} :-: {UUID}")
+                _top_up_if_incomplete(MF, "intro", pdf_name, UUID)
                 logger.info("\nIdentifid Introduction Data:")
                 print_json_file(MF.intro_json_path)                
                 update_corresponding_value(excel_success, "UUID", UUID, "Introduction", 'Passed')
@@ -608,6 +679,7 @@ def process_pdf_results_conclusion(file, storage_path=""):
             already_done = get_corresponding_value(str(log_path), "UUID", UUID, "file_path")
             if already_done:
                 logger.info(f"⏩ Results & Conclusion already processed for {pdf_name} :-: {UUID}")
+                _top_up_if_incomplete(MF, "rescon", pdf_name, UUID)
                 analyzed = get_corresponding_value(str(log_path), "UUID", UUID, "Sections_Analyzed")
                 if analyzed:
                     logger.info(f"   Sections analyzed: {analyzed}")
