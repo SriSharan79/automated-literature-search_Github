@@ -17,15 +17,13 @@ Two behaviours are added here, once, for all three targets:
    still missing afterwards stays ``No information available`` and the JSON
    records the attempt (:data:`TOPUP_KEY`) so re-runs never pay for it twice.
 
-2. **Two extra rungs on the location ladder**, used when the analyzer's own
-   heading/keyword matching finds nothing:
-
-   * ask the LLM which of the document's *headings* most likely carry the
-     target content, then feed those sections' text to the extractor;
-   * failing that, fall back to a positional chunk window (a 100-chunk paper
-     yields chunks 1-30 for the abstract, 10-40 for the introduction and
-     60-95 for results/conclusion) and let the LLM identify the content
-     inside that window.
+2. **A positional fallback on the location ladder**, used when the analyzer's
+   own heading/keyword matching finds nothing: the target's share of the
+   document's chunks is scanned and the LLM identifies the section content
+   inside it. The ratios are expressed against the document's **whole** chunk
+   list, so the reference case of 100 chunks gives 1-30 for the abstract,
+   10-40 for the introduction and 60-95 for results/conclusion, and a 60-chunk
+   paper gives 1-18, 7-24 and 37-57.
 
 Everything target-specific lives in :data:`TARGETS`; adding a fourth target is
 a new :class:`TargetSpec` row, not new code.
@@ -51,7 +49,6 @@ from alr.common.sections import (
 from alr.data_analysis.Data_analysis_system_prompts import (
     Abstract_RP_KEYs_SP,
     Abstrat_identification_SP,
-    Heading_section_selection_SP,
     Intro_RP_KEYs_SP,
     Introduction_identification_SP,
     ResCon_RP_KEYs_SP,
@@ -78,7 +75,6 @@ class TargetSpec:
     """Everything that differs between the three analysis targets."""
     name: str                      # "abstract" | "intro" | "rescon"
     label: str                     # the `type` passed to store_to_json_with_text
-    description: str               # plain-English target, used in the heading prompt
     keys: tuple[str, ...]          # attributes the extraction prompt fills
     extract_sp: str                # extraction system prompt
     identify_sp: str               # section-identification system prompt
@@ -92,10 +88,6 @@ TARGETS: dict[str, TargetSpec] = {
     "abstract": TargetSpec(
         name="abstract",
         label="Abstract",
-        description=(
-            "the abstract of the publication - the short standalone summary "
-            "printed before the introduction"
-        ),
         keys=(
             "Research Areas",
             "Research Problem",
@@ -115,10 +107,6 @@ TARGETS: dict[str, TargetSpec] = {
     "intro": TargetSpec(
         name="intro",
         label="Introduction",
-        description=(
-            "the introduction of the publication - background, motivation, "
-            "gaps in previous work and the research questions or scope"
-        ),
         keys=(
             "Background",
             "Motivation",
@@ -135,10 +123,6 @@ TARGETS: dict[str, TargetSpec] = {
     "rescon": TargetSpec(
         name="rescon",
         label="Results & Conclusion",
-        description=(
-            "the results and conclusion content of the publication - findings, "
-            "discussion, summary, limitations, future work and outlook"
-        ),
         keys=(
             "Results Mentioned",
             "Limitations or Boundary Conditions",
@@ -206,91 +190,21 @@ def load_chunks(MF) -> list[str]:
     return [str(c) for c in (chunks or [])]
 
 
-def load_headings(MF) -> list[str]:
-    """
-    The document's section headings, in document order.
-
-    Primary source is the sectioned JSON ("Section Name"); the Docling
-    heading list cached alongside the chunks is used to fill in when the
-    sectioning produced almost nothing.
-    """
-    headings: list[str] = []
-
-    data = None
-    try:
-        with open(MF.raw_sec_json_path, "r", encoding="utf-8") as f:
-            data = json.load(f)
-    except (FileNotFoundError, json.JSONDecodeError, OSError, TypeError):
-        data = None
-
-    if isinstance(data, list):
-        for entry in data:
-            if isinstance(entry, dict):
-                name = entry.get("Section Name")
-                if isinstance(name, str) and name.strip():
-                    headings.append(name.strip())
-
-    if len(headings) >= 3:
-        return headings
-
-    cached = _load_json(getattr(MF, "raw_chunks_json_path", None))
-    if cached:
-        for item in cached.get("headings", []) or []:
-            title = item.get("title") if isinstance(item, dict) else None
-            if isinstance(title, str) and title.strip() and title.strip() not in headings:
-                headings.append(title.strip())
-
-    return headings
-
-
-def section_texts_for(MF, wanted: list[str]) -> list[tuple[str, str]]:
-    """(section name, text) for every section whose heading matches `wanted`."""
-    out: list[tuple[str, str]] = []
-    if not wanted:
-        return out
-
-    wanted_lower = [w.strip().lower() for w in wanted if isinstance(w, str) and w.strip()]
-    if not wanted_lower:
-        return out
-
-    try:
-        with open(MF.raw_sec_json_path, "r", encoding="utf-8") as f:
-            data = json.load(f)
-    except (FileNotFoundError, json.JSONDecodeError, OSError, TypeError):
-        return out
-
-    if not isinstance(data, list):
-        return out
-
-    for entry in data:
-        if not isinstance(entry, dict):
-            continue
-        name = entry.get("Section Name")
-        text = entry.get("Text_Content")
-        if not isinstance(name, str) or not isinstance(text, str) or not text.strip():
-            continue
-        low = name.strip().lower()
-        if any(w == low or w in low or low in w for w in wanted_lower):
-            out.append((name.strip(), text.strip()))
-
-    return out
-
-
 def chunk_window(chunks: list[str], spec: TargetSpec) -> tuple[int, int]:
     """
     The positional slice of `chunks` where `spec`'s content usually lives.
 
-    For a 100-chunk document this yields 0-30 (abstract), 10-40 (introduction)
-    and 60-95 (results & conclusion). Short documents get a floor of five
-    chunks so the window never collapses to nothing.
+    The ratios are taken against the document's **entire** chunk list, so the
+    reference case of 100 chunks yields 0-30 (abstract), 10-40 (introduction)
+    and 60-95 (results & conclusion), and any other document is scaled to the
+    same proportions. The window is only ever clamped to keep at least one
+    chunk inside it.
     """
     n = len(chunks)
     if n == 0:
         return 0, 0
     start = max(0, min(n - 1, int(n * spec.window[0])))
     end = max(start + 1, min(n, int(n * spec.window[1])))
-    if end - start < 5:
-        end = min(n, start + 5)
     return start, end
 
 
@@ -299,60 +213,11 @@ def _clip(text: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Location ladder rungs
+# Positional location fallback
 # ---------------------------------------------------------------------------
 
-def select_headings_via_llm(MF, spec: TargetSpec, llm_service) -> list[str]:
-    """Ask the LLM which of the document's headings carry `spec`'s content."""
-    headings = load_headings(MF)
-    if not headings:
-        return []
-
-    user_prompt = (
-        f"Target section: {spec.description}\n\n"
-        f"Headings:\n{json.dumps(headings, ensure_ascii=False, indent=1)}"
-    )
-    try:
-        raw = llm_call(user_prompt, Heading_section_selection_SP, llm_service)
-    except Exception as exc:
-        print(f"⚠️ Heading selection call failed for {spec.label}: {exc}")
-        return []
-
-    if not raw:
-        return []
-
-    text = str(raw).strip()
-    start, end = text.find("["), text.rfind("]")
-    if start == -1 or end == -1 or end < start:
-        return []
-    try:
-        selected = json.loads(text[start:end + 1])
-    except json.JSONDecodeError:
-        return []
-
-    if not isinstance(selected, list):
-        return []
-    return [str(h).strip() for h in selected if str(h).strip()]
-
-
-def identify_via_headings(MF, spec: TargetSpec, llm_service) -> tuple[str, list[str]]:
-    """Rung 1: LLM-selected headings -> that section text, verbatim."""
-    selected = select_headings_via_llm(MF, spec, llm_service)
-    if not selected:
-        return "", []
-
-    matches = section_texts_for(MF, selected)
-    if not matches:
-        return "", []
-
-    names = [name for name, _ in matches]
-    combined = "\n\n".join(f"{name}\n{text}" for name, text in matches)
-    print(Fore.BLUE + f"\nHeadings selected for {spec.label}: {', '.join(names)}" + Style.RESET_ALL)
-    return combined, [f"heading match: {name}" for name in names]
-
-
 def identify_via_window(MF, spec: TargetSpec, llm_service) -> tuple[str, list[str]]:
-    """Rung 2: positional chunk window, then LLM extraction of the content."""
+    """Scan the target's share of the document's chunks and identify the content."""
     chunks = load_chunks(MF)
     if not chunks:
         return "", []
@@ -364,7 +229,7 @@ def identify_via_window(MF, spec: TargetSpec, llm_service) -> tuple[str, list[st
 
     print(
         Fore.BLUE
-        + f"\nNo headings matched {spec.label}; scanning chunks {start + 1}-{end} of {len(chunks)}."
+        + f"\nLocating {spec.label} positionally: chunks {start + 1}-{end} of {len(chunks)}."
         + Style.RESET_ALL
     )
 
@@ -395,10 +260,6 @@ def resolve_section_text(MF, target: str, base_text: str = "",
         return str(base_text), list(provenance or [])
 
     llm_service = getattr(MF, "llm_service", None) or "o"
-
-    text, prov = identify_via_headings(MF, spec, llm_service)
-    if text:
-        return text, prov
 
     text, prov = identify_via_window(MF, spec, llm_service)
     if text:
