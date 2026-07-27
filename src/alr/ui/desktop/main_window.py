@@ -2943,12 +2943,17 @@ class AutomatedLiteratureUI(tk.Tk):
                 from alr.rag_builders.master_excel_db_builder import build_master_excel_db
                 progress(text="Consolidating per-section data into the master Excel workbook…")
                 print("[Evaluate] Consolidating per-section data into the master Excel workbook...")
-                written, master_path = build_master_excel_db(
+                written, master_path, not_added = build_master_excel_db(
                     clean_path, section_keys=master_section_keys,
                     should_cancel=should_cancel,
                     progress_callback=lambda d, t: progress(
                         done=d, total=t, text=f"Master Excel: document {d}/{t}…"))
                 print(f"[Evaluate] Master Excel workbook ({written} document(s)): {master_path}")
+                if not_added:
+                    from alr.rag_builders.master_excel_db_builder import MASTER_EXCEL_SKIPPED_LOG
+                    print(f"[Evaluate] {len(not_added)} document(s) could not be added to the "
+                          f"master workbook — listed in {MASTER_EXCEL_SKIPPED_LOG} "
+                          f"next to it: {Path(master_path).parent}")
                 return written
 
             return 0

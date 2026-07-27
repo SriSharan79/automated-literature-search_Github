@@ -1,6 +1,7 @@
 
 from pathlib import Path
-from colorama import Fore
+from datetime import datetime
+from colorama import Fore, Style
 import pandas as pd
 from alr.common.file_manager import DataAnalyzeManager, Vec_DB_Manager
 from alr.common.excel_utils import extract_column, get_corresponding_value
@@ -8,6 +9,51 @@ import json
 import os
 # ADD:
 from alr.common.sections import build_sections_master_map
+
+# Documents that could NOT be written into a built database. A failure on one
+# document never aborts a build: it is skipped, recorded in one of these logs
+# and the build continues with the next file. Both logs are append-only, so
+# they keep the history of every run.
+MASTER_EXCEL_SKIPPED_LOG = "Master_Excel_not_added.xlsx"
+
+
+def _skip_row(stage, error, space=None, uuid="", title="", filename="", sections=""):
+    """One row of a 'not added to the database' log (shared by the master
+    Excel and common-DB builders)."""
+    return {
+        "UUID": uuid, "Title": title, "Filename": filename,
+        "Source_Folder": str(space) if space else "",
+        "Stage": stage, "Sections": sections,
+        "Error": f"{type(error).__name__}: {error}" if isinstance(error, BaseException) else str(error),
+        "Run": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+    }
+
+
+def _append_skiplog(log_path, skipped_rows):
+    """Append this run's failures to a skip log (never overwrites earlier
+    runs). Returns the log path, or None when nothing was written."""
+    if not skipped_rows:
+        return None
+    log_path = Path(log_path)
+    try:
+        rows = list(skipped_rows)
+        if log_path.exists() and log_path.stat().st_size > 0:
+            try:
+                rows = pd.read_excel(log_path).to_dict("records") + rows
+            except Exception:
+                pass  # unreadable old log: start a fresh one from this run
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        pd.DataFrame(rows).to_excel(log_path, index=False)
+        return log_path
+    except Exception as e:
+        print(Fore.RED + f"❌ Could not write the skip log {log_path}: {e}")
+        return None
+
+
+def _save_master_skiplog(master_excel_path, skipped_rows):
+    """Write the master-workbook skip log next to the workbook itself."""
+    return _append_skiplog(Path(master_excel_path).parent / MASTER_EXCEL_SKIPPED_LOG,
+                           skipped_rows)
 
 def save_to_db(master_excel_path, sheet_name, json_path, data_entry):
     """
@@ -193,12 +239,19 @@ def _load_analysis_json(MF, UUID, sources):
     return merged
 
 def _sync_sections_master_for_uuid(UUID, title, file_name, json_data, sections):
-    """Iterate sections and save either list items or a single string entry."""
+    """
+    Iterate sections and save either list items or a single string entry.
+
+    One unwritable section never stops the others: failures are collected and
+    returned as ``{section key: error string}`` (empty dict when everything
+    was written), so callers can report exactly what did not make it in.
+    """
+    failed = {}
     for key, (ex_path, sheet_name, j_path) in sections.items():
         content_value = json_data.get(key, "Not Found")
 
         if isinstance(content_value, list):
-            _save_list_section(
+            err = _save_list_section(
                 UUID=UUID,
                 key=key,
                 content_list=content_value,
@@ -209,7 +262,7 @@ def _sync_sections_master_for_uuid(UUID, title, file_name, json_data, sections):
                 file_name=file_name
             )
         else:
-            _save_single_section(
+            err = _save_single_section(
                 UUID=UUID,
                 key=key,
                 content_value=content_value,
@@ -219,6 +272,9 @@ def _sync_sections_master_for_uuid(UUID, title, file_name, json_data, sections):
                 title=title,
                 file_name=file_name
             )
+        if err:
+            failed[key] = err
+    return failed
 
 
 # def _save_list_section(UUID, key, content_list, ex_path, sheet_name, j_path, title, file_name):
@@ -240,10 +296,12 @@ def _sync_sections_master_for_uuid(UUID, title, file_name, json_data, sections):
 #     print(Fore.GREEN + f"✅ Synced list '{key}' ({len(content_list)} items) to Sheet '{sheet_name}' for UUID: {UUID}")
 
 def _save_list_section(UUID, key, content_list, ex_path, sheet_name, j_path, title, file_name):
-    """Save list-like sections onto specific sheets as a single bulleted string."""
+    """Save list-like sections onto specific sheets as a single bulleted string.
+    Returns None on success, or the error string when the section could not be
+    written (never raises, so the remaining sections still get their chance)."""
     if not content_list:
         print(Fore.YELLOW + f"⚠️ Content list for '{key}' is empty. Skipping save.")
-        return
+        return None
 
     # 1. Combine all items into a single string formatted with bullet points
     bulleted_content = "\n".join([f"• {str(item).strip()}" for item in content_list])
@@ -261,11 +319,14 @@ def _save_list_section(UUID, key, content_list, ex_path, sheet_name, j_path, tit
     try:
         save_to_db(ex_path, sheet_name, j_path, entry)
         print(Fore.GREEN + f"✅ Synced list '{key}' ({len(content_list)} items consolidated) to Sheet '{sheet_name}' for UUID: {UUID}")
+        return None
     except Exception as e:
         print(Fore.RED + f"Error saving list content in {key} for {UUID}: {e}")
+        return f"{type(e).__name__}: {e}"
 
 def _save_single_section(UUID, key, content_value, ex_path, sheet_name, j_path, title, file_name):
-    """Save single-string sections onto specific sheets."""
+    """Save single-string sections onto specific sheets. Returns None on
+    success, or the error string when the section could not be written."""
     entry = {
         "UUID": UUID,
         "Original_UUID": UUID,
@@ -276,8 +337,10 @@ def _save_single_section(UUID, key, content_value, ex_path, sheet_name, j_path, 
     try:
         save_to_db(ex_path, sheet_name, j_path, entry)
         print(Fore.GREEN + f"✅ Successfully synchronized {key} to Sheet '{sheet_name}' for UUID: {UUID}")
+        return None
     except Exception as e:
         print(Fore.RED + f"Error saving {key} for {UUID}: {e}")
+        return f"{type(e).__name__}: {e}"
 
 def build_master_excel_db(storage_path, master_excel_path=None, progress_callback=None,
                           should_cancel=None, section_keys=None):
@@ -296,10 +359,19 @@ def build_master_excel_db(storage_path, master_excel_path=None, progress_callbac
     what this builder wrote before the other two analyses existed. Only the JSONs
     actually needed by the selection are read.
 
+    A document that cannot be consolidated (unreadable analysis JSON, missing
+    metadata, a locked or broken master workbook / section JSON) is skipped and
+    the build continues with the next file; a document whose data was only
+    partly written counts as incomplete rather than aborting the run. Every such
+    item is appended to ``Master_Excel_not_added.xlsx`` next to the master
+    workbook, with the UUID, title, filename, the affected attributes and the
+    error.
+
     ``progress_callback(done, total)`` is called after each document if given.
     ``should_cancel`` is an optional callable checked before each document for
-    cooperative cancellation (partial results are preserved). Returns the number of
-    documents written to the master workbook and the path of that workbook.
+    cooperative cancellation (partial results are preserved). Returns
+    ``(written, master_excel_path, not_added)`` where not_added is the list of
+    skip-log rows produced by this run.
     """
     from alr.common.sections import RAG_SOURCE_BY_KEY
 
@@ -312,7 +384,7 @@ def build_master_excel_db(storage_path, master_excel_path=None, progress_callbac
     sections_map = build_sections_master_map(VDB, master_excel_path, only=section_keys)
     if not sections_map:
         print(Fore.RED + "⚠️ No attributes selected. Nothing to consolidate.")
-        return 0, master_excel_path
+        return 0, master_excel_path, []
 
     # Only load the analysis JSONs the selected attributes actually come from.
     sources = {RAG_SOURCE_BY_KEY[key] for key in sections_map if key in RAG_SOURCE_BY_KEY}
@@ -320,30 +392,54 @@ def build_master_excel_db(storage_path, master_excel_path=None, progress_callbac
     # UUIDs to process come from the processed-file registry.
     if not Path(MF.excel_success).exists():
         print(Fore.RED + f"⚠️ No processed-file registry found at {MF.excel_success}. Nothing to consolidate.")
-        return 0, master_excel_path
+        return 0, master_excel_path, []
 
     recorded_uuids = extract_column(MF.excel_success, "UUID")
     total = len(recorded_uuids)
     written = 0
+    # Documents that could not be consolidated; the build carries on and these
+    # end up in MASTER_EXCEL_SKIPPED_LOG.
+    not_added = []
 
     for i, uuid in enumerate(recorded_uuids, 1):
         if should_cancel is not None and should_cancel():
             print(Fore.YELLOW + "Master Excel build cancelled by user.")
             break
 
-        MF.update_id_files(uuid)
-        title, file_name = _fetch_metadata(MF, uuid)
-        json_data = _load_analysis_json(MF, uuid, sources)
+        title = file_name = ""
+        try:
+            MF.update_id_files(uuid)
+            title, file_name = _fetch_metadata(MF, uuid)
+            json_data = _load_analysis_json(MF, uuid, sources)
 
-        if json_data:
-            _sync_sections_master_for_uuid(uuid, title, file_name, json_data, sections_map)
-            written += 1
+            if json_data:
+                failed = _sync_sections_master_for_uuid(
+                    uuid, title, file_name, json_data, sections_map)
+                if failed:
+                    print(Fore.RED + f"❌ '{file_name or uuid}': {len(failed)} attribute(s) could not be "
+                                     f"written to the master workbook — continuing with the next file.")
+                    not_added.append(_skip_row(
+                        "partial" if len(failed) < len(sections_map) else "sync",
+                        "; ".join(f"{k}: {v}" for k, v in failed.items()),
+                        uuid=uuid, title=title, filename=file_name,
+                        sections=", ".join(failed)))
+                if len(failed) < len(sections_map):
+                    written += 1
+        except Exception as e:
+            print(Fore.RED + f"❌ '{file_name or uuid}' could not be consolidated into the master "
+                             f"workbook ({type(e).__name__}: {e}) — skipped, continuing with the next file.")
+            not_added.append(_skip_row("document", e, uuid=uuid, title=title, filename=file_name))
 
         if progress_callback:
             progress_callback(i, total)
 
     print(Fore.GREEN + f"✅ Master Excel workbook updated with {written} document(s): {master_excel_path}")
-    return written, master_excel_path
+    if not_added:
+        log_path = _save_master_skiplog(master_excel_path, not_added)
+        print(Fore.YELLOW + Style.BRIGHT
+              + f"⚠️ {len(not_added)} document(s) were NOT (fully) added to the master workbook"
+              + (f" — see {log_path}" if log_path else "") + Style.RESET_ALL)
+    return written, master_excel_path, not_added
 
 
 if __name__ == "__main__":

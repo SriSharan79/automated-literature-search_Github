@@ -1,4 +1,6 @@
-from alr.rag_builders.master_excel_db_builder import _sync_sections_master_for_uuid
+from alr.rag_builders.master_excel_db_builder import (
+    _append_skiplog, _skip_row, _sync_sections_master_for_uuid,
+)
 from alr.common.sections import*
 import json
 import pandas as pd
@@ -531,35 +533,10 @@ def _save_common_manifest(common_path, manifest_rows):
         print(Fore.RED + f"❌ Could not write common-DB manifest: {e}")
 
 
-def _skip_row(stage, error, space=None, uuid="", title="", filename="", sections=""):
-    """One row of the 'not added to the common DB' log."""
-    return {
-        "UUID": uuid, "Title": title, "Filename": filename,
-        "Source_Folder": str(space) if space else "",
-        "Stage": stage, "Sections": sections,
-        "Error": f"{type(error).__name__}: {error}" if isinstance(error, BaseException) else str(error),
-        "Run": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-    }
-
-
 def _save_common_skiplog(common_path, skipped_rows):
     """Append this run's failures to the common DB's skip log (never
     overwrites earlier runs). No-op when nothing failed."""
-    if not skipped_rows:
-        return None
-    log_path = Path(common_path) / COMMON_DB_SKIPPED_LOG
-    try:
-        rows = skipped_rows
-        if log_path.exists() and log_path.stat().st_size > 0:
-            try:
-                rows = pd.read_excel(log_path).to_dict("records") + list(skipped_rows)
-            except Exception:
-                pass  # unreadable old log: start a fresh one from this run
-        pd.DataFrame(rows).to_excel(log_path, index=False)
-        return log_path
-    except Exception as e:
-        print(Fore.RED + f"❌ Could not write the common-DB skip log: {e}")
-        return None
+    return _append_skiplog(Path(common_path) / COMMON_DB_SKIPPED_LOG, skipped_rows)
 
 
 def _sql_documents_for_space(space_path):
@@ -846,7 +823,21 @@ def build_common_database(source_paths, common_path, match_filename: bool = True
                     UUID=uuid, title=title, file_name=filename,
                     json_data=json_data, sections=sec_sub, uuid_cache=uuid_cache,
                 )
-                _sync_sections_master_for_uuid(uuid, title, filename, json_data, master_sub)
+                failed_sections = _sync_sections_master_for_uuid(
+                    uuid, title, filename, json_data, master_sub)
+                if failed_sections:
+                    # Some attributes did not reach the master workbook: don't
+                    # credit them, so a later build copies them in.
+                    print(Fore.RED + f"❌ '{filename or uuid}': {len(failed_sections)} attribute(s) "
+                                     f"were not added to the common DB's master workbook.")
+                    skipped_rows.append(_skip_row(
+                        "master-sections",
+                        "; ".join(f"{k}: {v}" for k, v in failed_sections.items()),
+                        space=space, uuid=uuid, title=title, filename=filename,
+                        sections=_sections_label(failed_sections)))
+                    copy_keys = copy_keys - set(failed_sections)
+                    if not copy_keys:
+                        continue
             except Exception as e:
                 # This document's data could not be written: leave the known
                 # sets and the manifest untouched (so a later run retries it),
