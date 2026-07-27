@@ -2282,7 +2282,7 @@ class AutomatedLiteratureUI(tk.Tk):
 
         def work(progress, should_cancel):
             from alr.rag_builders.db_manager import build_common_database
-            added, skipped, extended = build_common_database(
+            added, skipped, extended, not_added = build_common_database(
                 sources, common_path, match_filename=match_filename,
                 section_keys=section_keys,
                 progress_callback=lambda d, t, txt: progress(done=d, total=t, text=txt),
@@ -2290,17 +2290,22 @@ class AutomatedLiteratureUI(tk.Tk):
             )
             skip_info["skipped"] = skipped
             skip_info["extended"] = extended
+            skip_info["not_added"] = not_added
             return added
 
         def on_success(added):
             extended = skip_info.get("extended", 0)
+            not_added = skip_info.get("not_added") or []
             extended_line = (f"{extended} existing document(s) extended with newly "
                              f"selected attribute(s).\n" if extended else "")
+            from alr.rag_builders.db_manager import COMMON_DB_SKIPPED_LOG
+            failed_line = (f"{len(not_added)} item(s) could not be synchronized and were left out — "
+                           f"listed in {COMMON_DB_SKIPPED_LOG}.\n" if not_added else "")
             messagebox.showinfo(
                 "Common Database",
                 f"Common DB updated: {added or 0} new document(s) added, "
                 f"{skip_info.get('skipped', 0)} already in the common DB (skipped, not reprocessed).\n"
-                f"{extended_line}\n"
+                f"{extended_line}{failed_line}\n"
                 f"Location: {common_path}")
 
         self._run_threaded(work, "Building Common Database", "added", on_success=on_success)

@@ -377,6 +377,13 @@ def generate_databases(Storage_path, do_text: bool = True, do_vector: bool = Tru
 # duplicates cheap to skip without re-reading every section Excel.
 COMMON_DB_MANIFEST = "Common_DB_manifest.xlsx"
 
+# Documents that could NOT be synchronized into the common DB. A failure on
+# one document (unreadable JSON, broken section Excel, a source space that
+# can't be opened at all) never aborts the build: the document is skipped,
+# recorded here and the merge continues with the next one. Append-only, so
+# the workbook keeps the history of every build run.
+COMMON_DB_SKIPPED_LOG = "Common_DB_not_added.xlsx"
+
 # Titles that must never be used for duplicate matching.
 _UNUSABLE_TITLES = {"", "nan", "none", "title not found", "no metadata title"}
 
@@ -524,6 +531,37 @@ def _save_common_manifest(common_path, manifest_rows):
         print(Fore.RED + f"❌ Could not write common-DB manifest: {e}")
 
 
+def _skip_row(stage, error, space=None, uuid="", title="", filename="", sections=""):
+    """One row of the 'not added to the common DB' log."""
+    return {
+        "UUID": uuid, "Title": title, "Filename": filename,
+        "Source_Folder": str(space) if space else "",
+        "Stage": stage, "Sections": sections,
+        "Error": f"{type(error).__name__}: {error}" if isinstance(error, BaseException) else str(error),
+        "Run": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+    }
+
+
+def _save_common_skiplog(common_path, skipped_rows):
+    """Append this run's failures to the common DB's skip log (never
+    overwrites earlier runs). No-op when nothing failed."""
+    if not skipped_rows:
+        return None
+    log_path = Path(common_path) / COMMON_DB_SKIPPED_LOG
+    try:
+        rows = skipped_rows
+        if log_path.exists() and log_path.stat().st_size > 0:
+            try:
+                rows = pd.read_excel(log_path).to_dict("records") + list(skipped_rows)
+            except Exception:
+                pass  # unreadable old log: start a fresh one from this run
+        pd.DataFrame(rows).to_excel(log_path, index=False)
+        return log_path
+    except Exception as e:
+        print(Fore.RED + f"❌ Could not write the common-DB skip log: {e}")
+        return None
+
+
 def _sql_documents_for_space(space_path):
     """
     Fetch the analyzed documents of one storage space from the app-wide SQL
@@ -595,7 +633,10 @@ def _collect_space_documents(space_path, known, selected_set, match_filename):
     - Analysis JSONs are loaded only for documents (and sources) that will
       actually be written. Abstract content prefers the SQL row.
 
-    Returns (docs, prefiltered) with
+    A document whose data cannot be read is skipped (never aborting the
+    space) and reported in the returned failure rows.
+
+    Returns (docs, prefiltered, failures) with
     docs = {uuid: (title, filename, json_data, handled_keys, origin)} where
     handled_keys = the selected sections this document can provide.
     """
@@ -613,63 +654,71 @@ def _collect_space_documents(space_path, known, selected_set, match_filename):
 
     docs = {}
     prefiltered = 0
+    failures = []
     for uuid in candidates:
-        if uuid in sql_docs:
-            title, filename, _sql_json = sql_docs[uuid]
-        elif meta_map is not None and uuid in meta_map:
-            title, filename = meta_map[uuid]
-        else:
-            MF.update_id_files(uuid)
-            title, filename = _fetch_metadata(MF, uuid)
-
-        have = known["uuids"].get(uuid)
-        if have is None:
-            if _identity_dupe(known, title, filename, match_filename):
-                prefiltered += 1
-                continue
-            needed = selected_set
-        else:
-            needed = selected_set - have
-            if not needed:
-                prefiltered += 1
-                continue
-
-        # Which analysis sources does this document actually have?
-        MF.update_id_files(uuid)
-        avail = set()
-        if uuid in sql_docs or Path(MF.abstract_json_path).exists():
-            avail.add("abstract")
-        if Path(MF.intro_json_path).exists():
-            avail.add("intro")
-        if Path(MF.rescon_json_path).exists():
-            avail.add("rescon")
-
-        handled = {k for k in selected_set if RAG_SOURCE_BY_KEY[k] in avail}
-        copy_keys = handled - (have or set())
-        if not copy_keys:
-            prefiltered += 1
-            continue
-
-        # Load only the sources that contribute sections still to copy.
-        need_sources = {RAG_SOURCE_BY_KEY[k] for k in copy_keys}
-        json_data = {}
-        origin = "files"
-        if "abstract" in need_sources:
+        title = filename = ""
+        try:
             if uuid in sql_docs:
-                json_data.update(sql_docs[uuid][2])
-                origin = "sql"
+                title, filename, _sql_json = sql_docs[uuid]
+            elif meta_map is not None and uuid in meta_map:
+                title, filename = meta_map[uuid]
             else:
-                abs_json = _load_abstract_json(MF, uuid)
-                if abs_json:
-                    json_data.update(abs_json)
-        if "intro" in need_sources:
-            json_data.update(_read_json_dict(MF.intro_json_path))
-        if "rescon" in need_sources:
-            json_data.update(_read_json_dict(MF.rescon_json_path))
-        if not json_data:
-            continue
-        docs[uuid] = (title, filename, json_data, handled, origin)
-    return docs, prefiltered
+                MF.update_id_files(uuid)
+                title, filename = _fetch_metadata(MF, uuid)
+
+            have = known["uuids"].get(uuid)
+            if have is None:
+                if _identity_dupe(known, title, filename, match_filename):
+                    prefiltered += 1
+                    continue
+                needed = selected_set
+            else:
+                needed = selected_set - have
+                if not needed:
+                    prefiltered += 1
+                    continue
+
+            # Which analysis sources does this document actually have?
+            MF.update_id_files(uuid)
+            avail = set()
+            if uuid in sql_docs or Path(MF.abstract_json_path).exists():
+                avail.add("abstract")
+            if Path(MF.intro_json_path).exists():
+                avail.add("intro")
+            if Path(MF.rescon_json_path).exists():
+                avail.add("rescon")
+
+            handled = {k for k in selected_set if RAG_SOURCE_BY_KEY[k] in avail}
+            copy_keys = handled - (have or set())
+            if not copy_keys:
+                prefiltered += 1
+                continue
+
+            # Load only the sources that contribute sections still to copy.
+            need_sources = {RAG_SOURCE_BY_KEY[k] for k in copy_keys}
+            json_data = {}
+            origin = "files"
+            if "abstract" in need_sources:
+                if uuid in sql_docs:
+                    json_data.update(sql_docs[uuid][2])
+                    origin = "sql"
+                else:
+                    abs_json = _load_abstract_json(MF, uuid)
+                    if abs_json:
+                        json_data.update(abs_json)
+            if "intro" in need_sources:
+                json_data.update(_read_json_dict(MF.intro_json_path))
+            if "rescon" in need_sources:
+                json_data.update(_read_json_dict(MF.rescon_json_path))
+            if not json_data:
+                continue
+            docs[uuid] = (title, filename, json_data, handled, origin)
+        except Exception as e:
+            print(Fore.YELLOW + f"⚠️ Could not read '{filename or uuid}' from {Path(space_path).name} "
+                                f"({type(e).__name__}: {e}) — skipped, not added to the common DB.")
+            failures.append(_skip_row("collect", e, space=space_path, uuid=uuid,
+                                      title=title, filename=filename))
+    return docs, prefiltered, failures
 
 
 def build_common_database(source_paths, common_path, match_filename: bool = True,
@@ -700,7 +749,15 @@ def build_common_database(source_paths, common_path, match_filename: bool = True
     - The vector sync afterwards only embeds/appends Excel rows not yet in
       the indexes (see _sync_sections_VDB), never rebuilding from scratch.
 
-    Returns (added, skipped, extended).
+    - A document that cannot be synchronized (unreadable analysis JSON,
+      broken section Excel, a source space that can't be opened at all)
+      never aborts the build: it is skipped, the merge continues with the
+      next file, and every such item is appended to
+      ``Common_DB_not_added.xlsx`` in the common DB folder. Failed documents
+      are NOT written to the manifest, so a later build retries them.
+
+    Returns (added, skipped, extended, not_added) where not_added is the list
+    of skip-log rows produced by this run.
     """
     if should_cancel is None:
         should_cancel = lambda: False
@@ -725,6 +782,9 @@ def build_common_database(source_paths, common_path, match_filename: bool = True
     known, manifest_rows, rows_by_uuid = _load_common_known(common_path, sections_full)
     uuid_cache = {}
     added = skipped = extended = 0
+    # Documents (or whole spaces) that could not be synchronized; the build
+    # carries on and these end up in COMMON_DB_SKIPPED_LOG.
+    skipped_rows = []
 
     # Collect every space's NEW documents first (already-known ones are
     # filtered out here, before any per-document work) so the merge loop and
@@ -739,9 +799,19 @@ def build_common_database(source_paths, common_path, match_filename: bool = True
             continue
         if progress_callback:
             progress_callback(0, 1, f"Checking '{space.name}' for documents not yet in the common DB…")
-        docs, prefiltered = _collect_space_documents(space, known, selected_set, match_filename)
+        try:
+            docs, prefiltered, failures = _collect_space_documents(
+                space, known, selected_set, match_filename)
+        except Exception as e:
+            print(Fore.RED + f"❌ Source space '{space}' could not be read ({type(e).__name__}: {e}) "
+                             f"— its documents were NOT added to the common DB; continuing.")
+            skipped_rows.append(_skip_row("space", e, space=space,
+                                          filename="<entire source space>"))
+            continue
+        skipped_rows.extend(failures)
         print(Fore.CYAN + f"📄 {space.name}: {len(docs)} document(s) with new data to add, "
-                          f"{prefiltered} already in the common DB — skipped without reprocessing.")
+                          f"{prefiltered} already in the common DB — skipped without reprocessing."
+              + (f" {len(failures)} unreadable — not added." if failures else ""))
         skipped += prefiltered
         if docs:
             space_docs.append((space, docs))
@@ -771,11 +841,22 @@ def build_common_database(source_paths, common_path, match_filename: bool = True
 
             sec_sub = {k: sections[k] for k in selected if k in copy_keys}
             master_sub = {k: Master_map[k] for k in selected if k in copy_keys}
-            _sync_sections_for_uuid(
-                UUID=uuid, title=title, file_name=filename,
-                json_data=json_data, sections=sec_sub, uuid_cache=uuid_cache,
-            )
-            _sync_sections_master_for_uuid(uuid, title, filename, json_data, master_sub)
+            try:
+                _sync_sections_for_uuid(
+                    UUID=uuid, title=title, file_name=filename,
+                    json_data=json_data, sections=sec_sub, uuid_cache=uuid_cache,
+                )
+                _sync_sections_master_for_uuid(uuid, title, filename, json_data, master_sub)
+            except Exception as e:
+                # This document's data could not be written: leave the known
+                # sets and the manifest untouched (so a later run retries it),
+                # record it and move on to the next file.
+                print(Fore.RED + f"❌ '{filename or uuid}' could not be synchronized into the common DB "
+                                 f"({type(e).__name__}: {e}) — skipped, continuing with the next file.")
+                skipped_rows.append(_skip_row("sync", e, space=space, uuid=uuid, title=title,
+                                              filename=filename,
+                                              sections=_sections_label(copy_keys)))
+                continue
 
             if have is not None:
                 # Known document extended with sections it was missing.
@@ -811,10 +892,21 @@ def build_common_database(source_paths, common_path, match_filename: bool = True
     if do_vector and not should_cancel():
         if progress_callback:
             progress_callback(done, total, "Syncing vector indexes (new entries only)…")
-        secs_VDB = build_sections_map_vdb_excel(VDB, only=all_keys)
-        _sync_sections_VDB(VDB, secs_VDB, rebuild=False)
+        try:
+            secs_VDB = build_sections_map_vdb_excel(VDB, only=all_keys)
+            _sync_sections_VDB(VDB, secs_VDB, rebuild=False)
+        except Exception as e:
+            print(Fore.RED + f"❌ Vector index sync failed ({type(e).__name__}: {e}); the text DB is "
+                             f"still updated — re-run the build to retry the indexes.")
+            skipped_rows.append(_skip_row("vector-sync", e, filename="<vector indexes>"))
 
-    return added, skipped, extended
+    if skipped_rows:
+        log_path = _save_common_skiplog(common_path, skipped_rows)
+        print(Fore.YELLOW + Style.BRIGHT
+              + f"⚠️ {len(skipped_rows)} item(s) were NOT added to the common DB"
+              + (f" — see {log_path}" if log_path else "") + Style.RESET_ALL)
+
+    return added, skipped, extended, skipped_rows
 
 
 def generate_combined_databases(Source_path, Storage_path, rebuild_vector: bool = False):
