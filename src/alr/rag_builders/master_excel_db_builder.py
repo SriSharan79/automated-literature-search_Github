@@ -9,6 +9,7 @@ import json
 import os
 # ADD:
 from alr.common.sections import build_sections_master_map
+from alr.rag_builders import db_cache
 
 # Documents that could NOT be written into a built database. A failure on one
 # document never aborts a build: it is skipped, recorded in one of these logs
@@ -55,20 +56,175 @@ def _save_master_skiplog(master_excel_path, skipped_rows):
     return _append_skiplog(Path(master_excel_path).parent / MASTER_EXCEL_SKIPPED_LOG,
                            skipped_rows)
 
-def save_to_db(master_excel_path, sheet_name, json_path, data_entry):
+# ---------------------------------------------------------------------------
+# Batched workbook writing
+# ---------------------------------------------------------------------------
+# Without a session, every single section of every single document re-reads
+# AND re-writes the whole master workbook (all sheets) plus its section JSON.
+# That is quadratic in the size of the database: a build slows down the longer
+# it runs and looks like the app has hung. Inside a session the workbook and
+# the JSONs are read once, all entries are applied in memory, and the files
+# are written once at the end (plus periodic flushes so a crash or a cancel
+# keeps what has been done so far).
+_SESSIONS = {}
+
+OVERVIEW_SHEET = "Overview"
+
+# Documents between checkpoint writes inside a session (a crash or a cancel
+# then costs at most this many documents, not the whole run).
+FLUSH_EVERY = 25
+
+
+class _WorkbookSession:
+    """In-memory image of one master workbook + the section JSONs beside it."""
+
+    def __init__(self, master_excel_path):
+        self.path = Path(master_excel_path)
+        self.sheets = {}          # sheet name -> DataFrame
+        self.order = []           # sheet order, "Overview" forced first on write
+        self.uuids = {}           # sheet name -> set of UUID strings
+        self.dirty_excel = False
+        self._load()
+
+    def _load(self):
+        if self.path.exists() and self.path.stat().st_size > 0:
+            try:
+                with pd.ExcelFile(self.path, engine="openpyxl") as xls:
+                    self.order = list(xls.sheet_names)
+                    for s_name in self.order:
+                        df = pd.read_excel(self.path, sheet_name=s_name, engine="openpyxl")
+                        self.sheets[s_name] = df
+                        self.uuids[s_name] = (set(df["UUID"].astype(str).values)
+                                              if "UUID" in df.columns else set())
+            except Exception as e:
+                print(Fore.YELLOW + f"⚠️ Master workbook read error (will attempt overwrite): {e}")
+                self.sheets, self.order, self.uuids = {}, [], {}
+
+    def flush(self):
+        """Write the workbook and every touched JSON DB back to disk."""
+        if self.dirty_excel:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            order = [s for s in self.order if s != OVERVIEW_SHEET]
+            if OVERVIEW_SHEET in self.sheets:
+                order.insert(0, OVERVIEW_SHEET)
+            with pd.ExcelWriter(self.path, engine="openpyxl", mode="w") as writer:
+                for s_name in order:
+                    self.sheets[s_name].to_excel(writer, sheet_name=s_name, index=False)
+            self.dirty_excel = False
+        # The section JSONs are shared with the per-section text DB writer.
+        db_cache.flush()
+
+
+class workbook_session:
     """
-    Appends data to a specific sheet inside a single Master Excel file,
-    updates a master 'Overview' sheet at the 1st position with section columns,
-    and appends to a JSON list.
+    Context manager batching every :func:`save_to_db` write for one master
+    workbook: read once, apply in memory, write once on exit.
+
+    Nested/duplicate sessions for the same workbook are reference-counted, so
+    a caller can open one without knowing whether an outer one already exists.
+    Entering is free of behaviour changes for other workbooks — save_to_db
+    falls back to its per-entry read/write path when no session is active.
     """
+
+    def __init__(self, master_excel_path):
+        self.key = str(Path(master_excel_path))
+
+    def __enter__(self):
+        entry = _SESSIONS.get(self.key)
+        if entry is None:
+            entry = [_WorkbookSession(self.key), 0]
+            _SESSIONS[self.key] = entry
+        entry[1] += 1
+        db_cache.open_scope()
+        return entry[0]
+
+    def __exit__(self, exc_type, exc, tb):
+        entry = _SESSIONS.get(self.key)
+        if entry is None:
+            db_cache.close_scope()
+            return False
+        entry[1] -= 1
+        if entry[1] <= 0:
+            del _SESSIONS[self.key]
+            try:
+                entry[0].flush()
+            except Exception as e:  # noqa: BLE001 - report, never mask the body's error
+                print(Fore.RED + f"❌ Failed to write the master workbook {entry[0].path}: {e}")
+        db_cache.close_scope()
+        return False
+
+
+def _active_session(master_excel_path):
+    entry = _SESSIONS.get(str(Path(master_excel_path)))
+    return entry[0] if entry else None
+
+
+def _apply_section_entry(sheets, order, sheet_name, data_entry):
+    """Add one entry to its section sheet and mirror it onto the Overview
+    sheet, in memory. Shared by the batched and per-entry write paths."""
+    df_new = pd.DataFrame([data_entry])
+    if sheet_name in sheets:
+        sheets[sheet_name] = pd.concat([sheets[sheet_name], df_new], ignore_index=True)
+    else:
+        sheets[sheet_name] = df_new
+        order.append(sheet_name)
+
     target_uuid = str(data_entry.get("UUID"))
     original_uuid = str(data_entry.get("Original_UUID", target_uuid))
     content_value = data_entry.get("Content", "")
     title = data_entry.get("Title", "")
     filename = data_entry.get("Filename", "")
-    
+
+    df_overview = sheets.get(OVERVIEW_SHEET)
+    if df_overview is None:
+        df_overview = pd.DataFrame(columns=["UUID", "Title", "Filename"])
+    df_overview["UUID"] = df_overview["UUID"].astype(str)
+
+    match_mask = df_overview["UUID"] == original_uuid
+    if match_mask.any():
+        df_overview.loc[match_mask, sheet_name] = content_value
+        if title:
+            df_overview.loc[match_mask, "Title"] = title
+        if filename:
+            df_overview.loc[match_mask, "Filename"] = filename
+    else:
+        df_overview = pd.concat(
+            [df_overview, pd.DataFrame([{
+                "UUID": original_uuid, "Title": title,
+                "Filename": filename, sheet_name: content_value,
+            }])], ignore_index=True)
+
+    sheets[OVERVIEW_SHEET] = df_overview
+    if OVERVIEW_SHEET not in order:
+        order.append(OVERVIEW_SHEET)
+
+
+def save_to_db(master_excel_path, sheet_name, json_path, data_entry):
+    """
+    Appends data to a specific sheet inside a single Master Excel file,
+    updates a master 'Overview' sheet at the 1st position with section columns,
+    and appends to a JSON list.
+
+    Inside a :class:`workbook_session` the workbook and the JSON are held in
+    memory and written once when the session closes; otherwise this keeps its
+    original read-modify-write-per-entry behaviour.
+    """
+    target_uuid = str(data_entry.get("UUID"))
     master_excel_path = Path(master_excel_path)
-    
+    json_path = Path(json_path)
+
+    session = _active_session(master_excel_path)
+    if session is not None:
+        skip_excel = target_uuid in session.uuids.get(sheet_name, ())
+        if not skip_excel:
+            _apply_section_entry(session.sheets, session.order, sheet_name, data_entry)
+            session.uuids.setdefault(sheet_name, set()).add(target_uuid)
+            session.dirty_excel = True
+        # The JSON DB is shared with the per-section text writer, so it goes
+        # through the shared cache rather than a private copy.
+        db_cache.add(json_path, data_entry)
+        return
+
     # --- Check for Duplicates in the Specific Section Sheet ---
     skip_excel = False
     if master_excel_path.exists() and master_excel_path.stat().st_size > 0:
@@ -100,69 +256,25 @@ def save_to_db(master_excel_path, sheet_name, json_path, data_entry):
     # --- Save to Excel Workbooks ---
     if not skip_excel:
         try:
-            # 1. Update/Create the Individual Section Sheet
-            df_new = pd.DataFrame([data_entry])
             all_sheets_data = {}
             sheet_order = []
-
             if master_excel_path.exists() and master_excel_path.stat().st_size > 0:
                 with pd.ExcelFile(master_excel_path, engine='openpyxl') as xls:
                     sheet_order = list(xls.sheet_names)
                     for s_name in sheet_order:
                         all_sheets_data[s_name] = pd.read_excel(master_excel_path, sheet_name=s_name, engine='openpyxl')
-                
-                # Append or set individual sheet data
-                if sheet_name in all_sheets_data:
-                    all_sheets_data[sheet_name] = pd.concat([all_sheets_data[sheet_name], df_new], ignore_index=True)
-                else:
-                    all_sheets_data[sheet_name] = df_new
-                    sheet_order.append(sheet_name)
-            else:
-                all_sheets_data[sheet_name] = df_new
-                sheet_order.append(sheet_name)
 
-            # 2. Update/Create the Master "Overview" Sheet
-            overview_sheet = "Overview"
-            if overview_sheet in all_sheets_data:
-                df_overview = all_sheets_data[overview_sheet]
-            else:
-                # Initialize empty Overview with metadata structure
-                df_overview = pd.DataFrame(columns=["UUID", "Title", "Filename"])
-            
-            # Ensure UUID is treated as string for clean matching
-            df_overview["UUID"] = df_overview["UUID"].astype(str)
-            
-            # Check if this row (Original_UUID) already has a record in Overview
-            match_mask = df_overview["UUID"] == original_uuid
-            
-            if match_mask.any():
-                # Update existing row's target section column cell
-                df_overview.loc[match_mask, sheet_name] = content_value
-                # Keep metadata updated if missing
-                if title: df_overview.loc[match_mask, "Title"] = title
-                if filename: df_overview.loc[match_mask, "Filename"] = filename
-            else:
-                # Create a completely fresh row entry for this asset
-                new_row = {
-                    "UUID": original_uuid,
-                    "Title": title,
-                    "Filename": filename,
-                    sheet_name: content_value
-                }
-                df_overview = pd.concat([df_overview, pd.DataFrame([new_row])], ignore_index=True)
-            
-            all_sheets_data[overview_sheet] = df_overview
-            
-            # 3. Re-order sheets so "Overview" is strictly forced as the 1st tab (index 0)
-            if overview_sheet in sheet_order:
-                sheet_order.remove(overview_sheet)
-            sheet_order.insert(0, overview_sheet)
+            _apply_section_entry(all_sheets_data, sheet_order, sheet_name, data_entry)
 
-            # 4. Write everything back into the Master workbook preserving sheet arrangements
+            # Re-order sheets so "Overview" is strictly forced as the 1st tab.
+            if OVERVIEW_SHEET in sheet_order:
+                sheet_order.remove(OVERVIEW_SHEET)
+            sheet_order.insert(0, OVERVIEW_SHEET)
+
             with pd.ExcelWriter(master_excel_path, engine='openpyxl', mode='w') as writer:
                 for s_name in sheet_order:
                     all_sheets_data[s_name].to_excel(writer, sheet_name=s_name, index=False)
-                    
+
         except Exception as e:
             print(Fore.RED + f"❌ Failed to save Excel steps for sheet '{sheet_name}': {e}")
 
@@ -401,37 +513,48 @@ def build_master_excel_db(storage_path, master_excel_path=None, progress_callbac
     # end up in MASTER_EXCEL_SKIPPED_LOG.
     not_added = []
 
-    for i, uuid in enumerate(recorded_uuids, 1):
-        if should_cancel is not None and should_cancel():
-            print(Fore.YELLOW + "Master Excel build cancelled by user.")
-            break
+    # One read + one write for the whole workbook instead of one of each per
+    # section per document (which made long builds crawl).
+    with workbook_session(master_excel_path) as session:
+        for i, uuid in enumerate(recorded_uuids, 1):
+            if should_cancel is not None and should_cancel():
+                print(Fore.YELLOW + "Master Excel build cancelled by user.")
+                break
 
-        title = file_name = ""
-        try:
-            MF.update_id_files(uuid)
-            title, file_name = _fetch_metadata(MF, uuid)
-            json_data = _load_analysis_json(MF, uuid, sources)
+            title = file_name = ""
+            try:
+                MF.update_id_files(uuid)
+                title, file_name = _fetch_metadata(MF, uuid)
+                json_data = _load_analysis_json(MF, uuid, sources)
 
-            if json_data:
-                failed = _sync_sections_master_for_uuid(
-                    uuid, title, file_name, json_data, sections_map)
-                if failed:
-                    print(Fore.RED + f"❌ '{file_name or uuid}': {len(failed)} attribute(s) could not be "
-                                     f"written to the master workbook — continuing with the next file.")
-                    not_added.append(_skip_row(
-                        "partial" if len(failed) < len(sections_map) else "sync",
-                        "; ".join(f"{k}: {v}" for k, v in failed.items()),
-                        uuid=uuid, title=title, filename=file_name,
-                        sections=", ".join(failed)))
-                if len(failed) < len(sections_map):
-                    written += 1
-        except Exception as e:
-            print(Fore.RED + f"❌ '{file_name or uuid}' could not be consolidated into the master "
-                             f"workbook ({type(e).__name__}: {e}) — skipped, continuing with the next file.")
-            not_added.append(_skip_row("document", e, uuid=uuid, title=title, filename=file_name))
+                if json_data:
+                    failed = _sync_sections_master_for_uuid(
+                        uuid, title, file_name, json_data, sections_map)
+                    if failed:
+                        print(Fore.RED + f"❌ '{file_name or uuid}': {len(failed)} attribute(s) could not be "
+                                         f"written to the master workbook — continuing with the next file.")
+                        not_added.append(_skip_row(
+                            "partial" if len(failed) < len(sections_map) else "sync",
+                            "; ".join(f"{k}: {v}" for k, v in failed.items()),
+                            uuid=uuid, title=title, filename=file_name,
+                            sections=", ".join(failed)))
+                    if len(failed) < len(sections_map):
+                        written += 1
+            except Exception as e:
+                print(Fore.RED + f"❌ '{file_name or uuid}' could not be consolidated into the master "
+                                 f"workbook ({type(e).__name__}: {e}) — skipped, continuing with the next file.")
+                not_added.append(_skip_row("document", e, uuid=uuid, title=title, filename=file_name))
 
-        if progress_callback:
-            progress_callback(i, total)
+            # Checkpoint so a crash or a cancel keeps the work done so far,
+            # without paying a full workbook write per document.
+            if i % FLUSH_EVERY == 0:
+                try:
+                    session.flush()
+                except Exception as e:  # noqa: BLE001 - a failed checkpoint must not stop the build
+                    print(Fore.RED + f"❌ Could not checkpoint the master workbook: {e}")
+
+            if progress_callback:
+                progress_callback(i, total)
 
     print(Fore.GREEN + f"✅ Master Excel workbook updated with {written} document(s): {master_excel_path}")
     if not_added:

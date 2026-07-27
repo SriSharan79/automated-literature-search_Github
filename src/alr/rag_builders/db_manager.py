@@ -1,5 +1,6 @@
 from alr.rag_builders.master_excel_db_builder import (
-    _append_skiplog, _skip_row, _sync_sections_master_for_uuid,
+    FLUSH_EVERY, _append_skiplog, _skip_row, _sync_sections_master_for_uuid,
+    workbook_session,
 )
 from alr.common.sections import*
 import json
@@ -8,7 +9,10 @@ from pathlib import Path
 from datetime import datetime
 from alr.common.file_manager import DataAnalyzeManager, Vec_DB_Manager
 from alr.common.json_utils import get_key_from_file, get_value_by_pair
-from alr.rag_builders.text_db_updater import _fetch_metadata, _load_abstract_json, _load_recorded_abstracts, _sync_sections_for_uuid
+from alr.rag_builders.text_db_updater import (
+    _fetch_metadata, _load_abstract_json, _load_recorded_abstracts,
+    _sync_sections_for_uuid, flush_db_cache,
+)
 from alr.rag_builders.vector_db_updater import add_new_strings_to_index, create_faiss_index_cosine, load_index_file, save_index_file, search_similar, vectorize_strings
 from colorama import Fore, Style
 from alr.common.sections import (
@@ -268,17 +272,22 @@ def _sync_analysis_source_text(MF, VDB, master_excel_file, uuid_cache, source):
 
     label = "Introduction" if source == "intro" else "Results & Conclusion"
     print(Fore.CYAN + f"--- Syncing {label} data ({len(uuids)} recorded document(s)) ---")
-    for UUID in uuids:
-        MF.update_id_files(UUID)
-        json_data = _read_json_dict(json_path_of())
-        if not json_data:
-            continue
-        title, file_name = _fetch_metadata(MF, UUID)
-        _sync_sections_for_uuid(
-            UUID=UUID, title=title, file_name=file_name,
-            json_data=json_data, sections=sections, uuid_cache=uuid_cache,
-        )
-        _sync_sections_master_for_uuid(UUID, title, file_name, json_data, master_map)
+    # Batched like the abstract sync (the session is reference-counted, so an
+    # outer one in generate_databases just stays open).
+    with workbook_session(master_excel_file):
+        for i, UUID in enumerate(uuids, 1):
+            MF.update_id_files(UUID)
+            json_data = _read_json_dict(json_path_of())
+            if not json_data:
+                continue
+            title, file_name = _fetch_metadata(MF, UUID)
+            _sync_sections_for_uuid(
+                UUID=UUID, title=title, file_name=file_name,
+                json_data=json_data, sections=sections, uuid_cache=uuid_cache,
+            )
+            _sync_sections_master_for_uuid(UUID, title, file_name, json_data, master_map)
+            if i % FLUSH_EVERY == 0:
+                flush_db_cache(uuid_cache)
 
 
 def generate_databases(Storage_path, do_text: bool = True, do_vector: bool = True,
@@ -335,31 +344,43 @@ def generate_databases(Storage_path, do_text: bool = True, do_vector: bool = Tru
         # already-synced space near-instant on the text side.
         uuid_cache = {}
 
-        for UUID in recorded_abstracts:
-            tick(f"Text DB: {UUID}")
-            MF.update_id_files(UUID)
+        # Both DB layers are written in batches: the section Excel/JSON pairs
+        # via the uuid_cache (flushed below) and the master workbook via its
+        # session. Writing either per entry is quadratic in the DB size and is
+        # what made a long build look like a freeze.
+        try:
+            with workbook_session(MASTER_EXCEL_FILE):
+                for i, UUID in enumerate(recorded_abstracts, 1):
+                    tick(f"Text DB: {UUID}")
+                    MF.update_id_files(UUID)
 
-            title, file_name = _fetch_metadata(MF, UUID)
-            json_data = _load_abstract_json(MF, UUID)
-            if not json_data:
-                continue
+                    title, file_name = _fetch_metadata(MF, UUID)
+                    json_data = _load_abstract_json(MF, UUID)
+                    if not json_data:
+                        continue
 
-            _sync_sections_for_uuid(
-                UUID=UUID,
-                title=title,
-                file_name=file_name,
-                json_data=json_data,
-                sections=sections,
-                uuid_cache=uuid_cache
-            )
-            _sync_sections_master_for_uuid(UUID, title, file_name, json_data, Master_map)
+                    _sync_sections_for_uuid(
+                        UUID=UUID,
+                        title=title,
+                        file_name=file_name,
+                        json_data=json_data,
+                        sections=sections,
+                        uuid_cache=uuid_cache
+                    )
+                    _sync_sections_master_for_uuid(UUID, title, file_name, json_data, Master_map)
+                    if i % FLUSH_EVERY == 0:
+                        flush_db_cache(uuid_cache)
 
-        # Introduction and Results & Conclusion analysis data get their own
-        # section DBs the same way (no-ops when the space has none).
-        tick("Text DB: Introduction data")
-        _sync_analysis_source_text(MF, VDB, MASTER_EXCEL_FILE, uuid_cache, "intro")
-        tick("Text DB: Results & Conclusion data")
-        _sync_analysis_source_text(MF, VDB, MASTER_EXCEL_FILE, uuid_cache, "rescon")
+                # Introduction and Results & Conclusion analysis data get their own
+                # section DBs the same way (no-ops when the space has none).
+                tick("Text DB: Introduction data")
+                _sync_analysis_source_text(MF, VDB, MASTER_EXCEL_FILE, uuid_cache, "intro")
+                tick("Text DB: Results & Conclusion data")
+                _sync_analysis_source_text(MF, VDB, MASTER_EXCEL_FILE, uuid_cache, "rescon")
+        finally:
+            # The vector sync below reads the section EXCELS, so they must be
+            # on disk before it runs — and a failure must not lose the batch.
+            flush_db_cache(uuid_cache)
 
     if do_vector:
         tick("Vector DB: embedding new entries")
@@ -796,84 +817,93 @@ def build_common_database(source_paths, common_path, match_filename: bool = True
     total = sum(len(docs) for _, docs in space_docs)
     done = 0
 
-    for space, docs in space_docs:
-        for uuid, (title, filename, json_data, handled, origin) in docs.items():
+    # One batched write for the master workbook and the section DB pairs;
+    # writing them per entry is quadratic in the DB size and stalls long builds.
+    with workbook_session(MASTER_EXCEL_FILE):
+        for space, docs in space_docs:
+            for uuid, (title, filename, json_data, handled, origin) in docs.items():
+                if should_cancel():
+                    break
+                done += 1
+                if progress_callback:
+                    progress_callback(done, total, f"[{space.name}] {filename or uuid}")
+
+                # Re-check against the LIVE identity sets: a duplicate between two
+                # new spaces in the same run only becomes visible once the first
+                # copy of it has been added.
+                have = known["uuids"].get(uuid)
+                if have is None and _identity_dupe(known, title, filename, match_filename):
+                    skipped += 1
+                    continue
+                copy_keys = handled - (have or set())
+                if not copy_keys:
+                    skipped += 1
+                    continue
+
+                sec_sub = {k: sections[k] for k in selected if k in copy_keys}
+                master_sub = {k: Master_map[k] for k in selected if k in copy_keys}
+                try:
+                    _sync_sections_for_uuid(
+                        UUID=uuid, title=title, file_name=filename,
+                        json_data=json_data, sections=sec_sub, uuid_cache=uuid_cache,
+                    )
+                    failed_sections = _sync_sections_master_for_uuid(
+                        uuid, title, filename, json_data, master_sub)
+                    if failed_sections:
+                        # Some attributes did not reach the master workbook: don't
+                        # credit them, so a later build copies them in.
+                        print(Fore.RED + f"❌ '{filename or uuid}': {len(failed_sections)} attribute(s) "
+                                         f"were not added to the common DB's master workbook.")
+                        skipped_rows.append(_skip_row(
+                            "master-sections",
+                            "; ".join(f"{k}: {v}" for k, v in failed_sections.items()),
+                            space=space, uuid=uuid, title=title, filename=filename,
+                            sections=_sections_label(failed_sections)))
+                        copy_keys = copy_keys - set(failed_sections)
+                        if not copy_keys:
+                            continue
+                except Exception as e:
+                    # This document's data could not be written: leave the known
+                    # sets and the manifest untouched (so a later run retries it),
+                    # record it and move on to the next file.
+                    print(Fore.RED + f"❌ '{filename or uuid}' could not be synchronized into the common DB "
+                                     f"({type(e).__name__}: {e}) — skipped, continuing with the next file.")
+                    skipped_rows.append(_skip_row("sync", e, space=space, uuid=uuid, title=title,
+                                                  filename=filename,
+                                                  sections=_sections_label(copy_keys)))
+                    continue
+
+                if have is not None:
+                    # Known document extended with sections it was missing.
+                    known["uuids"][uuid] = have | copy_keys
+                    row = rows_by_uuid.get(uuid)
+                    if row is not None:
+                        row["Sections"] = _sections_label(known["uuids"][uuid])
+                    extended += 1
+                    continue
+
+                known["uuids"][uuid] = set(copy_keys)
+                if _usable_title(title):
+                    known["titles"].add(_norm_key(title))
+                if _usable_filename(filename):
+                    known["filenames"].add(_norm_key(filename))
+                row = {
+                    "UUID": uuid, "Title": title, "Filename": filename,
+                    "Source_Folder": str(space), "Data_Origin": origin,
+                    "Sections": _sections_label(copy_keys),
+                    "Added": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                }
+                manifest_rows.append(row)
+                rows_by_uuid[uuid] = row
+                added += 1
+                # Checkpoint: a crash or a cancel then costs at most this many
+                # documents instead of the whole merge.
+                if done % FLUSH_EVERY == 0:
+                    flush_db_cache(uuid_cache)
             if should_cancel():
                 break
-            done += 1
-            if progress_callback:
-                progress_callback(done, total, f"[{space.name}] {filename or uuid}")
+    flush_db_cache(uuid_cache)
 
-            # Re-check against the LIVE identity sets: a duplicate between two
-            # new spaces in the same run only becomes visible once the first
-            # copy of it has been added.
-            have = known["uuids"].get(uuid)
-            if have is None and _identity_dupe(known, title, filename, match_filename):
-                skipped += 1
-                continue
-            copy_keys = handled - (have or set())
-            if not copy_keys:
-                skipped += 1
-                continue
-
-            sec_sub = {k: sections[k] for k in selected if k in copy_keys}
-            master_sub = {k: Master_map[k] for k in selected if k in copy_keys}
-            try:
-                _sync_sections_for_uuid(
-                    UUID=uuid, title=title, file_name=filename,
-                    json_data=json_data, sections=sec_sub, uuid_cache=uuid_cache,
-                )
-                failed_sections = _sync_sections_master_for_uuid(
-                    uuid, title, filename, json_data, master_sub)
-                if failed_sections:
-                    # Some attributes did not reach the master workbook: don't
-                    # credit them, so a later build copies them in.
-                    print(Fore.RED + f"❌ '{filename or uuid}': {len(failed_sections)} attribute(s) "
-                                     f"were not added to the common DB's master workbook.")
-                    skipped_rows.append(_skip_row(
-                        "master-sections",
-                        "; ".join(f"{k}: {v}" for k, v in failed_sections.items()),
-                        space=space, uuid=uuid, title=title, filename=filename,
-                        sections=_sections_label(failed_sections)))
-                    copy_keys = copy_keys - set(failed_sections)
-                    if not copy_keys:
-                        continue
-            except Exception as e:
-                # This document's data could not be written: leave the known
-                # sets and the manifest untouched (so a later run retries it),
-                # record it and move on to the next file.
-                print(Fore.RED + f"❌ '{filename or uuid}' could not be synchronized into the common DB "
-                                 f"({type(e).__name__}: {e}) — skipped, continuing with the next file.")
-                skipped_rows.append(_skip_row("sync", e, space=space, uuid=uuid, title=title,
-                                              filename=filename,
-                                              sections=_sections_label(copy_keys)))
-                continue
-
-            if have is not None:
-                # Known document extended with sections it was missing.
-                known["uuids"][uuid] = have | copy_keys
-                row = rows_by_uuid.get(uuid)
-                if row is not None:
-                    row["Sections"] = _sections_label(known["uuids"][uuid])
-                extended += 1
-                continue
-
-            known["uuids"][uuid] = set(copy_keys)
-            if _usable_title(title):
-                known["titles"].add(_norm_key(title))
-            if _usable_filename(filename):
-                known["filenames"].add(_norm_key(filename))
-            row = {
-                "UUID": uuid, "Title": title, "Filename": filename,
-                "Source_Folder": str(space), "Data_Origin": origin,
-                "Sections": _sections_label(copy_keys),
-                "Added": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            }
-            manifest_rows.append(row)
-            rows_by_uuid[uuid] = row
-            added += 1
-        if should_cancel():
-            break
 
     _save_common_manifest(common_path, manifest_rows)
     print(Fore.GREEN + Style.BRIGHT
@@ -915,23 +945,29 @@ def generate_combined_databases(Source_path, Storage_path, rebuild_vector: bool 
     # Same per-run UUID cache as generate_databases (one read per DB pair).
     uuid_cache = {}
 
-    for UUID in recorded_abstracts:
-        MF.update_id_files(UUID)
+    try:
+        with workbook_session(MASTER_EXCEL_FILE):
+            for i, UUID in enumerate(recorded_abstracts, 1):
+                MF.update_id_files(UUID)
 
-        title, file_name = _fetch_metadata(MF, UUID)
-        json_data = _load_abstract_json(MF, UUID)
-        if not json_data:
-            continue
+                title, file_name = _fetch_metadata(MF, UUID)
+                json_data = _load_abstract_json(MF, UUID)
+                if not json_data:
+                    continue
 
-        _sync_sections_for_uuid(
-            UUID=UUID,
-            title=title,
-            file_name=file_name,
-            json_data=json_data,
-            sections=sections,
-            uuid_cache=uuid_cache
-        )
-        _sync_sections_master_for_uuid(UUID, title, file_name, json_data, Master_map)
+                _sync_sections_for_uuid(
+                    UUID=UUID,
+                    title=title,
+                    file_name=file_name,
+                    json_data=json_data,
+                    sections=sections,
+                    uuid_cache=uuid_cache
+                )
+                _sync_sections_master_for_uuid(UUID, title, file_name, json_data, Master_map)
+                if i % FLUSH_EVERY == 0:
+                    flush_db_cache(uuid_cache)
+    finally:
+        flush_db_cache(uuid_cache)
 
     secs_VDB = build_sections_map_vdb_excel(VDB)
     _sync_sections_VDB(VDB, secs_VDB, rebuild=rebuild_vector)

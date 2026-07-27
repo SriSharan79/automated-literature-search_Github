@@ -3,6 +3,7 @@ from colorama import Fore
 import pandas as pd
 from alr.common.file_manager import DataAnalyzeManager, Vec_DB_Manager
 from alr.common.excel_utils import extract_column, get_corresponding_value
+from alr.rag_builders import db_cache
 import json
 
 def _load_db_pair(excel_path, json_path):
@@ -44,7 +45,43 @@ def _load_db_pair(excel_path, json_path):
 
     return {"excel_df": excel_df, "excel": excel_uuids,
             "json_data": json_data, "json": json_uuids,
-            "excel_read_error": excel_read_error}
+            "excel_read_error": excel_read_error,
+            "excel_path": excel_path, "json_path": json_path,
+            "dirty_excel": False, "dirty_json": False}
+
+
+def flush_db_cache(uuid_cache):
+    """
+    Write every pending change held in ``uuid_cache`` to disk.
+
+    With a cache, save_to_db keeps the section DBs in memory and only marks
+    them dirty: writing each section's Excel and JSON out again for every
+    single entry is quadratic in the size of the database and is what made
+    long DB builds crawl to a standstill. Callers that pass a uuid_cache MUST
+    call this at the end of the run (and may call it periodically as a
+    checkpoint); it is safe to call repeatedly and when nothing is dirty.
+    """
+    db_cache.flush()
+    if not uuid_cache:
+        return
+    for entry in uuid_cache.values():
+        if entry.get("dirty_excel"):
+            try:
+                df = entry.get("excel_df")
+                if df is not None:
+                    Path(entry["excel_path"]).parent.mkdir(parents=True, exist_ok=True)
+                    df.to_excel(entry["excel_path"], index=False, engine="openpyxl")
+                entry["dirty_excel"] = False
+            except Exception as e:
+                print(Fore.RED + f"❌ Failed to save Excel {entry['excel_path']}: {e}")
+        if entry.get("dirty_json"):
+            try:
+                Path(entry["json_path"]).parent.mkdir(parents=True, exist_ok=True)
+                with open(entry["json_path"], "w", encoding="utf-8") as f:
+                    json.dump(entry["json_data"], f, indent=4)
+                entry["dirty_json"] = False
+            except Exception as e:
+                print(Fore.RED + f"❌ Failed to save JSON {entry['json_path']}: {e}")
 
 
 def save_to_db(excel_path, json_path, data_entry, uuid_cache=None):
@@ -70,8 +107,15 @@ def save_to_db(excel_path, json_path, data_entry, uuid_cache=None):
             cache_entry = _load_db_pair(excel_path, json_path)
             uuid_cache[cache_key] = cache_entry
         skip_excel = target_uuid in cache_entry["excel"]
-        skip_json = target_uuid in cache_entry["json"]
-        existing_json_data = cache_entry["json_data"]
+        if db_cache.active():
+            # Inside a build scope the JSON DB is shared with the master
+            # workbook writer, which appends to the SAME file.
+            shared = db_cache.get(json_path)
+            skip_json = target_uuid in shared["uuids"]
+            existing_json_data = shared["data"]
+        else:
+            skip_json = target_uuid in cache_entry["json"]
+            existing_json_data = cache_entry["json_data"]
     else:
         # --- Check for Duplicates in Excel (original per-call behaviour) ---
         skip_excel = False
@@ -121,24 +165,37 @@ def save_to_db(excel_path, json_path, data_entry, uuid_cache=None):
                 df_final = pd.concat([df_old, df_new], ignore_index=True)
             else:
                 df_final = df_new
-            # Explicitly use 'openpyxl' engine for writing
-            df_final.to_excel(excel_path, index=False, engine='openpyxl')
             if cache_entry is not None:
+                # Write-behind: keep it in memory and let flush_db_cache() put
+                # it on disk once, instead of rewriting the whole file per entry.
                 cache_entry["excel_df"] = df_final
                 cache_entry["excel"].add(target_uuid)
+                cache_entry["dirty_excel"] = True
+            else:
+                # Explicitly use 'openpyxl' engine for writing
+                df_final.to_excel(excel_path, index=False, engine='openpyxl')
         except Exception as e:
             print(Fore.RED + f"❌ Failed to save Excel: {e}")
 
     # --- Save to JSON ---
     if not skip_json:
         try:
-            existing_json_data.append(data_entry)
-            with open(json_path, 'w', encoding='utf-8') as f:
-                json.dump(existing_json_data, f, indent=4)
-            if cache_entry is not None:
-                # existing_json_data IS cache_entry["json_data"], so the cached
-                # list already contains the new entry; just record the UUID.
+            if cache_entry is not None and db_cache.active():
+                # Shared image with the master workbook writer; written once by
+                # db_cache.flush().
+                db_cache.add(json_path, data_entry)
                 cache_entry["json"].add(target_uuid)
+            elif cache_entry is not None:
+                # existing_json_data IS cache_entry["json_data"], so the cached
+                # list already contains the new entry; just record the UUID and
+                # let flush_db_cache() write the file out once.
+                existing_json_data.append(data_entry)
+                cache_entry["json"].add(target_uuid)
+                cache_entry["dirty_json"] = True
+            else:
+                existing_json_data.append(data_entry)
+                with open(json_path, 'w', encoding='utf-8') as f:
+                    json.dump(existing_json_data, f, indent=4)
         except Exception as e:
             print(Fore.RED + f"❌ Failed to save JSON: {e}")
      

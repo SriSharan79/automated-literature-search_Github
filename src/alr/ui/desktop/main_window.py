@@ -63,6 +63,13 @@ class CustomTerminalText(tk.Text):
     # ANSI SGR escape sequence, e.g. "\x1b[34m" or "\x1b[1;44m".
     _ANSI_RE = re.compile(r"\x1b\[([0-9;]*)m")
 
+    # Console limits. The widget keeps the most recent MAX_LINES lines, and one
+    # poll tick inserts at most MAX_CHARS_PER_TICK characters — together these
+    # keep a very chatty pass (a DB build over thousands of documents) from
+    # freezing the window.
+    MAX_LINES = 4000
+    MAX_CHARS_PER_TICK = 60000
+
     # SGR colour code -> readable colour on a black background.
     _FG = {
         30: "#7f7f7f", 31: "#ff5555", 32: "#55dd55", 33: "#e5e510",
@@ -175,19 +182,42 @@ class CustomTerminalText(tk.Text):
         if idx < len(text):
             self.insert(tk.END, text[idx:], self._active_tags())
 
-    def _poll_write_queue(self):
+    def _trim(self):
+        """Keep the console bounded. An unbounded Text widget is what makes a
+        long, chatty pass (a DB build prints per section per document) freeze
+        the whole window: every insert into a several-hundred-thousand-line
+        widget gets slower, on the main thread."""
         try:
-            while True:
+            lines = int(self.index(tk.END).split(".")[0]) - 1
+            if lines > self.MAX_LINES:
+                self.delete("1.0", f"{lines - self.MAX_LINES + 1}.0")
+        except (tk.TclError, ValueError):
+            pass
+
+    def _poll_write_queue(self):
+        wrote = False
+        try:
+            # Bounded drain: a worker that floods the queue must not hold the
+            # main loop inside this callback (that IS a frozen UI).
+            budget = self.MAX_CHARS_PER_TICK
+            while budget > 0:
                 chunk = self._write_queue.get_nowait()
+                budget -= len(chunk)
                 if not self.verbose:
                     chunk = self._filter_noise(chunk)
                 if chunk:
                     self._insert_ansi(chunk)
-                    self.see(tk.END)
+                    wrote = True
         except queue.Empty:
             pass
         except tk.TclError:
             return  # widget destroyed
+        if wrote:
+            try:
+                self._trim()
+                self.see(tk.END)
+            except tk.TclError:
+                return
         self.after(50, self._poll_write_queue)
 
     def flush(self):
