@@ -501,6 +501,26 @@ def _refresh_attribute_log(MF, target, uuid):
         )
 
 
+def _stored_analysis_missing(MF, target, pdf_name, uuid):
+    """
+    True when the analysis log claims a document is done but the stored JSON is
+    not on disk (deleted by an earlier error-token cleanup, pruned, or the
+    space was moved without its log).
+
+    Storage is the source of truth, so callers treat this as "not processed"
+    and analyze the document again instead of failing on the missing file.
+    """
+    spec = TARGETS[target]
+    json_path = getattr(MF, spec.json_attr, None)
+    if json_path and Path(json_path).exists():
+        return False
+    logger.warning(
+        f"♻️ {spec.label} is logged as processed for {pdf_name} :-: {uuid} but its stored "
+        f"JSON is missing; analyzing it again."
+    )
+    return True
+
+
 def _top_up_if_incomplete(MF, target, pdf_name, uuid):
     """
     Cheap gap check for an already-analyzed document: read the stored analysis
@@ -583,27 +603,34 @@ def process_pdf_abstract(file, storage_path=""):
         
         if log_path and log_path.exists():
             already_done = get_corresponding_value(str(log_path), "UUID", UUID, "file_path")
-            
+
             if already_done:
                 # Run the inner error check and cleanup routine
                 has_error_token = _check_and_cleanup_json()
                 json_path = MF.abstract_json_path
-                
-                if not has_error_token:
+
+                # The cleanup above may have just deleted the file, and a log
+                # entry can also outlive its JSON; either way fall through to a
+                # fresh analysis rather than reading a file that is not there.
+                if _stored_analysis_missing(MF, "abstract", pdf_name, UUID):
+                    already_done = None
+
+                if already_done and not has_error_token:
                     logger.info(f"⏩ Abstract already successfully processed for {pdf_name} :-: {UUID}")
                     _top_up_if_incomplete(MF, "abstract", pdf_name, UUID)
                     # abstract_text = get_abstract_text(MF)
                     with open(json_path, 'r', encoding='utf-8') as f:
                         json_data = json.load(f)
-                    abstract_text=json_data['Abstract Text identified:']
+                    abstract_text=json_data.get('Abstract Text identified:', '')
                     logger.info("\nIdentifid Abstract Text:")
                     logger.info(f"   {abstract_text}")
                     pretty_print_json_from_file(MF.abstract_json_path)
                     return  _handle_status_update(UUID, passed=True)
-                else:
+                elif has_error_token:
                     # If it had an error token, the file is now deleted. Log failure.
                     logger.warning(f"🛑 Previously processed file for {pdf_name} contained errors. Registering failure.")
                     return _handle_status_update(UUID, passed=False)
+                # Otherwise the stored JSON is gone: fall through and re-analyze.
 
         # If file doesn't exist or log entry was not found, run a brand new analysis
         res = analyze_abstract(UUID, MF) 
@@ -637,6 +664,11 @@ def process_pdf_intro(file, storage_path=""):
         MF.update_id_files(UUID)
         if log_path and log_path.exists():
             already_done = get_corresponding_value(str(log_path), "UUID", UUID, "file_path")
+            # A log entry can outlive its JSON; storage wins, so re-analyze
+            # instead of failing on the missing file.
+            if already_done and _stored_analysis_missing(MF, "intro", pdf_name, UUID):
+                already_done = None
+
             if already_done:
                 logger.info(f"⏩ Introduction already processed for {pdf_name} :-: {UUID}")
                 _top_up_if_incomplete(MF, "intro", pdf_name, UUID)
@@ -677,6 +709,11 @@ def process_pdf_results_conclusion(file, storage_path=""):
         MF.update_id_files(UUID)
         if log_path and log_path.exists():
             already_done = get_corresponding_value(str(log_path), "UUID", UUID, "file_path")
+            # A log entry can outlive its JSON; storage wins, so re-analyze
+            # instead of failing on the missing file.
+            if already_done and _stored_analysis_missing(MF, "rescon", pdf_name, UUID):
+                already_done = None
+
             if already_done:
                 logger.info(f"⏩ Results & Conclusion already processed for {pdf_name} :-: {UUID}")
                 _top_up_if_incomplete(MF, "rescon", pdf_name, UUID)
