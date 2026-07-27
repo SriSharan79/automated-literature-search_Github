@@ -20,10 +20,13 @@ Two behaviours are added here, once, for all three targets:
 2. **A positional fallback on the location ladder**, used when the analyzer's
    own heading/keyword matching finds nothing: the target's share of the
    document's chunks is scanned and the LLM identifies the section content
-   inside it. The ratios are expressed against the document's **whole** chunk
-   list, so the reference case of 100 chunks gives 1-30 for the abstract,
-   10-40 for the introduction and 60-95 for results/conclusion, and a 60-chunk
-   paper gives 1-18, 7-24 and 37-57.
+   inside it. The ratios are expressed against the document's whole **body**
+   chunk list — back matter (references, appendices, acknowledgements,
+   declarations …) is excluded first, so a review paper whose last third is
+   bibliography cannot have its results/conclusion window land in the
+   reference list. The reference case of 100 body chunks gives 1-30 for the
+   abstract, 10-40 for the introduction and 60-95 for results/conclusion; a
+   60-chunk body gives 1-18, 7-24 and 37-57.
 
 Everything target-specific lives in :data:`TARGETS`; adding a fourth target is
 a new :class:`TargetSpec` row, not new code.
@@ -32,6 +35,7 @@ a new :class:`TargetSpec` row, not new code.
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
@@ -68,6 +72,32 @@ FOLLOW_UP_CHUNKS = 3
 # Upper bound on the text handed to an identification call, so a positional
 # window over a long document cannot blow the model's context.
 MAX_IDENTIFY_CHARS = 40000
+
+# Section headings that carry no body content. Positional windows are computed
+# over the document with these removed, so a long bibliography cannot push the
+# results & conclusion window into the reference list. Matched as whole
+# normalized headings (see `is_back_matter`) so body sections that merely start
+# with one of these words - "Reference Architecture", "Reference Model" - stay.
+BACK_MATTER_LABELS = frozenset({
+    "reference", "references", "reference list", "list of references",
+    "bibliography", "literature cited", "works cited",
+    "acknowledgment", "acknowledgments", "acknowledgement", "acknowledgements",
+    "funding", "funding information", "funding statement",
+    "conflict of interest", "conflicts of interest",
+    "declaration of competing interest", "declarations", "disclosure",
+    "author contributions", "author contribution statement",
+    "about the authors", "author biographies", "biographies",
+    "data availability", "data availability statement",
+    "supplementary material", "supplementary materials",
+    "supplementary information", "supporting information",
+    "ethics statement", "ethical approval",
+    "abbreviations", "list of abbreviations", "nomenclature", "glossary",
+    "notes", "endnotes", "footnotes",
+    "table of contents", "contents", "list of figures", "list of tables",
+})
+
+# Headings whose first word alone identifies back matter.
+BACK_MATTER_PREFIX_RE = re.compile(r"^(appendix|appendices|annex(e|es)?)\b")
 
 
 @dataclass(frozen=True)
@@ -190,15 +220,85 @@ def load_chunks(MF) -> list[str]:
     return [str(c) for c in (chunks or [])]
 
 
+def is_back_matter(section_name) -> bool:
+    """
+    True for the standard non-body sections that trail (or bracket) a paper:
+    references, appendices, acknowledgements, funding, declarations and the
+    like.
+
+    Matching is deliberately strict — the normalized heading has to *be* one
+    of these labels, not merely contain one — because domain headings such as
+    "Reference Architecture" or "Reference Model" are ordinary body sections
+    and must not be dropped.
+    """
+    if not isinstance(section_name, str):
+        return False
+    # Strip section numbering ("5.", "A.", "IV -") and trailing punctuation.
+    low = re.sub(r"^[\s\d\.\)\-–—:]+", "", section_name).strip().lower()
+    low = low.strip(" \t:.-–—").strip()
+    if not low:
+        return False
+    if low in BACK_MATTER_LABELS:
+        return True
+    return bool(BACK_MATTER_PREFIX_RE.match(low))
+
+
+def load_body_chunks(MF) -> list[str]:
+    """
+    The document's chunks with the back-matter sections removed, so positional
+    ratios are taken over the paper's body rather than over its bibliography.
+
+    A review paper can spend its last 30-40% on references; without this the
+    results & conclusion window (60-95%) would land in the reference list.
+    Falls back to the full chunk list when filtering leaves nothing — an
+    unsectioned document is better served by a rough window than by none.
+    """
+    try:
+        with open(MF.raw_sec_json_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError, OSError, TypeError):
+        return load_chunks(MF)
+
+    if not isinstance(data, list):
+        return load_chunks(MF)
+
+    body: list[str] = []
+    dropped: list[str] = []
+    for entry in data:
+        if not isinstance(entry, dict):
+            continue
+        name = entry.get("Section Name")
+        chunks = entry.get("Chunks") or []
+        flat = [
+            f"{item[0]} {str(item[1]).strip()}"
+            if isinstance(item, (list, tuple)) and len(item) >= 2
+            else str(item)
+            for item in chunks
+        ]
+        if is_back_matter(name):
+            if flat:
+                dropped.append(str(name).strip())
+            continue
+        body.extend(flat)
+
+    if not body:
+        return load_chunks(MF)
+
+    if dropped:
+        print(f"ℹ Back matter excluded from positional windows: {', '.join(dropped)}")
+    return body
+
+
 def chunk_window(chunks: list[str], spec: TargetSpec) -> tuple[int, int]:
     """
     The positional slice of `chunks` where `spec`'s content usually lives.
 
-    The ratios are taken against the document's **entire** chunk list, so the
-    reference case of 100 chunks yields 0-30 (abstract), 10-40 (introduction)
-    and 60-95 (results & conclusion), and any other document is scaled to the
-    same proportions. The window is only ever clamped to keep at least one
-    chunk inside it.
+    The ratios are taken against the whole list handed in — which is the
+    document's **body** (see :func:`load_body_chunks`) — so the reference case
+    of 100 body chunks yields 0-30 (abstract), 10-40 (introduction) and 60-95
+    (results & conclusion), and any other document is scaled to the same
+    proportions. The window is only ever clamped to keep at least one chunk
+    inside it.
     """
     n = len(chunks)
     if n == 0:
@@ -217,8 +317,8 @@ def _clip(text: str) -> str:
 # ---------------------------------------------------------------------------
 
 def identify_via_window(MF, spec: TargetSpec, llm_service) -> tuple[str, list[str]]:
-    """Scan the target's share of the document's chunks and identify the content."""
-    chunks = load_chunks(MF)
+    """Scan the target's share of the document body and identify the content."""
+    chunks = load_body_chunks(MF)
     if not chunks:
         return "", []
 
@@ -229,7 +329,7 @@ def identify_via_window(MF, spec: TargetSpec, llm_service) -> tuple[str, list[st
 
     print(
         Fore.BLUE
-        + f"\nLocating {spec.label} positionally: chunks {start + 1}-{end} of {len(chunks)}."
+        + f"\nLocating {spec.label} positionally: body chunks {start + 1}-{end} of {len(chunks)}."
         + Style.RESET_ALL
     )
 
@@ -277,12 +377,13 @@ def follow_up_text(MF, spec: TargetSpec, section_text: str,
     """
     The next `count` chunks after the ones the section text came from.
 
-    The section text is matched back onto the chunk list by looking for the
-    last chunk whose body appears in it; when nothing matches (LLM-rewritten
+    The section text is matched back onto the body chunk list by looking for
+    the last chunk whose body appears in it; when nothing matches (LLM-rewritten
     text, for instance) the chunks just after the target's positional window
-    are used instead.
+    are used instead. Back matter is excluded, so a top-up never pulls the
+    bibliography in as "additional context".
     """
-    chunks = load_chunks(MF)
+    chunks = load_body_chunks(MF)
     if not chunks:
         return ""
 
