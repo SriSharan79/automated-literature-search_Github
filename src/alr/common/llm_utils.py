@@ -764,22 +764,35 @@ def vectorize_strings_local(input_strings: list, max_length: int = 512, batch_si
     def _encode(pool):
         # One forward pass over the given pool; raises on OOM etc. so
         # _embed_in_halves can retry with smaller pools.
-        with torch.inference_mode():
-            batch = tokenizer(
-                list(pool),
-                padding=True,
-                truncation=True,
-                max_length=max_length,
-                return_tensors="pt",
-            )
-            batch = {k: v.to(model.device) for k, v in batch.items()}
+        batch = outputs = emb = None
+        try:
+            with torch.inference_mode():
+                batch = tokenizer(
+                    list(pool),
+                    padding=True,
+                    truncation=True,
+                    max_length=max_length,
+                    return_tensors="pt",
+                )
+                batch = {k: v.to(model.device) for k, v in batch.items()}
 
-            outputs = model(**batch)
-            emb = last_token_pool(outputs.last_hidden_state, batch["attention_mask"])
+                outputs = model(**batch)
+                emb = last_token_pool(outputs.last_hidden_state, batch["attention_mask"])
 
-            # Normalise => cosine similarity works with inner product / L2
-            emb = F.normalize(emb, p=2, dim=1)
-            return list(emb.detach().cpu().numpy().astype(np.float32))
+                # Normalise => cosine similarity works with inner product / L2
+                emb = F.normalize(emb, p=2, dim=1)
+                return list(emb.detach().cpu().numpy().astype(np.float32))
+        except Exception:
+            # OOM (or other failure): drop this pass's GPU tensors and clear the
+            # CUDA cache so _embed_in_halves' smaller retry starts from a clean
+            # allocator instead of inheriting the leaked block and OOMing again.
+            batch = outputs = emb = None
+            try:
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+            except Exception:
+                pass
+            raise
 
     _start = time.time()
     activity_monitor.begin("embed", "local", embedding_model_repo_id)
