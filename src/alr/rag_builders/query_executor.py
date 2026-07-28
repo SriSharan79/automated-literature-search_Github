@@ -11,7 +11,7 @@ from alr.common.excel_utils import extract_column, get_column_value
 import json
 from datetime import datetime
 from alr.common.file_manager import DataAnalyzeManager, Vec_DB_Manager
-from alr.common.file_handlers import move_matching_pdfs,copy_file,copy_matching_pdfs,copy_matching_jsons,sanitize_path_length
+from alr.common.file_handlers import move_matching_pdfs,copy_file,copy_matching_pdfs,copy_matching_jsons,sanitize_path_length,index_jsons_under_root
 from alr.common.excel_utils import aggregate_query_excel_data
 from alr.rag_builders.vector_db_updater import search_similar
 from alr.rag_builders.master_excel_db_builder import _append_skiplog, _skip_row
@@ -435,26 +435,9 @@ def _log_query_run(log_path, row: dict) -> None:
         print(f"{Fore.RED}   [!] Could not write the query log: {e}")
 
 
-def _index_jsons_under_root(wanted_names, search_root):
-    """
-    One recursive pass over ``search_root`` mapping each wanted
-    ``<uuid><suffix>`` filename to its path. Used as a fallback source when a
-    JSON isn't present in the space's own analysis folders (e.g. a common/
-    combined DB). Returns ``{}`` for a missing/empty root or target set.
-    """
-    found = {}
-    targets = set(wanted_names)
-    if not search_root or not targets:
-        return found
-    root = Path(search_root)
-    if not root.is_dir():
-        return found
-    for p in root.rglob("*.json"):
-        if p.name in targets:
-            found[p.name] = p
-            if len(found) == len(targets):
-                break
-    return found
+# The search-root fallback lives in file_handlers so the storage->SQL sync
+# resolves a document's analysis JSON exactly the way this enrichment does.
+_index_jsons_under_root = index_jsons_under_root
 
 
 def enrich_overview_with_abstracts(overview_path, json_folders, enrich_keys=None, search_root=None):

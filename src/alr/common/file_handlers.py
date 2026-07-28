@@ -145,3 +145,29 @@ def copy_file(src, dest_dir):
         print(f"Failed to copy {src}: {e}")
 
 
+
+def index_jsons_under_root(wanted_names, search_root):
+    """
+    One recursive pass over ``search_root`` mapping each wanted JSON filename
+    (``<uuid><suffix>.json``) to its path.
+
+    The fallback source for analysis JSONs that are not in a space's own
+    analysis folders — a common/combined DB holds the built databases but no
+    per-document analysis files, and a space can be moved or pruned away from
+    them. Shared by the query enrichment and the storage→SQL sync so both
+    resolve a document's JSON the same way. Returns ``{}`` for a missing/empty
+    root or target set; one pass regardless of how many files are wanted.
+    """
+    found = {}
+    targets = set(wanted_names)
+    if not search_root or not targets:
+        return found
+    root = Path(search_root)
+    if not root.is_dir():
+        return found
+    for p in root.rglob("*.json"):
+        if p.name in targets:
+            found[p.name] = p
+            if len(found) == len(targets):
+                break
+    return found

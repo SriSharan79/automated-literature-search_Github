@@ -39,7 +39,7 @@ def _provider_code(value):
     if s.upper() in _CODE_TO_SERVICE:
         return s.upper()
     return _DISPLAY_TO_CODE.get(s.lower(), "B")
-from alr.common.sql_store import sync_storage_to_sql
+from alr.common.sql_store import sync_storage_to_sql, set_default_search_root as set_sql_search_root
 from alr.common import crash_logger
 from alr.ui.desktop.review_app import open_review_app
 from alr.ui.desktop._async import run_threaded, make_scrollable_tab
@@ -2020,6 +2020,12 @@ class AutomatedLiteratureUI(tk.Tk):
         sr_frame.pack(fill="x", padx=5, pady=(0, 5))
         ttk.Label(sr_frame, text="Enrichment JSON search root:").pack(side="left", padx=5)
         self.search_root_var = tk.StringVar(value="")
+        # The same root is the fallback the storage->SQL sync uses to find the
+        # analysis JSONs a space doesn't hold, so intro/rescon attribute columns
+        # fill in for a common DB too. Kept in step with the field (which the
+        # session restore and the mid-query folder prompt both write).
+        self.search_root_var.trace_add(
+            "write", lambda *_: set_sql_search_root(self.search_root_var.get().strip()))
         ttk.Entry(sr_frame, textvariable=self.search_root_var, width=48).pack(side="left", padx=5)
         ttk.Button(sr_frame, text="Browse...",
                    command=lambda: self._browse_into_var(self.search_root_var,

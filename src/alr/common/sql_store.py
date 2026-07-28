@@ -608,7 +608,69 @@ def _apply_section_values(record: dict, data: dict, columns: dict) -> None:
             record[col] = str(value)
 
 
-def _record_from_registry_row(row: dict, manager: DataAnalyzeManager,enrichment_data: dict = None) -> dict:
+# Optional search root used to locate analysis JSONs that are not in the space
+# being synced (a common/combined DB holds the built databases but no analysis
+# folders). The UI sets this from its remembered "Enrichment JSON search root"
+# so every sync — Tab 1's finalization, the Tab 5 passes, per-document syncs —
+# picks it up without threading the argument through every call site.
+_DEFAULT_SEARCH_ROOT = None
+
+
+def set_default_search_root(path) -> None:
+    """Set (or clear, with None/'') the fallback root for analysis JSONs."""
+    global _DEFAULT_SEARCH_ROOT
+    _DEFAULT_SEARCH_ROOT = str(path).strip() or None if path else None
+
+
+def get_default_search_root():
+    return _DEFAULT_SEARCH_ROOT
+
+
+def _analysis_json_names(uuid: str) -> dict:
+    """``{source: filename}`` of the three analysis JSONs of one document."""
+    return {"abstract": f"{uuid}_Abstract.json",
+            "intro": f"{uuid}_Intro.json",
+            "rescon": f"{uuid}_Results_Conclusion.json"}
+
+
+def _locate_missing_analysis_jsons(uuids, manager, search_root) -> dict:
+    """
+    ``{filename: path}`` for the analysis JSONs the space itself does not hold,
+    found under ``search_root``. ONE recursive pass for the whole sync, and
+    nothing at all when the space is complete or no root is configured.
+    """
+    root = search_root or _DEFAULT_SEARCH_ROOT
+    if not root:
+        return {}
+    wanted = set()
+    for uuid in uuids:
+        names = _analysis_json_names(uuid)
+        for folder, name in ((manager.AD_Abstract, names["abstract"]),
+                             (manager.AD_Intro, names["intro"]),
+                             (manager.AD_ResCon, names["rescon"])):
+            if not os.path.exists(os.path.join(folder, name)):
+                wanted.add(name)
+    if not wanted:
+        return {}
+    from alr.common.file_handlers import index_jsons_under_root
+    found = index_jsons_under_root(wanted, root)
+    if found:
+        print(f"Located {len(found)} analysis JSON(s) missing from the space under {root}.")
+    return found
+
+
+def _analysis_json_path(manager, folder, uuid, source, located) -> str:
+    """The document's analysis JSON in the space, else the located fallback."""
+    name = _analysis_json_names(uuid)[source]
+    in_space = os.path.join(folder, name)
+    if os.path.exists(in_space):
+        return in_space
+    return str(located.get(name, in_space))
+
+
+def _record_from_registry_row(row: dict, manager: DataAnalyzeManager,
+                              enrichment_data: dict = None,
+                              located_jsons: dict = None) -> dict:
     """Build a documents record from one registry row + the on-disk JSON files."""
     uuid = str(row.get("UUID") or "").strip()
     record = {
@@ -625,8 +687,10 @@ def _record_from_registry_row(row: dict, manager: DataAnalyzeManager,enrichment_
         "source_folder": str(manager.folder),
     }
 
+    located = located_jsons or {}
+
     # Abstract JSON -> section columns + abstract text.
-    abstract_path = os.path.join(manager.AD_Abstract, f"{uuid}_Abstract.json")
+    abstract_path = _analysis_json_path(manager, manager.AD_Abstract, uuid, "abstract", located)
     abstract_data, _ = _read_json(abstract_path)
     if abstract_data:
         for spec in ALR_SECTIONS:
@@ -641,14 +705,15 @@ def _record_from_registry_row(row: dict, manager: DataAnalyzeManager,enrichment_
     # Introduction analysis JSON -> its own attribute columns + identified text
     # (mirrors the abstract mapping above; query_executor's enrichment reads the
     # very same keys out of the very same file).
-    intro_path = os.path.join(manager.AD_Intro, f"{uuid}_Intro.json")
+    intro_path = _analysis_json_path(manager, manager.AD_Intro, uuid, "intro", located)
     intro_data, intro_raw = _read_json(intro_path)
     _apply_section_values(record, intro_data, INTRO_SECTION_COLUMNS)
     if intro_data:
         record["introduction_text"] = intro_data.get(INTRO_TEXT_KEY)
 
     # Results & Conclusion analysis JSON -> its own attribute columns + text.
-    rescon_data, _ = _read_json(os.path.join(manager.AD_ResCon, f"{uuid}_Results_Conclusion.json"))
+    rescon_data, _ = _read_json(
+        _analysis_json_path(manager, manager.AD_ResCon, uuid, "rescon", located))
     _apply_section_values(record, rescon_data, RESCON_SECTION_COLUMNS)
     if rescon_data:
         record["rescon_text"] = rescon_data.get(RESCON_TEXT_KEY)
@@ -667,7 +732,18 @@ def _record_from_registry_row(row: dict, manager: DataAnalyzeManager,enrichment_
     return record
 
 
-def sync_storage_to_sql(manager_or_folder, db_path=DB_PATH,progress_callback=None) -> int:
+def sync_storage_to_sql(manager_or_folder, db_path=DB_PATH, progress_callback=None,
+                        search_root=None) -> int:
+    """
+    Sync a storage space's analysis output into the database.
+
+    ``search_root``: optional folder searched (recursively, once per sync) for
+    the analysis JSONs the space itself does not hold — the same fallback the
+    query enrichment uses, so a common/combined DB or a space that was moved
+    away from its analysis files still fills its attribute columns. Defaults to
+    :func:`set_default_search_root`'s value; without either, only the space's
+    own files are read.
+    """
     import pandas as pd
     import glob
     import os
@@ -692,6 +768,11 @@ def sync_storage_to_sql(manager_or_folder, db_path=DB_PATH,progress_callback=Non
     synced = 0
     total_docs = len(df) # Get total number of documents to sync
 
+    # One recursive pass for every analysis JSON this space is missing (no-op
+    # when the space is complete or no search root is configured).
+    uuids = [str(r.get("UUID") or "").strip() for _, r in df.iterrows()]
+    located = _locate_missing_analysis_jsons([u for u in uuids if u], manager, search_root)
+
     for index, row in df.iterrows():
         row_dict = row.to_dict()
         uuid = str(row_dict.get("UUID") or "").strip()
@@ -699,7 +780,8 @@ def sync_storage_to_sql(manager_or_folder, db_path=DB_PATH,progress_callback=Non
         if not uuid:
             continue
 
-        store.upsert_document(_record_from_registry_row(row_dict, manager))
+        store.upsert_document(
+            _record_from_registry_row(row_dict, manager, located_jsons=located))
         synced += 1
 
         if progress_callback:
@@ -899,7 +981,7 @@ def _merge_space_classification_files(store, manager) -> int:
     return updated
 
 
-def sync_one_document(manager_or_folder, filename, db_path=DB_PATH) -> bool:
+def sync_one_document(manager_or_folder, filename, db_path=DB_PATH, search_root=None) -> bool:
     """
     Sync a single document (matched by ``filename``) from a storage space's
     registry into the SQLite store. Used by the per-document batch pipeline to
@@ -938,7 +1020,10 @@ def sync_one_document(manager_or_folder, filename, db_path=DB_PATH) -> bool:
     store = AnalyzedDataStore(db_path)
     # Newest matching row wins if a filename somehow appears more than once.
     row_dict = match.iloc[-1].to_dict()
-    if not str(row_dict.get("UUID") or "").strip():
+    uuid = str(row_dict.get("UUID") or "").strip()
+    if not uuid:
         return False
-    store.upsert_document(_record_from_registry_row(row_dict, manager))
+    located = _locate_missing_analysis_jsons([uuid], manager, search_root)
+    store.upsert_document(
+        _record_from_registry_row(row_dict, manager, located_jsons=located))
     return True
