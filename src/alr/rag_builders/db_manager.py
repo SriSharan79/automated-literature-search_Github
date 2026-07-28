@@ -172,67 +172,88 @@ def _sync_sections_VDB(VDB, sections, rebuild: bool = False):
     sections: {key: (bin_path, excel_path)} — from build_sections_map_vdb_excel.
 
     rebuild=False (default): incremental — appends strings[vec_count:] when
-        the Excel has more rows than the index. NOTE: incremental append is
-        only positionally valid AFTER a one-time rebuild, because existing
-        indexes were built in JSON order. Any count mismatch in the other
-        direction (index > Excel) is reported with instructions instead of
-        being silently skipped.
+        the Excel has more rows than the index. A mismatch in the other
+        direction (index > Excel: the index predates the Excel-sourced sync,
+        or rows were removed) means its positions no longer match the Excel,
+        so THAT attribute is rebuilt from the Excel automatically — no
+        separate rebuild_vector_databases run is needed.
     rebuild=True: re-embed every section from the Excel from scratch. Run
         once when migrating from the JSON-sourced indexes, or whenever
         entries were edited/removed (append-only sync can't see those).
+
+    One attribute that cannot be synced is skipped; the rest still run.
+    Returns {section key: error} for whatever failed (empty when all good).
     """
+    failures = {}
     for key, (VDB_path, ex_path) in sections.items():
-        print(Fore.LIGHTBLUE_EX + f"\n— Section: {key}" + Style.RESET_ALL)
-        strings = _excel_content_strings(ex_path)
-        str_count = len(strings)
+        try:
+            _sync_one_section_VDB(VDB, key, VDB_path, ex_path, rebuild)
+        except Exception as e:  # noqa: BLE001 - one bad index must not stop the rest
+            print(Fore.RED + f"   ❌ Vector sync failed for '{key}' ({type(e).__name__}: {e}); "
+                             f"continuing with the next attribute." + Style.RESET_ALL)
+            failures[key] = f"{type(e).__name__}: {e}"
+    return failures
 
-        if str_count == 0:
-            print(Fore.YELLOW + f"   ⏭️  No Excel content for '{key}'. Skipping (index left untouched)." + Style.RESET_ALL)
-            continue
 
-        if rebuild:
-            print(Fore.CYAN + f"   🔄 Rebuilding index from Excel ({str_count} rows)..." + Style.RESET_ALL)
+def _sync_one_section_VDB(VDB, key, VDB_path, ex_path, rebuild):
+    """One attribute's index-vs-Excel sync (see _sync_sections_VDB)."""
+    print(Fore.LIGHTBLUE_EX + f"\n— Section: {key}" + Style.RESET_ALL)
+    strings = _excel_content_strings(ex_path)
+    str_count = len(strings)
+
+    if str_count == 0:
+        print(Fore.YELLOW + f"   ⏭️  No Excel content for '{key}'. Skipping (index left untouched)." + Style.RESET_ALL)
+        return
+
+    if rebuild:
+        print(Fore.CYAN + f"   🔄 Rebuilding index from Excel ({str_count} rows)..." + Style.RESET_ALL)
+        vec_count = _rebuild_section_index(VDB_path, strings)
+        update_VDB_status(VDB, key, str_count, vec_count)
+        print(Fore.GREEN + f"   ✅ Rebuilt: {key} ({vec_count} vectors)" + Style.RESET_ALL)
+        return
+
+    index = load_index_file(VDB_path)
+    if index:
+        vec_count = getattr(index, "ntotal", 0) or 0
+        print(f"   • Existing vectors in index: {vec_count} | Excel rows: {str_count}")
+
+        if str_count == vec_count:
+            print(Fore.YELLOW + "   ⏭️  No sync needed (Excel rows == vectors)." + Style.RESET_ALL)
+            update_VDB_status(VDB, key, str_count, vec_count)
+            return
+
+        if vec_count > str_count:
+            # The index is out of step with its Excel (it predates the
+            # Excel-sourced sync, or rows were removed). An index whose
+            # positions no longer match the Excel returns wrong rows for
+            # every query, so heal it here instead of asking the user to
+            # run a separate rebuild: re-embed THIS attribute only.
+            print(Fore.YELLOW
+                  + f"   ♻️  Index has more vectors ({vec_count}) than Excel rows ({str_count}); "
+                  + f"rebuilding '{key}' from the Excel to restore alignment..."
+                  + Style.RESET_ALL)
             vec_count = _rebuild_section_index(VDB_path, strings)
             update_VDB_status(VDB, key, str_count, vec_count)
-            print(Fore.GREEN + f"   ✅ Rebuilt: {key} ({vec_count} vectors)" + Style.RESET_ALL)
-            continue
+            print(Fore.GREEN + f"   ✅ Realigned: {key} ({vec_count} vectors)" + Style.RESET_ALL)
+            return
 
-        index = load_index_file(VDB_path)
-        if index:
-            vec_count = getattr(index, "ntotal", 0) or 0
-            print(f"   • Existing vectors in index: {vec_count} | Excel rows: {str_count}")
+        new_strings = strings[vec_count:]
+        print(Fore.CYAN + f"   ➕ Adding {len(new_strings)} new strings to index..." + Style.RESET_ALL)
 
-            if str_count == vec_count:
-                print(Fore.YELLOW + "   ⏭️  No sync needed (Excel rows == vectors)." + Style.RESET_ALL)
-                update_VDB_status(VDB, key, str_count, vec_count)
-                continue
+        add_new_strings_to_index(VDB_path, new_strings)
 
-            if vec_count > str_count:
-                print(Fore.RED
-                      + f"   ⚠️  Index has more vectors ({vec_count}) than Excel rows ({str_count}). "
-                      + f"This index predates the Excel-sourced sync (or rows were removed). "
-                      + f"Run the sync with rebuild=True (rebuild_vector_databases) to fix alignment."
-                      + Style.RESET_ALL)
-                update_VDB_status(VDB, key, str_count, vec_count)
-                continue
+        print(Fore.CYAN + "   📝 Updating VDB status log..." + Style.RESET_ALL)
+        index_in = load_index_file(VDB_path)
+        vec_count = index_in.ntotal
+        update_VDB_status(VDB, key, str_count, vec_count)
 
-            new_strings = strings[vec_count:]
-            print(Fore.CYAN + f"   ➕ Adding {len(new_strings)} new strings to index..." + Style.RESET_ALL)
-
-            add_new_strings_to_index(VDB_path, new_strings)
-
-            print(Fore.CYAN + "   📝 Updating VDB status log..." + Style.RESET_ALL)
-            index_in = load_index_file(VDB_path)
-            vec_count = index_in.ntotal
-            update_VDB_status(VDB, key, str_count, vec_count)
-
-            print(Fore.GREEN + f"   ✅ Done: {key} (added {len(new_strings)} vectors)" + Style.RESET_ALL)
-        else:
-            print(Fore.YELLOW + "   🆕 No existing index found. Creating a new FAISS index from Excel..." + Style.RESET_ALL)
-            vec_count = _rebuild_section_index(VDB_path, strings)
-            print(Fore.CYAN + "   📝 Updating VDB status log..." + Style.RESET_ALL)
-            update_VDB_status(VDB, key, str_count, vec_count)
-            print(Fore.GREEN + f"   ✅ Created index and synced: {key}" + Style.RESET_ALL)
+        print(Fore.GREEN + f"   ✅ Done: {key} (added {len(new_strings)} vectors)" + Style.RESET_ALL)
+    else:
+        print(Fore.YELLOW + "   🆕 No existing index found. Creating a new FAISS index from Excel..." + Style.RESET_ALL)
+        vec_count = _rebuild_section_index(VDB_path, strings)
+        print(Fore.CYAN + "   📝 Updating VDB status log..." + Style.RESET_ALL)
+        update_VDB_status(VDB, key, str_count, vec_count)
+        print(Fore.GREEN + f"   ✅ Created index and synced: {key}" + Style.RESET_ALL)
 
 
 def rebuild_vector_databases(Storage_path):
@@ -915,7 +936,9 @@ def build_common_database(source_paths, common_path, match_filename: bool = True
             progress_callback(done, total, "Syncing vector indexes (new entries only)…")
         try:
             secs_VDB = build_sections_map_vdb_excel(VDB, only=all_keys)
-            _sync_sections_VDB(VDB, secs_VDB, rebuild=False)
+            for sec_key, err in _sync_sections_VDB(VDB, secs_VDB, rebuild=False).items():
+                skipped_rows.append(_skip_row("vector-sync", err, filename="<vector index>",
+                                              sections=sec_key))
         except Exception as e:
             print(Fore.RED + f"❌ Vector index sync failed ({type(e).__name__}: {e}); the text DB is "
                              f"still updated — re-run the build to retry the indexes.")

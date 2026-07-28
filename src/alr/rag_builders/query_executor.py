@@ -14,8 +14,14 @@ from alr.common.file_manager import DataAnalyzeManager, Vec_DB_Manager
 from alr.common.file_handlers import move_matching_pdfs,copy_file,copy_matching_pdfs,copy_matching_jsons,sanitize_path_length
 from alr.common.excel_utils import aggregate_query_excel_data
 from alr.rag_builders.vector_db_updater import search_similar
+from alr.rag_builders.master_excel_db_builder import _append_skiplog, _skip_row
 # Initialize colorama (autoreset ensures colors don't bleed into the next line)
 init(autoreset=True)
+
+# Attributes/queries a query run could not search or report. One failure never
+# stops the run: it is skipped, recorded here (beside the query results) and
+# the run continues.
+QUERY_SKIPPED_LOG = "Query_not_added.xlsx"
 
 
 
@@ -187,92 +193,124 @@ def generate_query_report(query_list, storage_path, search_root='/remotedata/U/D
         if progress_callback:
             progress_callback(done_units, total_units, text)
 
+    not_added = []
     for idx, query in enumerate(query_list, 1):
         print(f"\n{Back.BLUE}{Fore.WHITE}{Style.BRIGHT} [{idx}/{len(query_list)}] Processing query: '{query}' ")
         started_at = datetime.now()
-        vdb.update_query_folder(query)
+        try:
+            vdb.update_query_folder(query)
+        except Exception as e:
+            print(f"{Fore.RED}   [!] Could not prepare the query folder for '{query}' "
+                  f"({type(e).__name__}: {e}) — skipped, continuing with the next query.")
+            not_added.append(_skip_row("query", e, title=query))
+            continue
 
         # 1. Generate individual attribute reports (into the per-query
-        #    Attribute_Query_Results sub-folder).
+        #    Attribute_Query_Results sub-folder). One attribute that cannot be
+        #    searched (no index, index/Excel mismatch, unreadable file) is
+        #    skipped and recorded; the query still produces its report.
         print(f"{Fore.CYAN} > [Step 1] Generating individual attribute reports...")
         for attr, (_ex, _j, bin_path) in sec_map.items():
-            process_attribute_query(query, attr, _ex, bin_path, vdb, top_k=top_k)
+            try:
+                reason = process_attribute_query(query, attr, _ex, bin_path, vdb, top_k=top_k)
+            except Exception as e:
+                print(f"{Fore.RED}   [!] Attribute '{attr}' failed ({type(e).__name__}: {e}) "
+                      f"— skipped, continuing with the next attribute.")
+                reason = f"{type(e).__name__}: {e}"
+            if reason:
+                not_added.append(_skip_row("attribute", reason, title=query, sections=attr))
             tick(f"Searched section: {attr}")
 
-        # 2. Generate the Overview Report from the attribute Excels (which now
-        #    live in their own sub-folder, so the overview sits alone in the
-        #    query folder root instead of amongst repeated attribute Excels).
-        print(f"{Fore.CYAN} > [Step 2] Aggregating results into Overview Report...")
-        overview_path = Path(vdb.query_storage) / f"{query}_query_Overview_report.xlsx"
-        overview_path = sanitize_path_length(overview_path)
-        aggregate_query_excel_data(vdb.query_attr_storage, "Title", overview_path)
-        print(f"{Fore.GREEN}   - Overview saved: {overview_path}")
-        tick("Aggregated the overview report")
+        try:
+            # 2. Generate the Overview Report from the attribute Excels (which now
+            #    live in their own sub-folder, so the overview sits alone in the
+            #    query folder root instead of amongst repeated attribute Excels).
+            print(f"{Fore.CYAN} > [Step 2] Aggregating results into Overview Report...")
+            overview_path = Path(vdb.query_storage) / f"{query}_query_Overview_report.xlsx"
+            overview_path = sanitize_path_length(overview_path)
+            aggregate_query_excel_data(vdb.query_attr_storage, "Title", overview_path)
+            print(f"{Fore.GREEN}   - Overview saved: {overview_path}")
+            tick("Aggregated the overview report")
 
-        # 3. Enrich the overview with the analyzed attribute data. This ALWAYS
-        #    runs -- data enrichment no longer depends on the optional file
-        #    harvest. Harvesting (copying the JSON files next to the report) is
-        #    still the user's choice; when it's off we read the JSONs straight
-        #    from the space's analysis folders, falling back to a search of
-        #    ``search_root`` so a common/combined DB (whose own analysis folders
-        #    are empty) still gets enriched.
-        space_folders = {
-            "abstract": mf.AD_Abstract,
-            "intro": mf.AD_Intro,
-            "rescon": mf.AD_ResCon,
-        }
-        if harvest_files:
-            print(f"{Fore.CYAN} > [Step 3] Harvesting associated resources (PDFs/JSONs) and enriching...")
-            enriched = harvest_query_resources(overview_path, search_root, vdb, mf, enrich_keys=enrich_keys)
-        else:
-            print(f"{Fore.CYAN} > [Step 3] No file harvest (user choice) — enriching the "
-                  "overview from the space's analysis JSONs (with a search-root fallback)...")
-            enriched = enrich_overview_with_abstracts(
-                overview_path, space_folders, enrich_keys=enrich_keys, search_root=search_root)
-
-        # If nothing could be enriched (the space holds no analysis JSONs and the
-        # current search root didn't turn any up), ask the caller for a better
-        # search root and retry once. The UI pops a folder picker and remembers
-        # the choice for the next queries.
-        if not enriched and resolve_search_root is not None:
-            print(f"{Fore.YELLOW}   - No attribute data found under the current search root; "
-                  "asking for a search location...")
-            new_root = resolve_search_root()
-            if new_root:
-                search_root = new_root
+            # 3. Enrich the overview with the analyzed attribute data. This ALWAYS
+            #    runs -- data enrichment no longer depends on the optional file
+            #    harvest. Harvesting (copying the JSON files next to the report) is
+            #    still the user's choice; when it's off we read the JSONs straight
+            #    from the space's analysis folders, falling back to a search of
+            #    ``search_root`` so a common/combined DB (whose own analysis folders
+            #    are empty) still gets enriched.
+            space_folders = {
+                "abstract": mf.AD_Abstract,
+                "intro": mf.AD_Intro,
+                "rescon": mf.AD_ResCon,
+            }
+            if harvest_files:
+                print(f"{Fore.CYAN} > [Step 3] Harvesting associated resources (PDFs/JSONs) and enriching...")
+                enriched = harvest_query_resources(overview_path, search_root, vdb, mf, enrich_keys=enrich_keys)
+            else:
+                print(f"{Fore.CYAN} > [Step 3] No file harvest (user choice) — enriching the "
+                      "overview from the space's analysis JSONs (with a search-root fallback)...")
                 enriched = enrich_overview_with_abstracts(
-                    overview_path, space_folders, enrich_keys=enrich_keys, search_root=new_root)
-        tick("Enriched the report")
+                    overview_path, space_folders, enrich_keys=enrich_keys, search_root=search_root)
 
-        # 4. Append this query's details to the space's rolling query log.
-        elapsed = (datetime.now() - started_at).total_seconds()
-        _log_query_run(vdb.query_log_excel, {
-            "Timestamp": started_at.strftime("%Y-%m-%d %H:%M:%S"),
-            "Query": query,
-            "Space Queried": str(storage_path),
-            "Model Used": _embedding_model_label(),
-            "Sections Queried": ", ".join(sec_map.keys()),
-            "Attributes Included": ", ".join(
-                enrich_keys if enrich_keys is not None else [s.key for s in _default_enrich_sections()]),
-            "Top K": top_k,
-            "Files Harvested": "Yes" if harvest_files else "No",
-            "Time Taken (s)": round(elapsed, 2),
-            "Overview Excel": Path(overview_path).name,
-            "Overview Path": str(overview_path),
-        })
+            # If nothing could be enriched (the space holds no analysis JSONs and the
+            # current search root didn't turn any up), ask the caller for a better
+            # search root and retry once. The UI pops a folder picker and remembers
+            # the choice for the next queries.
+            if not enriched and resolve_search_root is not None:
+                print(f"{Fore.YELLOW}   - No attribute data found under the current search root; "
+                      "asking for a search location...")
+                new_root = resolve_search_root()
+                if new_root:
+                    search_root = new_root
+                    enriched = enrich_overview_with_abstracts(
+                        overview_path, space_folders, enrich_keys=enrich_keys, search_root=new_root)
+            tick("Enriched the report")
 
-        print(f"{Fore.GREEN}{Style.BRIGHT}Workflow complete for: '{query}'")
-        print(f"{Fore.LIGHTBLACK_EX}Path: {vdb.query_storage}")
+            # 4. Append this query's details to the space's rolling query log.
+            elapsed = (datetime.now() - started_at).total_seconds()
+            _log_query_run(vdb.query_log_excel, {
+                "Timestamp": started_at.strftime("%Y-%m-%d %H:%M:%S"),
+                "Query": query,
+                "Space Queried": str(storage_path),
+                "Model Used": _embedding_model_label(),
+                "Sections Queried": ", ".join(sec_map.keys()),
+                "Attributes Included": ", ".join(
+                    enrich_keys if enrich_keys is not None else [s.key for s in _default_enrich_sections()]),
+                "Top K": top_k,
+                "Files Harvested": "Yes" if harvest_files else "No",
+                "Time Taken (s)": round(elapsed, 2),
+                "Overview Excel": Path(overview_path).name,
+                "Overview Path": str(overview_path),
+            })
+
+            print(f"{Fore.GREEN}{Style.BRIGHT}Workflow complete for: '{query}'")
+            print(f"{Fore.LIGHTBLACK_EX}Path: {vdb.query_storage}")
+        except Exception as e:
+            print(f"{Fore.RED}   [!] Query '{query}' failed after the attribute search "
+                  f"({type(e).__name__}: {e}) — skipped, continuing with the next query.")
+            not_added.append(_skip_row("report", e, title=query))
+            continue
+
+    if not_added:
+        log_path = _append_skiplog(Path(vdb.results) / QUERY_SKIPPED_LOG, not_added)
+        print(f"{Fore.YELLOW}{Style.BRIGHT}⚠️ {len(not_added)} attribute(s)/query(ies) were skipped"
+              + (f" — see {log_path}" if log_path else ""))
 
     print(f"\n{Fore.MAGENTA}{Style.BRIGHT}--- ALL TASKS FINISHED ---")
+    return not_added
 
 
 def process_attribute_query(query, attr, excel_ref, bin_path, vdb, top_k: int = 50):
+    """Search one attribute's index and write its result Excel.
+
+    Returns None on success, or a short reason string when the attribute was
+    skipped (no index, index/Excel mismatch) so the caller can record it."""
     import faiss
 
     if not bin_path.exists() or bin_path.stat().st_size == 0:
         print(f"{Fore.RED}   [!] Warning: No Vector DB for '{attr}'. Skipping.")
-        return
+        return "no vector index built for this attribute"
 
     print(f"{Fore.LIGHTBLUE_EX}   - Processing attribute: {attr}")
     index = faiss.read_index(str(bin_path))
@@ -280,18 +318,29 @@ def process_attribute_query(query, attr, excel_ref, bin_path, vdb, top_k: int = 
 
     if len(strings) != index.ntotal:
         print(f"{Fore.RED}{Style.BRIGHT}   [!] Data matching error for {attr}")
-        return
+        return (f"index/Excel mismatch: {index.ntotal} vectors vs {len(strings)} rows "
+                f"(rebuild this attribute's index)")
 
     scores, ids = search_similar(bin_path, query, top_k=top_k)
+
+    # Read the section Excel ONCE. This used to call get_column_value per
+    # column per hit, i.e. a full re-read of the workbook for every single
+    # result row (3 x top_k reads per attribute per query).
+    ref_df = pd.read_excel(excel_ref, engine="openpyxl")
+
+    def cell(column, row_idx):
+        if column in ref_df.columns and 0 <= row_idx < len(ref_df):
+            return ref_df[column].iloc[row_idx]
+        return None
 
     result_data = []
     for s, i in zip(scores, ids):
         if i < 0:
             continue  # FAISS pads with -1 when top_k > indexed vectors
         result_data.append({
-            "Original_UUID": get_column_value(excel_ref, "Original_UUID", i),
-            "Title": get_column_value(excel_ref, "Title", i),
-            "Filename": get_column_value(excel_ref, "Filename", i),
+            "Original_UUID": cell("Original_UUID", i),
+            "Title": cell("Title", i),
+            "Filename": cell("Filename", i),
             "Content": strings[i] if i < len(strings) else '(newly added item)',
             "Cosine Similarity": s
         })

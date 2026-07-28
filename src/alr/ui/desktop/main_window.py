@@ -2414,7 +2414,12 @@ class AutomatedLiteratureUI(tk.Tk):
                 progress_callback=lambda d, t, txt: progress(done=d, total=t, text=txt))
             if search_root:
                 kwargs["search_root"] = search_root
-            generate_query_report([query_text], storage_choice, **kwargs)
+            skipped = generate_query_report([query_text], storage_choice, **kwargs) or []
+            if skipped:
+                from alr.rag_builders.query_executor import QUERY_SKIPPED_LOG
+                print(f"[Query] {len(skipped)} attribute(s) could not be searched "
+                      f"(no index, index/Excel mismatch or a read error) — listed in "
+                      f"{QUERY_SKIPPED_LOG} in the query results folder.")
             print("Query Generation Suite Logging Executed successfully.")
             return len(query_sections)
 

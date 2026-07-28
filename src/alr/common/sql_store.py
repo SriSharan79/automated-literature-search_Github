@@ -26,7 +26,10 @@ from datetime import datetime
 from pathlib import Path
 
 from alr.common.file_manager import ALR_main_folder, DataAnalyzeManager
-from alr.common.sections import ALR_SECTIONS
+from alr.common.sections import (
+    ALR_SECTIONS, INTRO_RAG_SECTIONS, INTRO_TEXT_KEY, RESCON_RAG_SECTIONS,
+    RESCON_TEXT_KEY,
+)
 
 # Constant, app-wide database location.
 DB_PATH = Path(ALR_main_folder) / "alr_analyzed_data.db"
@@ -39,6 +42,28 @@ def _slug(section_key: str) -> str:
 
 # Section key -> column name, derived from the canonical registry.
 SECTION_COLUMNS = {spec.key: _slug(spec.key) for spec in ALR_SECTIONS}
+
+
+def _prefixed_slug(prefix: str, section_key: str) -> str:
+    """Column name for a non-abstract attribute ("Gaps & Limitations" ->
+    "intro_gaps_limitations"). Prefixed so intro/rescon keys can never collide
+    with an abstract section column, and sanitized because these keys contain
+    characters ('&') that are not valid in a column name."""
+    import re
+    slug = re.sub(r"[^a-z0-9]+", "_", str(section_key).strip().lower()).strip("_")
+    return f"{prefix}_{slug}"
+
+
+# The analyzed Introduction / Results & Conclusion attributes get their own
+# columns, filled from {uuid}_Intro.json / {uuid}_Results_Conclusion.json the
+# same way the abstract attributes are filled from {uuid}_Abstract.json.
+INTRO_SECTION_COLUMNS = {spec.key: _prefixed_slug("intro", spec.key)
+                         for spec in INTRO_RAG_SECTIONS}
+RESCON_SECTION_COLUMNS = {spec.key: _prefixed_slug("rescon", spec.key)
+                          for spec in RESCON_RAG_SECTIONS}
+# Every analyzed attribute column, whatever JSON it comes from.
+ALL_SECTION_COLUMNS = {**SECTION_COLUMNS, **INTRO_SECTION_COLUMNS, **RESCON_SECTION_COLUMNS}
+
 # Sections whose analyzed value is a list (stored as a JSON string).
 LIST_SECTIONS = {"Results", "Research Areas", "Key Concepts"}
 
@@ -58,12 +83,25 @@ ENRICHMENT_COLUMNS = [
     "link",
 ]
 
+# Analyzed Introduction / Results & Conclusion columns are filled from their
+# analysis JSONs, which do not always live in the space being synced (a common
+# DB holds the DB files but no analysis folders). So a sync that finds no such
+# JSON must leave what is already stored alone instead of clearing it — these
+# columns are written when there IS data and preserved when there is not.
+_PRESERVE_IF_NULL = frozenset(
+    list(INTRO_SECTION_COLUMNS.values()) + list(RESCON_SECTION_COLUMNS.values())
+    + ["introduction_text", "rescon_text"]
+)
+
 # Full column order for the documents table.
 COLUMNS = (
     ["uuid", "title", "filename", "relative_path", "timestamp", "time_taken",
      "status_sectioning", "status_references", "status_abstract", "status_introduction"]
     + list(SECTION_COLUMNS.values())
-    + ["abstract_text", "introduction_json", "references_json"]
+    + ["abstract_text"]
+    + list(INTRO_SECTION_COLUMNS.values()) + ["introduction_text"]
+    + list(RESCON_SECTION_COLUMNS.values()) + ["rescon_text"]
+    + ["introduction_json", "references_json"]
     + ENRICHMENT_COLUMNS
     + ["source_folder", "created_at", "updated_at"]
 )
@@ -194,8 +232,9 @@ class AnalyzedDataStore:
         # columns are preserved when the incoming record does not supply them
         # (e.g. a plain re-sync), so DOI/classification/biblio data is not wiped.
         update_cols = [c for c in COLUMNS if c not in ("uuid", "created_at")]
+        preserve = set(ENRICHMENT_COLUMNS) | _PRESERVE_IF_NULL
         update_sql = ", ".join(
-            f"{c}=COALESCE(excluded.{c}, {c})" if c in ENRICHMENT_COLUMNS else f"{c}=excluded.{c}"
+            f"{c}=COALESCE(excluded.{c}, {c})" if c in preserve else f"{c}=excluded.{c}"
             for c in update_cols
         )
         sql = (
@@ -548,6 +587,27 @@ class AnalyzedDataStore:
 # ---------------------------------------------------------------------------
 # Syncing file-based analysis output into the database
 # ---------------------------------------------------------------------------
+def _apply_section_values(record: dict, data: dict, columns: dict) -> None:
+    """Copy one analysis JSON's attribute values into their record columns.
+
+    List-valued attributes are stored as a JSON string, everything else as
+    text — the same encoding the abstract sections use, so readers (the RAG
+    builders, the Review app, exports) can treat every attribute alike. A
+    missing/unreadable JSON leaves the columns untouched, so a document whose
+    Introduction has not been analyzed keeps whatever is already stored.
+    """
+    if not data:
+        return
+    for key, col in columns.items():
+        value = data.get(key)
+        if value is None:
+            record[col] = None
+        elif isinstance(value, (list, tuple)):
+            record[col] = json.dumps(list(value))
+        else:
+            record[col] = str(value)
+
+
 def _record_from_registry_row(row: dict, manager: DataAnalyzeManager,enrichment_data: dict = None) -> dict:
     """Build a documents record from one registry row + the on-disk JSON files."""
     uuid = str(row.get("UUID") or "").strip()
@@ -578,8 +638,22 @@ def _record_from_registry_row(row: dict, manager: DataAnalyzeManager,enrichment_
                 record[col] = value if value is None else str(value)
         record["abstract_text"] = abstract_data.get(ABSTRACT_TEXT_KEY)
 
-    # Intro / references stored as raw JSON payloads.
-    _, intro_raw = _read_json(os.path.join(manager.AD_Intro, f"{uuid}_Intro.json"))
+    # Introduction analysis JSON -> its own attribute columns + identified text
+    # (mirrors the abstract mapping above; query_executor's enrichment reads the
+    # very same keys out of the very same file).
+    intro_path = os.path.join(manager.AD_Intro, f"{uuid}_Intro.json")
+    intro_data, intro_raw = _read_json(intro_path)
+    _apply_section_values(record, intro_data, INTRO_SECTION_COLUMNS)
+    if intro_data:
+        record["introduction_text"] = intro_data.get(INTRO_TEXT_KEY)
+
+    # Results & Conclusion analysis JSON -> its own attribute columns + text.
+    rescon_data, _ = _read_json(os.path.join(manager.AD_ResCon, f"{uuid}_Results_Conclusion.json"))
+    _apply_section_values(record, rescon_data, RESCON_SECTION_COLUMNS)
+    if rescon_data:
+        record["rescon_text"] = rescon_data.get(RESCON_TEXT_KEY)
+
+    # Intro / references also kept as raw JSON payloads.
     record["introduction_json"] = intro_raw
     _, refs_raw = _read_json(os.path.join(manager.references_subfolder, f"{uuid}_References.json"))
     record["references_json"] = refs_raw

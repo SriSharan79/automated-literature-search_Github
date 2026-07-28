@@ -4,9 +4,17 @@ import sys
 from pathlib import Path
 import pandas as pd
 
+from alr.common import excel_session
 from alr.common.file_manager import DataAnalyzeManager, Vec_DB_Manager
 from alr.common.sections import build_sections_eval_map
-from alr.rag_builders.master_excel_db_builder import _fetch_metadata, _load_abstract_json, _load_recorded_abstracts
+from alr.rag_builders.master_excel_db_builder import (
+    FLUSH_EVERY, _append_skiplog, _fetch_metadata, _load_abstract_json,
+    _load_recorded_abstracts, _skip_row,
+)
+
+# Documents an evaluation pass could not evaluate. One failure never stops the
+# pass: the document is skipped and recorded here, beside the overview.
+EVAL_SKIPPED_LOG = "Evaluation_not_added.xlsx"
 from alr.common.json_utils import get_key_from_file, get_value_by_pair
 from alr.rag_builders.vector_db_updater import add_new_strings_to_index, create_faiss_index_cosine, load_index_file, save_index_file, search_similar, vectorize_strings
 from colorama import Fore, Style
@@ -45,56 +53,48 @@ def safe_sheet_title(name):
 def _is_duplicate_in_sheet(file_path, sheet_name, target_uuid):
     """Checks if a UUID already exists in a given Excel sheet."""
     sheet_name = safe_sheet_title(sheet_name)
-    if file_path.exists() and file_path.stat().st_size > 0:
-        try:
-            with pd.ExcelFile(file_path, engine='openpyxl') as xls:
-                if sheet_name in xls.sheet_names:
-                    df = pd.read_excel(file_path, sheet_name=sheet_name, engine='openpyxl')
-                    if not df.empty and "UUID" in df.columns:
-                        if target_uuid in df["UUID"].astype(str).values:
-                            return True
-        except Exception as e:
-            print(Fore.YELLOW + f"⚠️ Sheet '{sheet_name}' read error: {e}")
+    try:
+        book, owned = excel_session.acquire(file_path, first_sheet="Overview")
+        df = book.sheets.get(sheet_name)
+        if df is not None and not df.empty and "UUID" in df.columns:
+            return target_uuid in df["UUID"].astype(str).values
+    except Exception as e:
+        print(Fore.YELLOW + f"⚠️ Sheet '{sheet_name}' read error: {e}")
     return False
 
 
+def _apply_flat_entry(book, sheet_name, data_entry):
+    """Insert-or-update one UUID row on ``sheet_name`` of an in-memory book."""
+    df_new = pd.DataFrame([data_entry])
+    target_uuid = str(data_entry.get("UUID"))
+    df_sheet = book.sheets.get(sheet_name)
+
+    if df_sheet is None or df_sheet.empty or "UUID" not in df_sheet.columns:
+        df_sheet = df_new if df_sheet is None or df_sheet.empty else pd.concat(
+            [df_sheet, df_new], ignore_index=True)
+    else:
+        df_sheet["UUID"] = df_sheet["UUID"].astype(str)
+        match_mask = df_sheet["UUID"] == target_uuid
+        if match_mask.any():
+            # Update row to dynamically balance any column structure changes
+            for col in df_new.columns:
+                df_sheet.loc[match_mask, col] = df_new[col].values[0]
+        else:
+            df_sheet = pd.concat([df_sheet, df_new], ignore_index=True)
+    book.set_sheet(sheet_name, df_sheet)
+
+
 def _write_section_sheet_flat(file_path, sheet_name, data_entry):
-    """Appends or updates a data entry for section files ensuring single row flat format per UUID."""
+    """Appends or updates a data entry for section files ensuring single row flat format per UUID.
+
+    Inside an :func:`excel_session.workbook_session` this only touches the
+    in-memory image; otherwise the workbook is written straight back, exactly
+    as before."""
     try:
         sheet_name = safe_sheet_title(sheet_name)
-        df_new = pd.DataFrame([data_entry])
-        all_sheets = {}
-        sheet_order = []
-        target_uuid = str(data_entry.get("UUID"))
-
-        if file_path.exists() and file_path.stat().st_size > 0:
-            with pd.ExcelFile(file_path, engine='openpyxl') as xls:
-                sheet_order = list(xls.sheet_names)
-                for s in sheet_order:
-                    all_sheets[s] = pd.read_excel(file_path, sheet_name=s, engine='openpyxl')
-            
-            if sheet_name in all_sheets:
-                df_sheet = all_sheets[sheet_name]
-                df_sheet["UUID"] = df_sheet["UUID"].astype(str)
-                match_mask = df_sheet["UUID"] == target_uuid
-                
-                if match_mask.any():
-                    # Update row to dynamically balance any column structure changes
-                    for col in df_new.columns:
-                        df_sheet.loc[match_mask, col] = df_new[col].values[0]
-                    all_sheets[sheet_name] = df_sheet
-                else:
-                    all_sheets[sheet_name] = pd.concat([df_sheet, df_new], ignore_index=True)
-            else:
-                all_sheets[sheet_name] = df_new
-                sheet_order.append(sheet_name)
-        else:
-            all_sheets[sheet_name] = df_new
-            sheet_order.append(sheet_name)
-
-        with pd.ExcelWriter(file_path, engine='openpyxl', mode='w') as writer:
-            for s in sheet_order:
-                all_sheets[s].to_excel(writer, sheet_name=s, index=False)
+        book, owned = excel_session.acquire(file_path, first_sheet="Overview")
+        _apply_flat_entry(book, sheet_name, data_entry)
+        excel_session.release(book, owned)
     except Exception as e:
         print(Fore.RED + f"❌ Failed to write to section sheet '{sheet_name}': {e}")
 
@@ -109,14 +109,11 @@ def _update_master_overview(storage_dir, sheet_name, uuid, title, filename, text
     try:
         master_overview_path = Path(overview_path) if overview_path else VDB.Abstract_Eval_Overview
         overview_sheet = "Overview"
-        all_sheets = {}
+        book, owned = excel_session.acquire(master_overview_path, first_sheet=overview_sheet)
 
-        if master_overview_path.exists() and master_overview_path.stat().st_size > 0:
-            with pd.ExcelFile(master_overview_path, engine='openpyxl') as xls:
-                for s in xls.sheet_names:
-                    all_sheets[s] = pd.read_excel(master_overview_path, sheet_name=s, engine='openpyxl')
-        
-        df_overview = all_sheets.get(overview_sheet, pd.DataFrame(columns=["UUID", "Title", "Filename"]))
+        df_overview = book.sheets.get(overview_sheet)
+        if df_overview is None or df_overview.empty:
+            df_overview = pd.DataFrame(columns=["UUID", "Title", "Filename"])
         df_overview["UUID"] = df_overview["UUID"].astype(str)
 
         match_mask = df_overview["UUID"] == str(uuid)
@@ -142,18 +139,12 @@ def _update_master_overview(storage_dir, sheet_name, uuid, title, filename, text
             }
             df_overview = pd.concat([df_overview, pd.DataFrame([new_row])], ignore_index=True)
 
-        all_sheets[overview_sheet] = df_overview
+        book.set_sheet(overview_sheet, df_overview)
 
-        # First write overview updates back to dictionary structures
-        with pd.ExcelWriter(master_overview_path, engine='openpyxl', mode='w') as writer:
-            # Force 'Overview' tab to stay strictly at index position 0
-            all_sheets[overview_sheet].to_excel(writer, sheet_name=overview_sheet, index=False)
-            for s, df in all_sheets.items():
-                if s != overview_sheet:
-                    df.to_excel(writer, sheet_name=s, index=False)
-                    
-        # Reuse helper function to cleanly inject or update individual section tabs inside Master Overview
-        _write_section_sheet_flat(master_overview_path, sheet_name, full_section_entry)
+        # Inject or update this section's own tab inside the Master Overview
+        # (same in-memory image; 'Overview' is forced first when it is written).
+        _apply_flat_entry(book, safe_sheet_title(sheet_name), full_section_entry)
+        excel_session.release(book, owned)
 
     except Exception as e:
         print(Fore.RED + f"❌ Failed to update single Master Overview file: {e}")
@@ -482,6 +473,21 @@ def evaluate_document(storage_path, uuid, db_path=None, push_sql=True, mode="gen
     return stats
 
 
+def _eval_workbooks(MF, target):
+    """``(overview_path, [per-section eval workbook paths])`` for one target."""
+    from alr.common.sections import (
+        build_intro_sections_eval_map, build_rescon_sections_eval_map,
+    )
+    VDB = Vec_DB_Manager(MF.folder)
+    if target == "intro":
+        sections, overview = build_intro_sections_eval_map(VDB), VDB.Introduction_Eval_Overview
+    elif target == "rescon":
+        sections, overview = build_rescon_sections_eval_map(VDB), VDB.ResCon_Eval_Overview
+    else:
+        sections, overview = build_sections_eval_map(VDB), VDB.Abstract_Eval_Overview
+    return Path(overview), [Path(ex) for ex, _key in sections.values()]
+
+
 def evaluate_space(storage_path, db_path=None, progress_callback=None, should_cancel=None,
                    mode="generate", target="abstract") -> int:
     """
@@ -496,6 +502,8 @@ def evaluate_space(storage_path, db_path=None, progress_callback=None, should_ca
     total)`` is called after each document if given, and ``should_cancel`` is
     checked before each for cooperative cancellation.
     """
+    from contextlib import ExitStack
+
     MF = storage_path if isinstance(storage_path, DataAnalyzeManager) else DataAnalyzeManager(storage_path)
 
     recorded = {"intro": _load_recorded_intros,
@@ -503,21 +511,47 @@ def evaluate_space(storage_path, db_path=None, progress_callback=None, should_ca
     if not recorded:
         return 0
 
+    overview_path, section_paths = _eval_workbooks(MF, target)
+
     count = 0
     total = len(recorded)
-    for i, uuid in enumerate(recorded, 1):
-        if should_cancel is not None and should_cancel():
-            print("Evaluation cancelled by user.")
-            break
-        try:
-            evaluate_document(MF, uuid, db_path=db_path, push_sql=True, mode=mode, target=target)
-            count += 1
-        except Exception as e:
-            print(Fore.YELLOW + f"⚠️ {target.title()} evaluation failed for {uuid}: {e}")
-        if progress_callback:
-            progress_callback(i, total)
+    # Documents that could not be evaluated; the pass carries on and these end
+    # up in EVAL_SKIPPED_LOG next to the overview.
+    not_added = []
+
+    with ExitStack() as stack:
+        # Every evaluation workbook is written in one batch instead of a full
+        # read+rewrite per section per document (quadratic, and what made a
+        # long evaluation pass look frozen).
+        books = [stack.enter_context(excel_session.workbook_session(p, first_sheet="Overview"))
+                 for p in [overview_path, *section_paths]]
+        for i, uuid in enumerate(recorded, 1):
+            if should_cancel is not None and should_cancel():
+                print("Evaluation cancelled by user.")
+                break
+            try:
+                evaluate_document(MF, uuid, db_path=db_path, push_sql=True, mode=mode, target=target)
+                count += 1
+            except Exception as e:
+                print(Fore.YELLOW + f"⚠️ {target.title()} evaluation failed for {uuid}: {e} "
+                                    f"— skipped, continuing with the next document.")
+                not_added.append(_skip_row(f"evaluate-{target}", e, uuid=uuid))
+            # Checkpoint so a crash or a cancel keeps the work done so far.
+            if i % FLUSH_EVERY == 0:
+                for book in books:
+                    try:
+                        book.flush()
+                    except Exception as e:  # noqa: BLE001 - never stop the pass on a checkpoint
+                        print(Fore.RED + f"❌ Could not checkpoint {book.path}: {e}")
+            if progress_callback:
+                progress_callback(i, total)
 
     print(Fore.GREEN + f"✅ Evaluated {count} document(s) ({target}); results synced to SQL.")
+    if not_added:
+        log_path = _append_skiplog(Path(overview_path).parent / EVAL_SKIPPED_LOG, not_added)
+        print(Fore.YELLOW + Style.BRIGHT
+              + f"⚠️ {len(not_added)} document(s) were NOT evaluated"
+              + (f" — see {log_path}" if log_path else "") + Style.RESET_ALL)
     return count
 
 
