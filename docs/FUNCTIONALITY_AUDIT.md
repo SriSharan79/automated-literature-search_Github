@@ -38,7 +38,11 @@ The standalone **Review tool** (`alr.ui.desktop.review_app`, launched from the t
 `review_main.py`) groups its tabs into **two functional categories** (an outer notebook of two
 category tabs, each holding an inner notebook of its tabs): **Import & Enrich** — bring storage
 spaces / data files into the review database and prepare it (*Storage Spaces*, *Data Files*,
-*Section Editor*) — and **Review & Explore** — read, query, report on and export what is in the
+*Section Editor*; **Link to database / Link ALL** fills **every** analyzed attribute column —
+abstract plus the 4 Introduction and 5 Results & Conclusion ones — and an older database gains
+those columns on the next link, with an **"Analysis JSON search root"** field beside the Link
+buttons for spaces that hold no analysis JSONs of their own, sharing the remembered value with
+the main tool's "Enrichment JSON search root") — and **Review & Explore** — read, query, report on and export what is in the
 database (*Documents*, *Document Inspector*, *Database*, *Overviews*, *Guide*). A top-bar
 **AI Chat** button opens the shared chat window (`chat_view`) with a **document-data context
 picker**: the user searches and multi-selects one or several documents from the review database

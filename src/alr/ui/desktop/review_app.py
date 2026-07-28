@@ -14,8 +14,10 @@ tabs:
 """
 
 import csv
+import json
 import os
 import tkinter as tk
+from pathlib import Path
 from tkinter import ttk, filedialog, messagebox
 
 from alr.common import crash_logger
@@ -36,7 +38,10 @@ from alr.common.document_inspector import (
     missing_after_merge,
     search_pdf_recursive,
 )
-from alr.common.sql_store import AnalyzedDataStore, sync_storage_to_sql, COLUMNS
+from alr.common.sql_store import (
+    AnalyzedDataStore, sync_storage_to_sql, COLUMNS,
+    set_default_search_root as set_sql_search_root,
+)
 from alr.common.storage_scanner import detect_storage_spaces, find_download_logs
 from alr.common.file_manager import ALR_overviews_folder
 from alr.common.LLM_Config import get_stored_api_key
@@ -341,6 +346,26 @@ class ReviewApp:
         vsb.pack(side="right", fill="y")
         self.spaces_tree.pack(side="left", fill="both", expand=True)
 
+        # Where to look for a document's analysis JSONs when the space itself
+        # doesn't hold them (a common/combined DB holds the built databases but
+        # no per-document analysis files). Linking fills the abstract /
+        # Introduction / Results & Conclusion attribute columns from those
+        # files, so without this such a space would link with empty attributes.
+        # Shared with the main tool's "Enrichment JSON search root": both read
+        # and write the same remembered value.
+        sr = ttk.Frame(tab)
+        sr.pack(fill="x", padx=8, pady=(4, 0))
+        ttk.Label(sr, text="Analysis JSON search root (optional):").pack(side="left")
+        self.search_root_var = tk.StringVar(value=self._load_saved_search_root())
+        self.search_root_var.trace_add("write", lambda *_: self._apply_search_root())
+        ttk.Entry(sr, textvariable=self.search_root_var, width=52).pack(side="left", padx=5)
+        ttk.Button(sr, text="Browse…", command=self._browse_search_root).pack(side="left", padx=2)
+        ttk.Button(sr, text="Clear",
+                   command=lambda: self.search_root_var.set("")).pack(side="left", padx=2)
+        ttk.Label(sr, text="— used when a space has no analysis JSONs of its own",
+                  foreground="#666").pack(side="left", padx=6)
+        self._apply_search_root()
+
         act = ttk.Frame(tab)
         act.pack(fill="x", padx=8, pady=4)
         ttk.Button(act, text="Link to database", command=self._link_selected).pack(side="left", padx=3)
@@ -409,6 +434,49 @@ class ReviewApp:
         """
         run_threaded(self.container, work, title, result_word, on_success,
                      modal=True, after=self._refresh_all)
+
+    # --- Analysis-JSON search root (shared with the main tool) --------------
+
+    @staticmethod
+    def _session_state_path():
+        """The main tool's session cache — the search root is remembered there
+        so setting it in either tool serves both."""
+        from alr.common.file_manager import ALR_main_folder
+        return Path(ALR_main_folder) / "ui_session_state.json"
+
+    def _load_saved_search_root(self) -> str:
+        try:
+            path = self._session_state_path()
+            if path.exists():
+                state = json.loads(path.read_text(encoding="utf-8"))
+                return str(state.get("search_root_var") or "")
+        except Exception as e:  # noqa: BLE001 - a bad cache must not block the tool
+            print(f"[Review] Could not read the saved search root: {e}")
+        return ""
+
+    def _apply_search_root(self):
+        """Point the storage->SQL sync at the current root and remember it."""
+        root = self.search_root_var.get().strip()
+        set_sql_search_root(root)
+        try:
+            path = self._session_state_path()
+            state = {}
+            if path.exists():
+                try:
+                    state = json.loads(path.read_text(encoding="utf-8"))
+                except Exception:  # noqa: BLE001 - rewrite a corrupt cache
+                    state = {}
+            if state.get("search_root_var", "") != root:
+                state["search_root_var"] = root
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(json.dumps(state, indent=2, default=str), encoding="utf-8")
+        except Exception as e:  # noqa: BLE001 - remembering is best-effort
+            print(f"[Review] Could not save the search root: {e}")
+
+    def _browse_search_root(self):
+        folder = filedialog.askdirectory(title="Select the analysis-JSON search root")
+        if folder:
+            self.search_root_var.set(str(Path(folder).resolve()))
 
     def _link_selected(self):
         s = self._selected_space()
@@ -1369,6 +1437,16 @@ class ReviewApp:
          "database (fill-if-empty). Safe to repeat: re-linking updates "
          "rows to the latest data and never wipes enrichment (DOI/classification/evaluation) "
          "already stored.\n"
+         "Every analyzed attribute gets its own column: the 7 abstract ones plus the 4 "
+         "Introduction and 5 Results & Conclusion attributes, read from each document's "
+         "{uuid}_Abstract / _Intro / _Results_Conclusion.json. A database created before "
+         "those columns existed gains them on the next link — nothing to rebuild.\n"
+         "If a space holds no analysis JSONs of its own (a common/combined DB keeps the "
+         "built databases but not the per-document files), set the 'Analysis JSON search "
+         "root' above: it is searched recursively for the missing files, once per link, and "
+         "remembered — the main tool's 'Enrichment JSON search root' is the same setting. A "
+         "JSON present in the space always wins over one found there, and attributes already "
+         "stored are kept when no file turns up.\n"
          "Example: select the 'LLM_Safety_Results' row -> 'Link to database' -> "
          "'linked 42 document(s)'."),
 
