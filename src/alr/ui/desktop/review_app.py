@@ -484,8 +484,13 @@ class ReviewApp:
             return
 
         def work(progress, should_cancel):
-            progress(text=f"Linking '{os.path.basename(s.path)}' into the database…")
-            return sync_storage_to_sql(s.path, db_path=self.store.db_path)
+            name = os.path.basename(s.path)
+            progress(text=f"Linking '{name}' into the database…")
+            return sync_storage_to_sql(
+                s.path, db_path=self.store.db_path,
+                # Report the document AND which of its analyzed data is going in.
+                progress_callback=lambda d, t, txt: progress(
+                    done=d, total=t, text=f"[{name}] {txt}"))
 
         self._run_threaded(work, "Link to database", "linked")
 
@@ -499,8 +504,15 @@ class ReviewApp:
             for i, sp in enumerate(self.spaces, 1):
                 if should_cancel():
                     break
-                progress(done=i - 1, total=n, text=f"Linking '{os.path.basename(sp.path)}'  ({i}/{n})…")
-                total += sync_storage_to_sql(sp.path, db_path=self.store.db_path)
+                name = os.path.basename(sp.path)
+                progress(done=i - 1, total=n, text=f"Linking '{name}'  ({i}/{n})…")
+                # Keep the bar on the space count (one tick per space) and put
+                # the per-document detail in the text.
+                total += sync_storage_to_sql(
+                    sp.path, db_path=self.store.db_path,
+                    progress_callback=lambda d, t, txt, _i=i, _n=n, _name=name: progress(
+                        done=_i - 1, total=_n,
+                        text=f"[{_i}/{_n}] {_name} — {d}/{t}: {txt}"))
             progress(done=n, total=n)
             return total
 

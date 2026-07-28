@@ -1804,7 +1804,9 @@ class AutomatedLiteratureUI(tk.Tk):
             # file already holds, run the stage fresh, or skip it. ---
             progress(text="Finalizing: syncing the review database…")
             try:
-                synced = sync_storage_to_sql(MF)
+                synced = sync_storage_to_sql(
+                    MF, progress_callback=lambda d, t, txt: progress(
+                        done=d, total=t, text=f"Database sync {d}/{t}: {txt}"))
                 print(f"[Database Sync] {synced} document(s) written to the review database.")
             except Exception as e:
                 print(f"[Database Sync] Skipped/failed: {e}")
@@ -2032,8 +2034,15 @@ class AutomatedLiteratureUI(tk.Tk):
                                                          "Select the analysis-JSON search root")
                    ).pack(side="left", padx=2)
 
-        btn_run_query = ttk.Button(v_frame, text="Generate Query Report", command=self._run_visualization_query_action)
-        btn_run_query.pack(pady=20, ipadx=10, ipady=5)
+        run_row = ttk.Frame(v_frame)
+        run_row.pack(pady=20)
+        ttk.Button(run_row, text="Generate Query Report",
+                   command=self._run_visualization_query_action).pack(side="left", ipadx=10, ipady=5)
+        # Repair path for an attribute whose section DB and index have drifted
+        # apart (the "index has more vectors than Excel rows" case): rebuild the
+        # section Excel/JSON from the analysis JSONs, then re-embed it.
+        ttk.Button(run_row, text="Rebuild section databases…",
+                   command=self._rebuild_section_dbs_action).pack(side="left", padx=12, ipadx=6, ipady=5)
 
         self._build_common_db_frame(tab)
 
@@ -2345,6 +2354,69 @@ class AutomatedLiteratureUI(tk.Tk):
                 f"Location: {common_path}")
 
         self._run_threaded(work, "Building Common Database", "added", on_success=on_success)
+
+    def _rebuild_section_dbs_action(self):
+        """
+        Rebuild chosen attributes' section databases: their Excel/JSON from the
+        space's analysis JSONs, then their FAISS index from that Excel.
+
+        The repair for an attribute whose index and Excel have drifted apart
+        ("index has more vectors than Excel rows"), or whose section Excel holds
+        stale content an incremental sync cannot correct — the incremental path
+        upserts per document and so never rewrites a row that already exists.
+        """
+        query_common = getattr(self, "query_target_var", None) and self.query_target_var.get() == "common"
+        storage_choice = (self.common_db_entry.get().strip() if query_common
+                          else self.visualize_storage_entry.get().strip())
+        if not storage_choice:
+            messagebox.showerror("Error", "Set the storage space (or Common DB folder) to rebuild first.")
+            return
+        clean_path = clean_folder_path(storage_choice)
+
+        if query_common:
+            messagebox.showwarning(
+                "Common DB selected",
+                "A common database holds the built databases but not the per-document "
+                "analysis JSONs, so its section Excels cannot be rebuilt from source.\n\n"
+                "Rebuild the attributes in the source storage spaces and build the common "
+                "DB again.")
+            return
+
+        keys = self._pick_attributes_dialog(
+            "Rebuild section databases — attributes",
+            default_keys=[k for k, v in self.query_section_vars.items() if v.get()])
+        if keys is None:
+            return
+        if not keys:
+            messagebox.showerror("Error", "Select at least one attribute to rebuild.")
+            return
+
+        if not messagebox.askokcancel(
+                "Rebuild section databases",
+                f"Rebuild {len(keys)} attribute(s) in:\n{clean_path}\n\n"
+                "Each one's section Excel/JSON is rewritten from the space's analysis "
+                "JSONs and its vector index re-embedded from that Excel. Other attributes "
+                "are left untouched.\n\nRe-embedding costs embedding calls."):
+            return
+
+        print(f"[Rebuild] Rebuilding {len(keys)} attribute(s) in: {clean_path}")
+
+        def work(progress, should_cancel):
+            from alr.rag_builders.db_manager import rebuild_section_databases
+            failures = rebuild_section_databases(
+                clean_path, keys=keys, should_cancel=should_cancel,
+                progress_callback=lambda d, t, txt: progress(done=d, total=t, text=txt))
+            if failures:
+                print(f"[Rebuild] {len(failures)} attribute(s) failed: {', '.join(failures)}")
+            return len(keys) - len(failures)
+
+        def on_success(n):
+            messagebox.showinfo(
+                "Rebuild finished",
+                f"{n or 0} attribute(s) rebuilt (section Excel/JSON + vector index).\n"
+                "See the console log for the per-attribute detail.")
+
+        self._run_threaded(work, "Rebuild section databases", "rebuilt", on_success=on_success)
 
     def _run_visualization_query_action(self):
         query_common = getattr(self, "query_target_var", None) and self.query_target_var.get() == "common"

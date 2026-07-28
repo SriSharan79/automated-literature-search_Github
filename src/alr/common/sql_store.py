@@ -587,6 +587,32 @@ class AnalyzedDataStore:
 # ---------------------------------------------------------------------------
 # Syncing file-based analysis output into the database
 # ---------------------------------------------------------------------------
+def describe_record_data(record: dict) -> str:
+    """
+    Which analyzed data one record actually carries, as a short human phrase
+    ("abstract + introduction + results & conclusion attributes"). Used for the
+    link progress text so the user sees WHAT of a space is going into the
+    database, not just a counter.
+    """
+    def any_filled(columns):
+        return any(str(record.get(c) or "").strip() for c in columns)
+
+    parts = []
+    if any_filled(SECTION_COLUMNS.values()):
+        parts.append("abstract")
+    if any_filled(INTRO_SECTION_COLUMNS.values()):
+        parts.append("introduction")
+    if any_filled(RESCON_SECTION_COLUMNS.values()):
+        parts.append("results & conclusion")
+    extras = []
+    if str(record.get("references_json") or "").strip():
+        extras.append("references")
+    if parts:
+        text = " + ".join(parts) + " attributes"
+        return f"{text} (+ {', '.join(extras)})" if extras else text
+    return ", ".join(extras) if extras else "registry entry only (no analyzed data found)"
+
+
 def _apply_section_values(record: dict, data: dict, columns: dict) -> None:
     """Copy one analysis JSON's attribute values into their record columns.
 
@@ -773,6 +799,10 @@ def sync_storage_to_sql(manager_or_folder, db_path=DB_PATH, progress_callback=No
     uuids = [str(r.get("UUID") or "").strip() for _, r in df.iterrows()]
     located = _locate_missing_analysis_jsons([u for u in uuids if u], manager, search_root)
 
+    def tick(done, total, text):
+        if progress_callback:
+            progress_callback(done, total, text)
+
     for index, row in df.iterrows():
         row_dict = row.to_dict()
         uuid = str(row_dict.get("UUID") or "").strip()
@@ -780,19 +810,24 @@ def sync_storage_to_sql(manager_or_folder, db_path=DB_PATH, progress_callback=No
         if not uuid:
             continue
 
-        store.upsert_document(
-            _record_from_registry_row(row_dict, manager, located_jsons=located))
+        record = _record_from_registry_row(row_dict, manager, located_jsons=located)
+        store.upsert_document(record)
         synced += 1
 
-        if progress_callback:
-            progress_callback(synced, total_docs, uuid)
+        # Say WHAT is being linked, not just how far along we are: the document
+        # and which of its analyzed data actually went into the row.
+        label = str(record.get("filename") or uuid)
+        tick(synced, total_docs, f"{label} — {describe_record_data(record)}")
 
     # After the rows exist, pull DOI/publication metadata and evaluation
     # summaries recorded in the space's workbooks into SQL (fill-if-empty,
     # so values already in the database are never overwritten). This is what
     # populates enrichment when a space is linked into a fresh database.
+    tick(total_docs, total_docs, "Merging DOI / publication metadata workbooks…")
     _merge_space_metadata_files(store, manager)
+    tick(total_docs, total_docs, "Merging evaluation overviews (abstract / introduction / results & conclusion)…")
     _merge_space_evaluation_overviews(store, manager)
+    tick(total_docs, total_docs, "Merging classification workbooks…")
     _merge_space_classification_files(store, manager)
 
     return synced
