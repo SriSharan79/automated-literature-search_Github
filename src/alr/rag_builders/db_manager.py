@@ -163,7 +163,7 @@ def _rebuild_section_index(VDB_path, strings):
     return index_in.ntotal
 
 
-def _sync_sections_VDB(VDB, sections, rebuild: bool = False):
+def _sync_sections_VDB(VDB, sections, rebuild: bool = False, rebuild_text_db=None):
     """
     Sync each section's FAISS index against its EXCEL DB "Content" column
     (previously the section JSON — which could drift ahead of the Excel and
@@ -181,13 +181,21 @@ def _sync_sections_VDB(VDB, sections, rebuild: bool = False):
         once when migrating from the JSON-sourced indexes, or whenever
         entries were edited/removed (append-only sync can't see those).
 
+    rebuild_text_db: optional ``callable(key) -> rows`` that regenerates one
+        attribute's section Excel from the analysis JSONs. Given one, an
+        index>Excel mismatch rebuilds the **Excel first** (the Excel is what
+        drifted when rows went missing) and then the index from it; without
+        one — a common DB has no analysis JSONs to rebuild from — only the
+        index is realigned to the Excel as it stands.
+
     One attribute that cannot be synced is skipped; the rest still run.
     Returns {section key: error} for whatever failed (empty when all good).
     """
     failures = {}
     for key, (VDB_path, ex_path) in sections.items():
         try:
-            _sync_one_section_VDB(VDB, key, VDB_path, ex_path, rebuild)
+            _sync_one_section_VDB(VDB, key, VDB_path, ex_path, rebuild,
+                                  rebuild_text_db=rebuild_text_db)
         except Exception as e:  # noqa: BLE001 - one bad index must not stop the rest
             print(Fore.RED + f"   ❌ Vector sync failed for '{key}' ({type(e).__name__}: {e}); "
                              f"continuing with the next attribute." + Style.RESET_ALL)
@@ -195,7 +203,7 @@ def _sync_sections_VDB(VDB, sections, rebuild: bool = False):
     return failures
 
 
-def _sync_one_section_VDB(VDB, key, VDB_path, ex_path, rebuild):
+def _sync_one_section_VDB(VDB, key, VDB_path, ex_path, rebuild, rebuild_text_db=None):
     """One attribute's index-vs-Excel sync (see _sync_sections_VDB)."""
     print(Fore.LIGHTBLUE_EX + f"\n— Section: {key}" + Style.RESET_ALL)
     strings = _excel_content_strings(ex_path)
@@ -226,12 +234,28 @@ def _sync_one_section_VDB(VDB, key, VDB_path, ex_path, rebuild):
             # The index is out of step with its Excel (it predates the
             # Excel-sourced sync, or rows were removed). An index whose
             # positions no longer match the Excel returns wrong rows for
-            # every query, so heal it here instead of asking the user to
-            # run a separate rebuild: re-embed THIS attribute only.
+            # every query, so heal it here instead of asking the user to run
+            # a separate rebuild — and rebuild THIS attribute's Excel first
+            # where we can: more vectors than rows means the Excel is the side
+            # that lost data, and re-embedding it as it stands would make that
+            # loss permanent.
             print(Fore.YELLOW
                   + f"   ♻️  Index has more vectors ({vec_count}) than Excel rows ({str_count}); "
-                  + f"rebuilding '{key}' from the Excel to restore alignment..."
+                  + f"rebuilding '{key}' to restore alignment..."
                   + Style.RESET_ALL)
+            if rebuild_text_db is not None:
+                try:
+                    rebuild_text_db(key)
+                    strings = _excel_content_strings(ex_path)
+                    str_count = len(strings)
+                    print(f"   • Excel rows after the text-DB rebuild: {str_count}")
+                except Exception as e:  # noqa: BLE001 - fall back to index-only
+                    print(Fore.RED + f"   ❌ Could not rebuild the Excel of '{key}' ({e}); "
+                                     f"realigning the index to the Excel as it stands.")
+            if str_count == 0:
+                print(Fore.YELLOW + f"   ⏭️  '{key}' has no Excel content; index left untouched."
+                      + Style.RESET_ALL)
+                return
             vec_count = _rebuild_section_index(VDB_path, strings)
             update_VDB_status(VDB, key, str_count, vec_count)
             print(Fore.GREEN + f"   ✅ Realigned: {key} ({vec_count} vectors)" + Style.RESET_ALL)
@@ -254,6 +278,99 @@ def _sync_one_section_VDB(VDB, key, VDB_path, ex_path, rebuild):
         print(Fore.CYAN + "   📝 Updating VDB status log..." + Style.RESET_ALL)
         update_VDB_status(VDB, key, str_count, vec_count)
         print(Fore.GREEN + f"   ✅ Created index and synced: {key}" + Style.RESET_ALL)
+
+
+def _source_uuids_and_json(MF, source):
+    """``(recorded uuids, per-uuid json path getter)`` for one analysis source."""
+    if source == "abstract":
+        return [str(u) for u in _load_recorded_abstracts(MF)], (lambda: MF.abstract_json_path)
+    log_path, json_path_of = _analysis_source_paths(MF, source)
+    return _log_uuids(log_path), json_path_of
+
+
+def rebuild_section_text_db(MF, VDB, key, master_excel_file=None) -> int:
+    """
+    Rebuild ONE attribute's text DB (its section Excel + JSON, and its column
+    on the master workbook) from the space's analysis JSONs.
+
+    Needed when the section Excel has drifted from the analysis data — rows
+    deleted, a truncated/partial write, or an Excel that was rebuilt while the
+    index was not. Rebuilding the index alone against such an Excel would
+    faithfully reproduce the loss, so the Excel is regenerated first: the
+    section's files are cleared and every recorded document re-writes its value
+    for this attribute only. Other attributes are untouched.
+
+    Returns the number of documents written.
+    """
+    source = RAG_SOURCE_BY_KEY[key]
+    uuids, json_path_of = _source_uuids_and_json(MF, source)
+    if not uuids:
+        print(Fore.YELLOW + f"   ⏭️  No recorded {source} documents; '{key}' left as it is.")
+        return 0
+
+    master_excel_file = master_excel_file or VDB.Abstract_Overview
+    sections = build_sections_map(VDB, only=[key])
+    master_map = build_sections_master_map(VDB, master_excel_file, only=[key])
+
+    # Clear this attribute's files so the rebuild starts from the analysis data
+    # rather than appending to what is already there.
+    ex_path, j_path = sections[key]
+    for p in (Path(ex_path), Path(j_path)):
+        try:
+            if p.exists():
+                p.unlink()
+        except OSError as e:
+            print(Fore.RED + f"   ❌ Could not clear '{p.name}' for the rebuild: {e}")
+            return 0
+
+    print(Fore.CYAN + f"   🔄 Rebuilding the text DB of '{key}' from {len(uuids)} "
+                      f"recorded {source} document(s)...")
+    uuid_cache = {}
+    written = 0
+    try:
+        with workbook_session(master_excel_file):
+            for i, uuid in enumerate(uuids, 1):
+                MF.update_id_files(uuid)
+                json_data = _read_json_dict(json_path_of())
+                if not json_data or key not in json_data:
+                    continue
+                title, file_name = _fetch_metadata(MF, uuid)
+                _sync_sections_for_uuid(
+                    UUID=uuid, title=title, file_name=file_name,
+                    json_data=json_data, sections=sections, uuid_cache=uuid_cache,
+                )
+                _sync_sections_master_for_uuid(uuid, title, file_name, json_data, master_map)
+                written += 1
+                if i % FLUSH_EVERY == 0:
+                    flush_db_cache(uuid_cache)
+    finally:
+        flush_db_cache(uuid_cache)
+    print(Fore.GREEN + f"   ✅ Text DB of '{key}' rebuilt from {written} document(s).")
+    return written
+
+
+def rebuild_section_databases(Storage_path, keys=None):
+    """
+    Rebuild the text DB **and** the vector index of the given attributes (all
+    of them by default) for one storage space — the on-demand counterpart of
+    the automatic realignment inside :func:`_sync_sections_VDB`.
+    """
+    MF = DataAnalyzeManager(Storage_path)
+    VDB = Vec_DB_Manager(Storage_path)
+    keys = list(keys) if keys else list(_all_rag_keys())
+    print(Fore.CYAN + Style.BRIGHT
+          + f"--- Rebuilding {len(keys)} attribute(s) (Excel + index): {Storage_path} ---"
+          + Style.RESET_ALL)
+    for key in keys:
+        print(Fore.LIGHTBLUE_EX + f"\n— Section: {key}" + Style.RESET_ALL)
+        try:
+            rebuild_section_text_db(MF, VDB, key)
+        except Exception as e:  # noqa: BLE001 - one attribute must not stop the rest
+            print(Fore.RED + f"   ❌ Text DB rebuild failed for '{key}': {e}")
+    secs_VDB = build_sections_map_vdb_excel(VDB, only=keys)
+    failures = _sync_sections_VDB(VDB, secs_VDB, rebuild=True)
+    print(Fore.GREEN + Style.BRIGHT + "--- Rebuild complete ---" + Style.RESET_ALL)
+    return failures
 
 
 def rebuild_vector_databases(Storage_path):
@@ -407,9 +524,13 @@ def generate_databases(Storage_path, do_text: bool = True, do_vector: bool = Tru
         tick("Vector DB: embedding new entries")
         # Cover every RAG section; ones whose Excel DB doesn't exist (e.g.
         # intro/rescon in a space without that analysis) are skipped inside
-        # _sync_sections_VDB without touching anything.
+        # _sync_sections_VDB without touching anything. An attribute whose
+        # index outgrew its Excel has its Excel rebuilt from the analysis
+        # JSONs first (this space has them), then its index from that Excel.
         secs_VDB = build_sections_map_vdb_excel(VDB, only=_all_rag_keys())
-        _sync_sections_VDB(VDB, secs_VDB, rebuild=rebuild_vector)
+        _sync_sections_VDB(VDB, secs_VDB, rebuild=rebuild_vector,
+                           rebuild_text_db=lambda key: rebuild_section_text_db(
+                               MF, VDB, key, MASTER_EXCEL_FILE))
 
 
 # ---------------------------------------------------------------------------
