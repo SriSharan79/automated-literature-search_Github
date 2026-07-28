@@ -737,16 +737,17 @@ def _get_embedding_model_and_tokenizer():
     return _embedding_tokenizer, _embedding_model
 
 
-def vectorize_strings_local(input_strings: list, max_length: int = 512, batch_size: int = 10):
+def vectorize_strings_local(input_strings: list, max_length: int = 512, batch_size: int = 50):
     """
     Embed a list of strings using the local GPU/CPU HuggingFace model
     (Qwen/Qwen3-Embedding-8B by default, same weights as before).
 
-    The COMPLETE pool is tried in one forward pass first; if that fails
-    (typically GPU out-of-memory on a large list), the pool is split in
-    half and each half retried the same way, recursively, until the
-    pieces fit (`_embed_in_halves`). ``batch_size`` is kept for backward
-    compatibility but no longer pre-chunks the input.
+    Inputs are processed in chunks of ``batch_size`` (default 50) so
+    progress is visible and each forward pass stays bounded. If a chunk
+    fails (typically GPU out-of-memory), ``_embed_in_halves`` splits it in
+    half and retries each half the same way, recursively (50 -> 25 -> ...),
+    until the pieces fit - so a chunk that is too big steps itself down
+    instead of crashing.
 
     Returns an (N, dim) float32 numpy array, L2-normalised so cosine
     similarity == inner product (matches an IndexFlatIP FAISS index).
@@ -782,8 +783,19 @@ def vectorize_strings_local(input_strings: list, max_length: int = 512, batch_si
 
     _start = time.time()
     activity_monitor.begin("embed", "local", embedding_model_repo_id)
+    total = len(input_strings)
+    step = batch_size if (batch_size and batch_size > 0) else 10
+    vectors = []
     try:
-        vectors = _embed_in_halves(list(input_strings), _encode, "local embedding")
+        # Chunk the input so progress is visible and each forward pass stays
+        # small enough to avoid GPU OOM. _embed_in_halves still guards every
+        # chunk: if a chunk is itself too big it is split further, recursively.
+        for _chunk_start in range(0, total, step):
+            chunk = input_strings[_chunk_start:_chunk_start + step]
+            vectors.extend(_embed_in_halves(list(chunk), _encode, "local embedding"))
+            _done = min(_chunk_start + step, total)
+            print(f"   \U0001f9ee Local embedding: {_done}/{total} strings vectorized...",
+                  flush=True)
     finally:
         activity_monitor.end()
     arr = np.stack(vectors).astype(np.float32)
