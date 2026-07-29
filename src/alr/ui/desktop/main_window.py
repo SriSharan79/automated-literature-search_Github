@@ -2453,7 +2453,7 @@ class AutomatedLiteratureUI(tk.Tk):
             print(f"[Rebuild] Sources: {', '.join(sources)}")
 
         def work(progress, should_cancel):
-            from alr.rag_builders.db_manager import rebuild_section_databases
+            from alr.rag_builders.section_rebuilder import rebuild_section_databases
             failures = rebuild_section_databases(
                 clean_path, keys=keys, sources=sources,
                 match_filename=match_filename, should_cancel=should_cancel,
