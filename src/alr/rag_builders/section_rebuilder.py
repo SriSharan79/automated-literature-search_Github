@@ -56,12 +56,61 @@ except ImportError:  # colorama is optional for this module
 # project helpers
 # --------------------------------------------------------------------------
 from alr.common.file_manager import DataAnalyzeManager, Vec_DB_Manager
-from alr.common.sections import ALR_SECTIONS, build_sections_map_full
+from alr.common.sections import (
+    ALL_RAG_SECTIONS, ALR_SECTIONS, RAG_SOURCE_BY_KEY, build_sections_map_full,
+)
+from alr.common.excel_utils import extract_column
 from alr.rag_builders.text_db_updater import (
     _fetch_metadata,
     _load_abstract_json,
     _load_recorded_abstracts,
 )
+
+
+def _all_keys():
+    """Every rebuildable attribute: abstract + Introduction + Results & Conclusion."""
+    return [spec.key for spec in ALL_RAG_SECTIONS]
+
+
+def _analysis_source_of(key):
+    """Which analysis JSON an attribute's content comes from."""
+    return RAG_SOURCE_BY_KEY.get(key, "abstract")
+
+
+def _load_source_json(MF, uuid, source):
+    """One document's analysis JSON for the given source ({} when absent)."""
+    if source == "abstract":
+        return _load_abstract_json(MF, uuid) or {}
+    path = MF.intro_json_path if source == "intro" else MF.rescon_json_path
+    try:
+        p = Path(path)
+        if not p.exists() or p.stat().st_size == 0:
+            return {}
+        with open(p, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except (json.JSONDecodeError, OSError):
+        return {}
+
+
+def _recorded_for_source(MF, source):
+    """
+    The documents a space has recorded for one analysis source, in log order.
+
+    Each source has its own analysis log, so an Introduction attribute is
+    rebuilt from the documents that actually have Introduction data — not from
+    the abstract log, which would emit "Not Found" rows for every document
+    whose introduction was never analyzed.
+    """
+    if source == "abstract":
+        return [str(u) for u in (_load_recorded_abstracts(MF) or [])]
+    log_path = MF.AD_Intro_log_path if source == "intro" else MF.AD_ResCon_log_path
+    if log_path and Path(log_path).exists():
+        try:
+            return [str(u) for u in extract_column(log_path, "UUID")]
+        except Exception:  # noqa: BLE001 - an unreadable log means "nothing recorded"
+            return []
+    return []
 
 # `update_VDB_status` and the embedding helpers are imported lazily inside the
 # functions that need them: db_manager imports this module, so importing it
@@ -91,8 +140,17 @@ COMMON_DB_CONFIG_CANDIDATES = (
 COMMON_DB_SOURCE_KEYS = ("sources", "source_spaces", "storage_spaces", "Sources")
 COMMON_DB_MATCH_KEYS = ("match_filename", "match_by_filename", "Match_filename")
 
-#: Members that could not be resolved back to a source document are listed here.
+#: Members that could not be resolved back to a source document are listed in
+#: ``{YYYY-MM-DD_HHMMSS}_Rebuild_unresolved_members.txt`` — one file per run, so
+#: a later attempt never overwrites or appends to the evidence of an earlier one.
 REBUILD_UNRESOLVED_LOG = "Rebuild_unresolved_members.txt"
+
+
+def unresolved_log_name(when=None) -> str:
+    """Timestamped filename for one run's unresolved-members log."""
+    from datetime import datetime
+    stamp = (when or datetime.now()).strftime("%Y-%m-%d_%H%M%S")
+    return f"{stamp}_{REBUILD_UNRESOLVED_LOG}"
 
 #: Column order for a section Excel. "Count" is present only for list-valued
 #: attributes (Results, Research Areas, Key Concepts), matching what
@@ -366,13 +424,26 @@ def _index_sources(sources, match_filename, should_cancel=None):
     return located
 
 
-def _log_unresolved(storage_path, key, unresolved):
-    path = Path(storage_path) / REBUILD_UNRESOLVED_LOG
+def _log_unresolved(storage_path, key, unresolved, log_path=None):
+    """
+    Write one run's unresolved members to a timestamped file in the space.
+
+    ``log_path`` lets several calls within one run share a single file; without
+    it a fresh timestamped file is created, so each run's evidence stands on its
+    own instead of accumulating in one ever-growing text file.
+    """
+    from datetime import datetime
+    path = Path(log_path) if log_path else Path(storage_path) / unresolved_log_name()
     try:
+        new_file = not path.exists()
         with open(path, "a", encoding="utf-8") as f:
-            f.write(f"--- {key} ---\n")
+            if new_file:
+                f.write(f"Rebuild run {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+                        f"Storage: {storage_path}\n\n")
+            f.write(f"--- {key} ({len(list(unresolved))} unresolved) ---\n")
             for item in unresolved:
                 f.write(f"{item}\n")
+            f.write("\n")
     except OSError:
         pass
     return path
@@ -427,11 +498,14 @@ def rebuild_one_section(storage_path, key, plan, match_filename=False,
     per member document -- see :func:`_build_plan`.
     """
     VDB = Vec_DB_Manager(storage_path)
-    section_paths = build_sections_map_full(VDB)
+    # Every RAG attribute, not just the abstract ones: the Introduction and
+    # Results & Conclusion attributes have their own Excel/JSON/index paths.
+    section_paths = build_sections_map_full(VDB, only=_all_keys())
     if key not in section_paths:
         raise KeyError(f"Unknown attribute {key!r}")
     excel_path, json_path, bin_path = section_paths[key]
 
+    source = _analysis_source_of(key)
     rows = []
     cache = {}
     for src, uuid in plan:
@@ -442,7 +516,7 @@ def rebuild_one_section(storage_path, key, plan, match_filename=False,
             MF = cache[src] = DataAnalyzeManager(src)
         MF.update_id_files(uuid)
         title, file_name = _fetch_metadata(MF, uuid)
-        data = _load_abstract_json(MF, uuid)
+        data = _load_source_json(MF, uuid, source)
         content = data.get(key, "Not Found") if data else "Not Found"
         rows.extend(_section_rows(uuid, content, title, file_name))
 
@@ -462,16 +536,19 @@ def rebuild_one_section(storage_path, key, plan, match_filename=False,
 # plan
 # --------------------------------------------------------------------------
 
-def _build_plan(storage_path, sources, match_filename, should_cancel=None):
+def _build_plan(storage_path, sources, match_filename, should_cancel=None, source=None):
     """
     Decide which documents to emit, in which order.
 
-    Single space: everything the space has recorded, in registry order.
-    Common DB: exactly the members the common DB already holds, in its order.
+    Single space: everything the space has recorded for ``source``, in log
+    order (each analysis source has its own log, so an Introduction attribute
+    is rebuilt from the documents that actually have Introduction data).
+    Common DB: exactly the members the common DB already holds, in its order —
+    membership is frozen there, so it is the same plan for every attribute.
     """
     if not sources:
         MF = DataAnalyzeManager(storage_path)
-        uuids = _load_recorded_abstracts(MF) or []
+        uuids = _recorded_for_source(MF, source or "abstract")
         return [(storage_path, str(u)) for u in uuids], []
 
     members = read_common_members(storage_path, match_filename)
@@ -516,43 +593,66 @@ def rebuild_section_databases(storage_path, keys=None, sources=None,
         The list of attribute keys that failed. An empty list means every
         requested attribute was rebuilt.
     """
-    keys = list(keys) if keys else [spec.key for spec in ALR_SECTIONS]
-    total = len(keys)
+    keys = list(keys) if keys else _all_keys()
+    unknown = [k for k in keys if k not in RAG_SOURCE_BY_KEY]
+    if unknown:
+        print(Fore.RED + f"[Rebuild] Not rebuildable attribute(s): {', '.join(unknown)}")
+    keys = [k for k in keys if k in RAG_SOURCE_BY_KEY]
+    total = len(keys) + len(unknown)
 
     def report(done, text):
         if progress_callback:
             progress_callback(done, total, text)
 
     report(0, "Resolving source documents...")
-    try:
-        plan, unresolved = _build_plan(storage_path, sources, match_filename,
-                                       should_cancel)
-    except CommonRebuildError as e:
-        print(Fore.RED + f"[Rebuild] {e}")
-        return list(keys)
 
-    if unresolved:
-        # A partial rebuild would drop these documents from the rebuilt
-        # attributes only, leaving the common DB ragged. Refuse instead.
-        log_path = _log_unresolved(storage_path, "membership", unresolved)
-        print(Fore.RED + f"[Rebuild] {len(unresolved)} member(s) could not be "
-                         f"resolved to a source document -- listed in {log_path}. "
-                         f"Nothing was rebuilt.")
-        return list(keys)
+    # One plan per analysis source. A single space has a separate log per
+    # source, so the Introduction attributes must be rebuilt from the
+    # Introduction log; a common DB freezes its membership, so all attributes
+    # share the one plan built from what it already holds.
+    plans = {}
+    needed_sources = {_analysis_source_of(k) for k in keys} or {"abstract"}
+    # One log file for this whole run (created only if something is unresolved).
+    run_log = Path(storage_path) / unresolved_log_name()
+    for src_name in sorted(needed_sources):
+        try:
+            plan, unresolved = _build_plan(storage_path, sources, match_filename,
+                                           should_cancel, source=src_name)
+        except CommonRebuildError as e:
+            print(Fore.RED + f"[Rebuild] {e}")
+            return list(keys) + unknown
 
-    if not plan:
+        if unresolved:
+            # A partial rebuild would drop these documents from the rebuilt
+            # attributes only, leaving the common DB ragged. Refuse instead.
+            log_path = _log_unresolved(storage_path, f"membership ({src_name})",
+                                       unresolved, log_path=run_log)
+            print(Fore.RED + f"[Rebuild] {len(unresolved)} member(s) could not be "
+                             f"resolved to a source document -- listed in {log_path}. "
+                             f"Nothing was rebuilt.")
+            return list(keys) + unknown
+        plans[src_name] = plan
+
+    if not any(plans.values()):
         print(Fore.YELLOW + "[Rebuild] No documents to rebuild from.")
-        return list(keys)
+        return list(keys) + unknown
+    for src_name, plan in sorted(plans.items()):
+        print(f"[Rebuild] {src_name}: {len(plan)} document(s) recorded.")
+    print(f"[Rebuild] {len(keys)} attribute(s) in: {storage_path}")
 
-    print(f"[Rebuild] {len(plan)} document(s) x {total} attribute(s) in: {storage_path}")
-
-    failures = []
+    failures = list(unknown)
     for i, key in enumerate(keys):
         if should_cancel and should_cancel():
             failures.extend(keys[i:])
             print(Fore.YELLOW + "[Rebuild] Cancelled.")
             break
-        report(i, f"Rebuilding '{key}' ({i + 1}/{total})...")
+        plan = plans.get(_analysis_source_of(key)) or []
+        if not plan:
+            failures.append(key)
+            print(Fore.YELLOW + f"[Rebuild] '{key}' skipped: this space has no "
+                                f"{_analysis_source_of(key)} data recorded.")
+            continue
+        report(i, f"Rebuilding '{key}' ({i + 1}/{len(keys)})...")
         try:
             result = rebuild_one_section(storage_path, key, plan,
                                          match_filename=match_filename,

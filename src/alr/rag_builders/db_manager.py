@@ -349,56 +349,11 @@ def rebuild_section_text_db(MF, VDB, key, master_excel_file=None) -> int:
     return written
 
 
-def rebuild_section_databases(Storage_path, keys=None, progress_callback=None,
-                              should_cancel=None):
-    """
-    Rebuild the text DB **and** the vector index of the given attributes (all
-    of them by default) for one storage space — the on-demand counterpart of
-    the automatic realignment inside :func:`_sync_sections_VDB`.
-
-    ``progress_callback(done, total, text)`` is called per attribute (one unit
-    for its Excel rebuild, one for its re-embedding) and ``should_cancel``
-    is checked between attributes; whatever was rebuilt before a cancel stays.
-    Returns {section key: error} for the attributes whose index sync failed.
-    """
-    MF = DataAnalyzeManager(Storage_path)
-    VDB = Vec_DB_Manager(Storage_path)
-    keys = list(keys) if keys else list(_all_rag_keys())
-    should_cancel = should_cancel or (lambda: False)
-    total = len(keys) * 2
-    done = 0
-
-    def tick(text):
-        nonlocal done
-        done += 1
-        if progress_callback:
-            progress_callback(done, total, text)
-
-    print(Fore.CYAN + Style.BRIGHT
-          + f"--- Rebuilding {len(keys)} attribute(s) (Excel + index): {Storage_path} ---"
-          + Style.RESET_ALL)
-    rebuilt = []
-    for key in keys:
-        if should_cancel():
-            print(Fore.YELLOW + "Rebuild cancelled by user.")
-            break
-        print(Fore.LIGHTBLUE_EX + f"\n— Section: {key}" + Style.RESET_ALL)
-        tick(f"Rebuilding the text DB of '{key}'…")
-        try:
-            rebuild_section_text_db(MF, VDB, key)
-            rebuilt.append(key)
-        except Exception as e:  # noqa: BLE001 - one attribute must not stop the rest
-            print(Fore.RED + f"   ❌ Text DB rebuild failed for '{key}': {e}")
-
-    failures = {}
-    for key in rebuilt:
-        if should_cancel():
-            break
-        tick(f"Re-embedding '{key}'…")
-        secs_VDB = build_sections_map_vdb_excel(VDB, only=[key])
-        failures.update(_sync_sections_VDB(VDB, secs_VDB, rebuild=True))
-    print(Fore.GREEN + Style.BRIGHT + "--- Rebuild complete ---" + Style.RESET_ALL)
-    return failures
+# NOTE: the on-demand, user-facing rebuild lives in
+# rag_builders/section_rebuilder.py (atomic writes, .prerebuild backups,
+# common-DB membership freezing, per-run unresolved log). This module keeps
+# only the per-attribute text-DB rebuild above, which the automatic
+# index/Excel realignment below calls.
 
 
 def rebuild_vector_databases(Storage_path):

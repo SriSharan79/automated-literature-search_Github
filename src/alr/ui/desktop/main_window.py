@@ -2467,9 +2467,11 @@ class AutomatedLiteratureUI(tk.Tk):
             if done == 0:
                 messagebox.showwarning(
                     "Rebuild finished",
-                    "No attribute was rebuilt. The most common cause is a document in the "
-                    "common DB that no longer exists in any source storage space — see the "
-                    "console log and Rebuild_unresolved_members.txt for the detail.")
+                    "No attribute was rebuilt. The most common causes are a document in the "
+                    "common DB that no longer exists in any source storage space, or a "
+                    "storage space with no analysis data recorded for the chosen "
+                    "attributes — see the console log and this run's "
+                    "'{timestamp}_Rebuild_unresolved_members.txt' for the detail.")
                 return
             messagebox.showinfo(
                 "Rebuild finished",
