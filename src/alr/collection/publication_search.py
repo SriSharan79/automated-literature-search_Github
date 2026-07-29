@@ -27,6 +27,10 @@ import pandas as pd
 import requests
 from colorama import Fore, Style
 
+from alr.common.general_utils import (retry_after_seconds,
+                                      MAX_RETRY_AFTER_SECONDS,
+                                      RETRY_BACKOFF_CAP_SECONDS)
+
 OPENALEX_BASE_URL = "https://api.openalex.org/works"
 # Optional contact email for OpenAlex's polite pool (faster, more reliable).
 OPENALEX_MAILTO = os.environ.get("ALR_OPENALEX_MAILTO", "")
@@ -152,23 +156,33 @@ def _reconstruct_openalex_abstract(inverted_index) -> str:
 
 
 def _openalex_get(params: dict, timeout: int = 30, max_retries: int = 3) -> dict:
-    """GET from OpenAlex with a native timeout and bounded retry on 429/5xx."""
+    """GET from OpenAlex with a native timeout and bounded retry on 429/5xx.
+
+    Retry-After is honoured only up to MAX_RETRY_AFTER_SECONDS: a longer one
+    means the daily quota is spent, and sleeping it out would hang the whole
+    collection run rather than letting it finish on the other backend."""
     if OPENALEX_MAILTO:
         params = {**params, "mailto": OPENALEX_MAILTO}
     delay = 2.0
     last_exc = None
     for attempt in range(1, max_retries + 1):
+        wait = min(delay, RETRY_BACKOFF_CAP_SECONDS)
         try:
             OPENALEX_LIMITER.acquire()
             resp = requests.get(OPENALEX_BASE_URL, params=params, timeout=(10, timeout))
             if resp.status_code in (429, 500, 502, 503, 504):
-                retry_after = resp.headers.get("Retry-After")
-                if retry_after:
-                    try:
-                        delay = max(delay, float(retry_after))
-                    except ValueError:
-                        pass
                 last_exc = requests.HTTPError(f"OpenAlex: HTTP {resp.status_code}", response=resp)
+                asked = retry_after_seconds(resp.headers.get("Retry-After"))
+                if asked is not None:
+                    if asked > MAX_RETRY_AFTER_SECONDS:
+                        print(Fore.RED
+                              + f"❌ OpenAlex: HTTP {resp.status_code} with "
+                              + f"Retry-After {asked:.0f}s ({asked / 3600:.1f}h) — "
+                              + "a quota reset, not congestion, so OpenAlex is "
+                              + "given up on now instead of blocking the run."
+                              + Style.RESET_ALL)
+                        raise last_exc
+                    wait = max(wait, asked)
             else:
                 resp.raise_for_status()
                 return resp.json()
@@ -176,10 +190,10 @@ def _openalex_get(params: dict, timeout: int = 30, max_retries: int = 3) -> dict
             last_exc = e
         if attempt < max_retries:
             print(Fore.YELLOW
-                  + f"⚠️ OpenAlex request failed ({last_exc}); retrying in {delay:.0f}s "
+                  + f"⚠️ OpenAlex request failed ({last_exc}); retrying in {wait:.0f}s "
                   + f"(attempt {attempt}/{max_retries})..." + Style.RESET_ALL)
-            time.sleep(delay)
-            delay *= 2
+            time.sleep(wait)
+            delay = min(delay * 2, RETRY_BACKOFF_CAP_SECONDS)
     raise last_exc
 
 
