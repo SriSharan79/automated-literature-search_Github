@@ -1,5 +1,8 @@
 from alr.common.System_prompts import General_Sys_Prompt
-from alr.common.general_utils import caluculate_time_taken, print_with_separator
+from alr.common.general_utils import (caluculate_time_taken, print_with_separator,
+                                      retry_after_seconds,
+                                      MAX_RETRY_AFTER_SECONDS,
+                                      RETRY_BACKOFF_CAP_SECONDS)
 from alr.common.LLM_Config import BLABLADOR_BASE_URL, PREFERRED_BLABLADOR_MODELS, check_api_key, get_stored_api_key,local_model_dir,model_repo_id, OLLAMA_BASE_URL, DEFAULT_BLABLADOR_MODEL, DEFAULT_OLLAMA_MODEL, CHATAI_BASE_URL, PREFERRED_CHATAI_MODELS, DEFAULT_CHATAI_MODEL, DEFAULT_CHATAI_EMBEDDING_MODEL
 from alr.common.file_manager import ALR_main_folder
 from alr.common import activity_monitor
@@ -65,7 +68,10 @@ CONNECT_TIMEOUT_SECONDS = 10
 def _post_with_retries(url, headers, payload, timeout, service, max_retries=3):
     """
     POST with a native requests timeout and retry-with-backoff on transient
-    failures (429/5xx, connection errors, timeouts). Retry-After is honoured.
+    failures (429/5xx, connection errors, timeouts). Retry-After is honoured
+    up to MAX_RETRY_AFTER_SECONDS; a longer one means an exhausted quota
+    rather than congestion, so the service is given up on immediately and
+    llm_call's fallback takes over instead of the run sleeping for hours.
     Non-retryable HTTP errors (401, 404, ...) raise immediately; after
     max_retries attempts the last error raises to the caller.
     """
@@ -73,18 +79,26 @@ def _post_with_retries(url, headers, payload, timeout, service, max_retries=3):
     last_exc = None
     for attempt in range(1, max_retries + 1):
         _respect_rate_limit()
+        wait = min(delay, RETRY_BACKOFF_CAP_SECONDS)
         try:
             resp = requests.post(url, headers=headers, json=payload,
                                  timeout=(CONNECT_TIMEOUT_SECONDS, timeout))
             if resp.status_code in RETRYABLE_STATUS:
-                retry_after = resp.headers.get("Retry-After")
-                if retry_after:
-                    try:
-                        delay = max(delay, float(retry_after))
-                    except ValueError:
-                        pass
                 last_exc = requests.HTTPError(
                     f"{service}: HTTP {resp.status_code}", response=resp)
+                asked = retry_after_seconds(resp.headers.get("Retry-After"))
+                if asked is not None:
+                    if asked > MAX_RETRY_AFTER_SECONDS:
+                        print(Fore.RED
+                              + f"❌ {service}: HTTP {resp.status_code} with "
+                              + f"Retry-After {asked:.0f}s "
+                              + f"({asked / 3600:.1f}h) — that is a quota "
+                              + "reset, not congestion, so this service is "
+                              + "given up on now instead of blocking the run."
+                              + Style.RESET_ALL)
+                        raise last_exc
+                    # Honour the server's hint, but never shrink our backoff.
+                    wait = max(wait, asked)
             else:
                 resp.raise_for_status()
                 return resp
@@ -93,10 +107,10 @@ def _post_with_retries(url, headers, payload, timeout, service, max_retries=3):
         if attempt < max_retries:
             print(Fore.YELLOW
                   + f"⚠️ {service} request failed ({last_exc}); "
-                  + f"retrying in {delay:.0f}s (attempt {attempt}/{max_retries})..."
+                  + f"retrying in {wait:.0f}s (attempt {attempt}/{max_retries})..."
                   + Style.RESET_ALL)
-            time.sleep(delay)
-            delay *= 2
+            time.sleep(wait)
+            delay = min(delay * 2, RETRY_BACKOFF_CAP_SECONDS)
     raise last_exc
 
 

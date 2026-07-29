@@ -346,3 +346,41 @@ def print_with_separator(input_string, separator="*", terminal_width=None, defau
         f"{separator_string}\n"
     )
 
+
+
+# ---------------------------------------------------------------------------
+# Retry-After handling, shared by every HTTP client in the package
+# ---------------------------------------------------------------------------
+# Waiting out a 429 is only worth it for transient congestion. A provider that
+# answers "come back in nine hours" is reporting an exhausted quota, not a busy
+# moment: sleeping on that would freeze the run for the rest of the day while
+# another service sits idle. Anything longer than MAX_RETRY_AFTER_SECONDS is
+# therefore treated as "this service is done", so the caller can fall back at
+# once. RETRY_BACKOFF_CAP_SECONDS bounds our own doubling for the same reason.
+MAX_RETRY_AFTER_SECONDS = 120.0
+RETRY_BACKOFF_CAP_SECONDS = 60.0
+
+
+def retry_after_seconds(value):
+    """Seconds to wait from a Retry-After header, which is either a number of
+    seconds or an HTTP date. None when it is absent or unparsable."""
+    if not value:
+        return None
+    text = str(value).strip()
+    try:
+        return max(float(text), 0.0)
+    except ValueError:
+        pass
+    try:
+        from email.utils import parsedate_to_datetime
+        when = parsedate_to_datetime(text)
+    except Exception:  # noqa: BLE001 - a malformed date is simply "no hint"
+        return None
+    if when is None:
+        return None
+    try:
+        now = (datetime.datetime.now(when.tzinfo) if when.tzinfo
+               else datetime.datetime.now())
+        return max((when - now).total_seconds(), 0.0)
+    except Exception:  # noqa: BLE001
+        return None
