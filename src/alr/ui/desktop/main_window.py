@@ -2355,16 +2355,30 @@ class AutomatedLiteratureUI(tk.Tk):
 
         self._run_threaded(work, "Building Common Database", "added", on_success=on_success)
 
+    # ---------------------------------------------------------------------------
+# Drop-in replacement for MainWindow._rebuild_section_dbs_action
+# (src/alr/ui/desktop/main_window.py). Same name, same call site, no new
+# attributes on self.
+# ---------------------------------------------------------------------------
+
     def _rebuild_section_dbs_action(self):
         """
         Rebuild chosen attributes' section databases: their Excel/JSON from the
-        space's analysis JSONs, then their FAISS index from that Excel.
+        per-document analysis JSONs, then their FAISS index from that Excel.
 
         The repair for an attribute whose index and Excel have drifted apart
         ("index has more vectors than Excel rows"), or whose section Excel holds
         stale content an incremental sync cannot correct — the incremental path
         upserts per document and so never rewrites a row that already exists.
+
+        A common DB has no analysis JSONs of its own, so it is rebuilt from the
+        source storage spaces recorded in its config file. Its membership and
+        row order are frozen to what it already holds: a source space that has
+        grown since the common DB was built must not leak new documents into
+        just the attribute being rebuilt.
         """
+        from alr.rag_builders.section_rebuilder import load_common_db_sources
+
         query_common = getattr(self, "query_target_var", None) and self.query_target_var.get() == "common"
         storage_choice = (self.common_db_entry.get().strip() if query_common
                           else self.visualize_storage_entry.get().strip())
@@ -2373,15 +2387,40 @@ class AutomatedLiteratureUI(tk.Tk):
             return
         clean_path = clean_folder_path(storage_choice)
 
+        # --- common DB: resolve its sources before anything else -----------
+        sources = None
+        match_filename = False
         if query_common:
-            messagebox.showwarning(
-                "Common DB selected",
-                "A common database holds the built databases but not the per-document "
-                "analysis JSONs, so its section Excels cannot be rebuilt from source.\n\n"
-                "Rebuild the attributes in the source storage spaces and build the common "
-                "DB again.")
-            return
+            sources, cfg_match = load_common_db_sources(clean_path)
+            if not sources:
+                # Fall back to whatever the Common DB tab currently lists.
+                sources = [clean_folder_path(s) for s in self.common_sources_list.get(0, "end")]
+            else:
+                sources = [clean_folder_path(s) for s in sources]
 
+            if not sources:
+                messagebox.showerror(
+                    "No sources recorded",
+                    "This common DB has no source storage spaces in its config, and none "
+                    "are listed on the Common DB tab.\n\nAdd the source spaces there, then "
+                    "rebuild.")
+                return
+
+            missing = [s for s in sources if not os.path.isdir(s)]
+            if missing:
+                messagebox.showerror(
+                    "Source storage space unavailable",
+                    "These source storage spaces are not reachable:\n\n"
+                    + "\n".join(missing)
+                    + "\n\nRebuilding without them would drop their documents from the "
+                      "selected attribute(s) only, leaving the common DB ragged. "
+                      "Reconnect them and try again.")
+                return
+
+            match_filename = (cfg_match if cfg_match is not None
+                              else bool(self.common_match_filename_var.get()))
+
+        # --- attributes ----------------------------------------------------
         keys = self._pick_attributes_dialog(
             "Rebuild section databases — attributes",
             default_keys=[k for k, v in self.query_section_vars.items() if v.get()])
@@ -2391,29 +2430,50 @@ class AutomatedLiteratureUI(tk.Tk):
             messagebox.showerror("Error", "Select at least one attribute to rebuild.")
             return
 
+        # --- confirm -------------------------------------------------------
+        if query_common:
+            source_line = (f"Content is pulled from the {len(sources)} recorded source "
+                           f"storage space(s); the common DB keeps its current document "
+                           f"set and order.\n\n")
+        else:
+            source_line = ""
+
         if not messagebox.askokcancel(
                 "Rebuild section databases",
                 f"Rebuild {len(keys)} attribute(s) in:\n{clean_path}\n\n"
-                "Each one's section Excel/JSON is rewritten from the space's analysis "
-                "JSONs and its vector index re-embedded from that Excel. Other attributes "
-                "are left untouched.\n\nRe-embedding costs embedding calls."):
+                f"{source_line}"
+                "Each one's section Excel/JSON is rewritten from the analysis JSONs and "
+                "its vector index re-embedded from that Excel. Other attributes are left "
+                "untouched, and the previous files are kept alongside as .prerebuild "
+                "copies.\n\nRe-embedding costs embedding calls."):
             return
 
         print(f"[Rebuild] Rebuilding {len(keys)} attribute(s) in: {clean_path}")
+        if query_common:
+            print(f"[Rebuild] Sources: {', '.join(sources)}")
 
         def work(progress, should_cancel):
             from alr.rag_builders.db_manager import rebuild_section_databases
             failures = rebuild_section_databases(
-                clean_path, keys=keys, should_cancel=should_cancel,
+                clean_path, keys=keys, sources=sources,
+                match_filename=match_filename, should_cancel=should_cancel,
                 progress_callback=lambda d, t, txt: progress(done=d, total=t, text=txt))
             if failures:
                 print(f"[Rebuild] {len(failures)} attribute(s) failed: {', '.join(failures)}")
             return len(keys) - len(failures)
 
         def on_success(n):
+            done = n or 0
+            if done == 0:
+                messagebox.showwarning(
+                    "Rebuild finished",
+                    "No attribute was rebuilt. The most common cause is a document in the "
+                    "common DB that no longer exists in any source storage space — see the "
+                    "console log and Rebuild_unresolved_members.txt for the detail.")
+                return
             messagebox.showinfo(
                 "Rebuild finished",
-                f"{n or 0} attribute(s) rebuilt (section Excel/JSON + vector index).\n"
+                f"{done} attribute(s) rebuilt (section Excel/JSON + vector index).\n"
                 "See the console log for the per-attribute detail.")
 
         self._run_threaded(work, "Rebuild section databases", "rebuilt", on_success=on_success)
