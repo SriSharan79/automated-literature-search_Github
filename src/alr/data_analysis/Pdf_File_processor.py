@@ -30,11 +30,6 @@ from alr.data_analysis.Results_Conclusion_Analyzer import (
 )
 from alr.data_analysis.section_resolver import (
     TARGETS,
-    needs_top_up,
-    top_up_missing_attributes,
-)
-from alr.data_analysis.section_resolver import (
-    TARGETS,
     needs_completion,            # was: needs_top_up
     complete_missing_attributes, # was: top_up_missing_attributes
 )

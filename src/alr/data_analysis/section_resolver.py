@@ -666,36 +666,44 @@ def top_up_missing_attributes(MF, target: str, force: bool = False) -> list[str]
     section_text = data.get(spec.text_key) or ""
     extra = follow_up_text(MF, spec, section_text)
 
-    # Record the attempt even if it fails, so re-runs do not repeat it.
+    if not extra:
+        # No chunks to widen into: the document's sections JSON is missing,
+        # unreadable, or holds nothing after this section. That is an
+        # environmental problem, NOT a spent attempt -- recording it here would
+        # burn the document's one top-up on a pass that never ran, and no later
+        # run (after the sections are rebuilt) could ever try again. Re-checking
+        # costs a file read and no LLM call.
+        print(f"⚠️ {spec.label}: no further chunks available for a top-up pass "
+              f"(nothing spent; it will be retried once the document's sections are readable).")
+        return []
+
+    # Record the attempt even if the pass itself fails, so re-runs do not repeat it.
     data[TOPUP_KEY] = top_up_attempts(data) + 1
 
     filled: list[str] = []
-    if extra:
-        print(
-            Fore.YELLOW
-            + f"\n↻ {spec.label}: {len(gaps)} attribute(s) missing "
-              f"({', '.join(gaps)}); retrying with {FOLLOW_UP_CHUNKS} more chunks."
-            + Style.RESET_ALL
-        )
-        user_prompt = (
-            f"{spec.label} text:\n {section_text}\n\n"
-            f"Additional context from the following part of the document:\n {extra}"
-        )
-        llm_service = getattr(MF, "llm_service", None) or "o"
-        try:
-            raw = llm_call(user_prompt, spec.extract_sp, llm_service)
-            retry = json.loads(clean_response_json_text(raw))
-        except Exception as exc:
-            print(f"⚠️ {spec.label} top-up pass failed: {exc}")
-            retry = None
+    print(
+        Fore.YELLOW
+        + f"\n↻ {spec.label}: {len(gaps)} attribute(s) missing "
+          f"({', '.join(gaps)}); retrying with {FOLLOW_UP_CHUNKS} more chunks."
+        + Style.RESET_ALL
+    )
+    user_prompt = (
+        f"{spec.label} text:\n {section_text}\n\n"
+        f"Additional context from the following part of the document:\n {extra}"
+    )
+    llm_service = getattr(MF, "llm_service", None) or "o"
+    try:
+        raw = llm_call(user_prompt, spec.extract_sp, llm_service)
+        retry = json.loads(clean_response_json_text(raw))
+    except Exception as exc:
+        print(f"⚠️ {spec.label} top-up pass failed: {exc}")
+        retry = None
 
-        if isinstance(retry, dict):
-            for key in gaps:
-                if key in retry and not is_missing(retry[key]):
-                    data[key] = retry[key]
-                    filled.append(key)
-    else:
-        print(f"⚠️ {spec.label}: no further chunks available for a top-up pass.")
+    if isinstance(retry, dict):
+        for key in gaps:
+            if key in retry and not is_missing(retry[key]):
+                data[key] = retry[key]
+                filled.append(key)
 
     try:
         with open(path, "w", encoding="utf-8") as f:
