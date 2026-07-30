@@ -69,13 +69,18 @@ def find_dated_files_with(folder, name_contains, key_col, key_value, sheet_name=
     if not folder.is_dir() or not _nonempty(key_value):
         return []
 
+    from alr.common.excel_utils import read_excel_cached
+
     target = str(key_value).strip()
     matches = []
     for path in folder.glob(f"*{name_contains}*.xlsx"):
         if path.name.startswith("~$"):  # skip Excel lock files
             continue
         try:
-            df = pd.read_excel(path, sheet_name=sheet_name) if sheet_name else pd.read_excel(path)
+            # Cached: this folder is re-scanned once per document per stage,
+            # and the dated workbooks do not change while a pass runs.
+            df = (read_excel_cached(path, sheet_name=sheet_name) if sheet_name
+                  else read_excel_cached(path))
         except Exception:
             continue
         if key_col not in df.columns or df.empty:
@@ -98,10 +103,13 @@ def latest_dated_row(folder, name_contains, key_col, key_value, sheet_name=None)
     if not files:
         return None, None
 
+    from alr.common.excel_utils import read_excel_cached
+
     target = str(key_value).strip()
     for path in files:  # already newest-first
         try:
-            df = pd.read_excel(path, sheet_name=sheet_name) if sheet_name else pd.read_excel(path)
+            df = (read_excel_cached(path, sheet_name=sheet_name) if sheet_name
+                  else read_excel_cached(path))
         except Exception:
             continue
         if key_col not in df.columns:

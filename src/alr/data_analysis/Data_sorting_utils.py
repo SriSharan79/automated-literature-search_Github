@@ -402,11 +402,13 @@ def save_excel_log(excel_log_path, excel_data,Time_taken_4_chunking,Time_taken_4
     excel_data["Body"] = ", ".join(excel_data["Body"])
     excel_data["Remaining"] = ", ".join(excel_data["Remaining"])
     
+    from alr.common.excel_utils import read_excel_cached, write_excel_cached
+
     df_new = pd.DataFrame([excel_data])
     if os.path.exists(excel_log_path):
-        df_existing = pd.read_excel(excel_log_path)
+        df_existing = read_excel_cached(excel_log_path)
         df_final = pd.concat([df_existing, df_new], ignore_index=True)
     else:
         df_final = df_new
-    
-    df_final.to_excel(excel_log_path, index=False)
+
+    write_excel_cached(df_final, excel_log_path)

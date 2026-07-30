@@ -2,6 +2,7 @@ import pandas as pd
 import os
 import shutil
 import threading
+from contextlib import contextmanager
 from pathlib import Path
 
 # ---------------------------------------------------------------------------
@@ -43,6 +44,13 @@ def read_excel_cached(path, sheet_name=0, **kwargs):
         return pd.read_excel(path, sheet_name=sheet_name, **kwargs)
 
     key = (str(Path(path)), sheet_name)
+
+    with _CACHE_LOCK:
+        # Inside a deferred session the in-memory image is newer than the file
+        # and IS the truth; never fall back to what is still on disk.
+        if _DIRTY.get(key) and key in _CACHE:
+            return _CACHE[key][1]
+
     stamp = _stamp(path)
     if stamp is None:                      # missing file: let pandas raise as before
         return pd.read_excel(path, sheet_name=sheet_name)
@@ -65,10 +73,25 @@ def read_excel_cached(path, sheet_name=0, **kwargs):
 
 
 def write_excel_cached(df, path, sheet_name=0, **kwargs):
-    """Write a workbook and keep the cache in step with what is now on disk."""
+    """
+    Write a workbook and keep the cache in step with what is now on disk.
+
+    Inside a :func:`workbook_session` for this path the write is **deferred**:
+    the frame becomes the session's in-memory image and reaches disk at the
+    next :func:`checkpoint` or when the session closes.
+    """
+    key = (str(Path(path)), sheet_name)
+    with _CACHE_LOCK:
+        deferred = str(Path(path)) in _DEFERRED
+        if deferred:
+            # No stamp: the file on disk is now older than what we hold, so a
+            # stamp would make the next read look valid and serve stale data.
+            _CACHE[key] = (None, df)
+            _DIRTY[key] = True
+            return
     df.to_excel(path, index=False, **kwargs)
     with _CACHE_LOCK:
-        _CACHE[(str(Path(path)), sheet_name)] = (_stamp(path), df)
+        _CACHE[key] = (_stamp(path), df)
 
 
 def invalidate_excel_cache(path=None):
@@ -79,6 +102,84 @@ def invalidate_excel_cache(path=None):
         else:
             for key in [k for k in _CACHE if k[0] == str(Path(path))]:
                 _CACHE.pop(key, None)
+
+
+# ---------------------------------------------------------------------------
+# Deferred (write-behind) workbook sessions
+# ---------------------------------------------------------------------------
+# Reading is cached above, but each *update* still rewrote the whole workbook,
+# and the per-document pipeline updates the registry and the analysis logs
+# several times per PDF. Rewriting a 5000-row registry six times per document
+# is most of what is left of the quadratic cost.
+#
+# Inside a session those writes accumulate in memory and are flushed on a
+# checkpoint (so a crash or a cancel costs at most the documents since the last
+# one, never the whole run) and again on close. Reads inside the session see
+# the in-memory image, so nothing observes a half-written state -- as long as
+# every reader goes through read_excel_cached, which is why the pipeline's
+# readers were converted first.
+_DEFERRED = {}     # path -> open session count (nested/overlapping sessions)
+_DIRTY = {}        # (path, sheet) -> True
+
+
+def _flush_locked(paths=None):
+    """
+    Write dirty deferred workbooks (all of them, or just ``paths``). Caller
+    holds the lock.
+    """
+    written = []
+    for key in list(_DIRTY):
+        path, sheet_name = key
+        if paths is not None and path not in paths:
+            continue
+        entry = _CACHE.get(key)
+        if entry is None:
+            _DIRTY.pop(key, None)
+            continue
+        df = entry[1]
+        try:
+            Path(path).parent.mkdir(parents=True, exist_ok=True)
+            df.to_excel(path, index=False)
+            _CACHE[key] = (_stamp(path), df)
+            _DIRTY.pop(key, None)
+            written.append(path)
+        except Exception as e:  # noqa: BLE001 - keep it dirty and try again later
+            print(f"⚠️ Could not write {path}: {e}")
+    return written
+
+
+def checkpoint():
+    """Flush the deferred workbooks now (call between documents)."""
+    with _CACHE_LOCK:
+        return _flush_locked()
+
+
+@contextmanager
+def workbook_session(*paths):
+    """
+    Defer writes to ``paths`` for the duration of the block.
+
+    Nesting is safe: sessions are reference-counted per path, and the writes
+    are flushed when the outermost one closes -- including on an exception, so
+    a failed pass still keeps everything it had done.
+    """
+    keys = [str(Path(p)) for p in paths if p]
+    with _CACHE_LOCK:
+        for k in keys:
+            _DEFERRED[k] = _DEFERRED.get(k, 0) + 1
+    try:
+        yield checkpoint
+    finally:
+        with _CACHE_LOCK:
+            for k in keys:
+                if _DEFERRED.get(k, 0) <= 1:
+                    _DEFERRED.pop(k, None)
+                else:
+                    _DEFERRED[k] -= 1
+            # Only the paths this session actually closed: an inner session
+            # exiting must not flush what the outer one is still batching.
+            closed = {k for k in keys if k not in _DEFERRED}
+            _flush_locked(closed if _DEFERRED else None)
 
 
 def get_column_value(excel_file, column_name, idx):

@@ -26,7 +26,8 @@ def _load_existing_classification(excel_path):
     if not Path(excel_path).exists():
         return [], set()
     try:
-        df = pd.read_excel(excel_path)
+        from alr.common.excel_utils import read_excel_cached
+        df = read_excel_cached(excel_path)
     except Exception:
         return [], set()
     if df.empty:
@@ -100,13 +101,15 @@ def _append_classification_row(excel_path, row):
     existing = []
     if Path(excel_path).exists():
         try:
-            existing = pd.read_excel(excel_path).to_dict("records")
+            from alr.common.excel_utils import read_excel_cached
+            existing = read_excel_cached(excel_path).to_dict("records")
         except Exception:
             existing = []
     fname = str(row.get("filename"))
     merged = [r for r in existing if str(r.get("filename")) != fname]
     merged.append(row)
-    pd.DataFrame(merged).to_excel(excel_path, index=False)
+    from alr.common.excel_utils import write_excel_cached
+    write_excel_cached(pd.DataFrame(merged), excel_path)
 
 
 def copy_classification_from_previous(manager, filename, title, kind="title", db_path=None, uuid=None):

@@ -364,7 +364,8 @@ class DataAnalyzeManager:
         n_registry = 0
         if registry.exists():
             try:
-                n_registry = len(pd.read_excel(registry))
+                from alr.common.excel_utils import read_excel_cached
+                n_registry = len(read_excel_cached(registry))
             except Exception:
                 n_registry = 0
 

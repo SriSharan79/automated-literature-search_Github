@@ -40,6 +40,13 @@ def _provider_code(value):
         return s.upper()
     return _DISPLAY_TO_CODE.get(s.lower(), "B")
 from alr.common.sql_store import sync_storage_to_sql, set_default_search_root as set_sql_search_root
+from alr.common.excel_utils import workbook_session
+
+# Documents between flushes of the deferred registry/analysis logs during a
+# batch. A crash or a cancel costs at most this many documents' log rows —
+# and even those are recoverable, since the analysis JSONs are already on
+# disk and the next run re-registers them without re-running Docling.
+REGISTRY_FLUSH_EVERY = 25
 from alr.common import crash_logger
 from alr.ui.desktop.review_app import open_review_app
 from alr.ui.desktop._async import run_threaded, make_scrollable_tab
@@ -1776,70 +1783,88 @@ class AutomatedLiteratureUI(tk.Tk):
             total = len(to_process)
             counts["total"] = total
             next_phase()
+
+            # The registry and the per-target logs are rewritten several times
+            # per document. Inside this session those writes are held in memory
+            # and flushed every REGISTRY_FLUSH_EVERY documents (and again when
+            # the block exits, failure or cancel included), instead of rewriting
+            # whole workbooks 30-odd times per PDF.
+            log_books = [MF.excel_success, MF.excel_failed,
+                         getattr(MF, "raw_section_excel_log_path", None),
+                         getattr(MF, "refrences_excel_log_path", None),
+                         getattr(MF, "AD_Abstract_log_path", None),
+                         getattr(MF, "AD_Intro_log_path", None),
+                         getattr(MF, "AD_ResCon_log_path", None)]
             try:
-                for i, pdf in enumerate(to_process, 1):
-                    if should_cancel():
-                        break
-                    pdf = Path(pdf)
+                with workbook_session(*log_books) as flush_logs:
+                    for i, pdf in enumerate(to_process, 1):
+                        if should_cancel():
+                            break
+                        pdf = Path(pdf)
 
-                    # 1. Analyze the document (sectioning + selected components;
-                    #    on-disk resume skips already-completed stages). Evaluation
-                    #    runs inside right after abstract, honoring eval_mode.
-                    #    A failure here must not end the run: the file is recorded
-                    #    in the skip log and the next one is picked up.
-                    phase(f"[{i}/{total}] Analyzing {pdf.name}", done=i, total=total)
-                    try:
-                        outcome = process_pdf_mode_file(
-                            str(pdf), str(MF.folder), components=components,
-                            doc_converter=doc_converter, eval_mode=eval_mode,
-                            should_cancel=should_cancel)
-                    except Exception as e:
-                        print(f"❌ {pdf.name} could not be analyzed ({type(e).__name__}: {e}) — "
-                              f"skipped, continuing with the next file.")
-                        not_added.append(skip_row("analyze", e, space=MF.folder, filename=pdf.name))
-                        counts["skipped"] += 1
-                        continue
-
-                    if outcome == 'C':
-                        # Cancel now lands between components, not only between
-                        # documents; whatever finished is on disk and the next
-                        # run resumes from there.
-                        print(f"🛑 Cancelled while processing {pdf.name}.")
-                        break
-
-                    if outcome == 'F':
-                        # The processor already recorded the reason in the space's
-                        # failure log; count it and move on rather than enriching
-                        # a document that has no analysis.
-                        print(f"⚠️ {pdf.name} did not complete analysis; see {MF.excel_failed}.")
-                        counts["failed"] += 1
-                        continue
-
-                    # 2. Copy this document's analysis into SQL immediately (latest wins).
-                    phase(f"[{i}/{total}] Updating database: {pdf.name}", done=i, total=total)
-                    try:
-                        if not sync_one_document(MF, pdf.name):
-                            print(f"[Database Sync] No registry row yet for {pdf.name}.")
-                    except Exception as e:
-                        print(f"[Database Sync] {pdf.name}: {e}")
-
-                    doc = lookup_doc(pdf.name)
-
-                    # 3. Classification (by title and/or abstract per the user's
-                    # choice), copy-or-generate per class_mode.
-                    if do_classify and doc and not should_cancel():
-                        phase(f"[{i}/{total}] Classifying: {pdf.name}", done=i, total=total)
+                        # 1. Analyze the document (sectioning + selected components;
+                        #    on-disk resume skips already-completed stages). Evaluation
+                        #    runs inside right after abstract, honoring eval_mode.
+                        #    A failure here must not end the run: the file is recorded
+                        #    in the skip log and the next one is picked up.
+                        phase(f"[{i}/{total}] Analyzing {pdf.name}", done=i, total=total)
                         try:
-                            from alr.analysis_evaluation.publication_classification.classify_runner import classify_document
-                            if do_classify_title:
-                                classify_document(MF, doc, kind="title", service=service, mode=class_mode)
-                            if do_classify_abstract:
-                                classify_document(MF, doc, kind="abstract", service=service, mode=class_mode)
+                            outcome = process_pdf_mode_file(
+                                str(pdf), str(MF.folder), components=components,
+                                doc_converter=doc_converter, eval_mode=eval_mode,
+                                should_cancel=should_cancel)
                         except Exception as e:
-                            print(f"[Classification] {pdf.name}: {e}")
+                            print(f"❌ {pdf.name} could not be analyzed ({type(e).__name__}: {e}) — "
+                                  f"skipped, continuing with the next file.")
+                            not_added.append(skip_row("analyze", e, space=MF.folder, filename=pdf.name))
+                            counts["skipped"] += 1
+                            continue
 
-                    processed += 1
-                    counts["analyzed"] = processed
+                        if outcome == 'C':
+                            # Cancel now lands between components, not only between
+                            # documents; whatever finished is on disk and the next
+                            # run resumes from there.
+                            print(f"🛑 Cancelled while processing {pdf.name}.")
+                            break
+
+                        if outcome == 'F':
+                            # The processor already recorded the reason in the space's
+                            # failure log; count it and move on rather than enriching
+                            # a document that has no analysis.
+                            print(f"⚠️ {pdf.name} did not complete analysis; see {MF.excel_failed}.")
+                            counts["failed"] += 1
+                            continue
+
+                        # 2. Copy this document's analysis into SQL immediately (latest wins).
+                        phase(f"[{i}/{total}] Updating database: {pdf.name}", done=i, total=total)
+                        try:
+                            if not sync_one_document(MF, pdf.name):
+                                print(f"[Database Sync] No registry row yet for {pdf.name}.")
+                        except Exception as e:
+                            print(f"[Database Sync] {pdf.name}: {e}")
+
+                        doc = lookup_doc(pdf.name)
+
+                        # 3. Classification (by title and/or abstract per the user's
+                        # choice), copy-or-generate per class_mode.
+                        if do_classify and doc and not should_cancel():
+                            phase(f"[{i}/{total}] Classifying: {pdf.name}", done=i, total=total)
+                            try:
+                                from alr.analysis_evaluation.publication_classification.classify_runner import classify_document
+                                if do_classify_title:
+                                    classify_document(MF, doc, kind="title", service=service, mode=class_mode)
+                                if do_classify_abstract:
+                                    classify_document(MF, doc, kind="abstract", service=service, mode=class_mode)
+                            except Exception as e:
+                                print(f"[Classification] {pdf.name}: {e}")
+
+                        processed += 1
+                        counts["analyzed"] = processed
+
+                        # Checkpoint the deferred logs so a crash or a cancel
+                        # costs at most this many documents, never the run.
+                        if i % REGISTRY_FLUSH_EVERY == 0:
+                            flush_logs()
             finally:
                 # Always stop the extraction worker: on success, on a failure and
                 # on a cancel (a live worker would otherwise outlive the pass).

@@ -249,7 +249,8 @@ def log_Ref_data_extracted(excel_log_path, JSON_path, pdf_name, ID, Time_taken="
 
     # 4. Read existing Excel or create a new DataFrame
     if os.path.exists(excel_log_path):
-        df = pd.read_excel(excel_log_path)
+        from alr.common.excel_utils import read_excel_cached
+        df = read_excel_cached(excel_log_path).copy()
     else:
         df = pd.DataFrame(columns=columns)
 
@@ -282,5 +283,6 @@ def log_Ref_data_extracted(excel_log_path, JSON_path, pdf_name, ID, Time_taken="
 
     # 6. Save with the correct column order
     df = df[columns]
-    df.to_excel(excel_log_path, index=False)
+    from alr.common.excel_utils import write_excel_cached
+    write_excel_cached(df, excel_log_path)
     print("Log saved successfully.")

@@ -140,34 +140,22 @@ def _excel_log_has_file(excel_path, pdf_name, filename_col_candidates=None):
         if not excel_path.exists():
             return False
 
-        wb = load_workbook(excel_path, read_only=True, data_only=True)
-        ws = wb.active
+        # Read through the shared cache rather than opening the file directly:
+        # this is asked twice per document, and inside a deferred workbook
+        # session the newest rows live in memory and are not on disk yet, so a
+        # direct read would report an already-logged document as missing.
+        from alr.common.excel_utils import read_excel_cached
+        df = read_excel_cached(excel_path)
 
-        # Read header row
-        header = []
-        for cell in next(ws.iter_rows(min_row=1, max_row=1, values_only=True)):
-            header.append(str(cell).strip() if cell is not None else "")
-
-        # Find best matching filename column
-        header_lower = [h.lower() for h in header]
-        col_idx = None
-        for cand in filename_col_candidates:
-            if cand.lower() in header_lower:
-                col_idx = header_lower.index(cand.lower()) + 1  # 1-based index
-                break
-
-        if col_idx is None:
+        # Find best matching filename column (casing may differ).
+        by_lower = {str(c).strip().lower(): c for c in df.columns}
+        column = next((by_lower[c.lower()] for c in filename_col_candidates
+                       if c.lower() in by_lower), None)
+        if column is None:
             return False
 
-        # Scan column values
-        for row in ws.iter_rows(min_row=2, values_only=True):
-            val = row[col_idx - 1]
-            if val is None:
-                continue
-            if str(val).strip() == str(pdf_name).strip():
-                return True
-
-        return False
+        target = str(pdf_name).strip()
+        return bool((df[column].astype(str).str.strip() == target).any())
 
     except Exception as e:
         # Fail-open: if checking the log fails, don't skip processing

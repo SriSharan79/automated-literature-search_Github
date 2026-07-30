@@ -804,7 +804,8 @@ def sync_storage_to_sql(manager_or_folder, db_path=DB_PATH, progress_callback=No
         return 0
 
     try:
-        df = pd.read_excel(registry)
+        from alr.common.excel_utils import read_excel_cached
+        df = read_excel_cached(registry)
     except Exception as e:
         print(f"Could not read registry {registry}: {e}")
         return 0
