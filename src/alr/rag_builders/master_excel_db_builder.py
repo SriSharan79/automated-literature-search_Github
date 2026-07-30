@@ -5,6 +5,7 @@ from colorama import Fore, Style
 import pandas as pd
 from alr.common.file_manager import DataAnalyzeManager, Vec_DB_Manager
 from alr.common.excel_utils import extract_column, get_corresponding_value
+from alr.common.skiplog import append_skiplog, skip_row
 import json
 import os
 # ADD:
@@ -15,40 +16,14 @@ from alr.rag_builders import db_cache
 # document never aborts a build: it is skipped, recorded in one of these logs
 # and the build continues with the next file. Both logs are append-only, so
 # they keep the history of every run.
+#
+# The row shape and the append-only writer live in alr.common.skiplog (every
+# pass, analysis included, writes the same kind of log); they are re-exported
+# here under their long-standing private names for the importers below.
 MASTER_EXCEL_SKIPPED_LOG = "Master_Excel_not_added.xlsx"
 
-
-def _skip_row(stage, error, space=None, uuid="", title="", filename="", sections=""):
-    """One row of a 'not added to the database' log (shared by the master
-    Excel and common-DB builders)."""
-    return {
-        "UUID": uuid, "Title": title, "Filename": filename,
-        "Source_Folder": str(space) if space else "",
-        "Stage": stage, "Sections": sections,
-        "Error": f"{type(error).__name__}: {error}" if isinstance(error, BaseException) else str(error),
-        "Run": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-    }
-
-
-def _append_skiplog(log_path, skipped_rows):
-    """Append this run's failures to a skip log (never overwrites earlier
-    runs). Returns the log path, or None when nothing was written."""
-    if not skipped_rows:
-        return None
-    log_path = Path(log_path)
-    try:
-        rows = list(skipped_rows)
-        if log_path.exists() and log_path.stat().st_size > 0:
-            try:
-                rows = pd.read_excel(log_path).to_dict("records") + rows
-            except Exception:
-                pass  # unreadable old log: start a fresh one from this run
-        log_path.parent.mkdir(parents=True, exist_ok=True)
-        pd.DataFrame(rows).to_excel(log_path, index=False)
-        return log_path
-    except Exception as e:
-        print(Fore.RED + f"❌ Could not write the skip log {log_path}: {e}")
-        return None
+_skip_row = skip_row
+_append_skiplog = append_skiplog
 
 
 def _save_master_skiplog(master_excel_path, skipped_rows):

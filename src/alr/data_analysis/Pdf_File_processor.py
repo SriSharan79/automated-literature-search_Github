@@ -130,15 +130,138 @@ def _run_extraction_with_timeout(file_path, start_time,MF, timeout=120):
     raise ValueError("Extraction failed to return data within the time limit.")
 
 
+# A batch worker gets longer than a one-off file: OCR on a long scanned PDF is
+# legitimately slow, and killing real work is worse than waiting. This only has
+# to be short enough that a genuinely stuck file cannot eat a whole night.
+BATCH_EXTRACT_TIMEOUT = 900
+
+
+def _batch_extractor_worker(req_q, res_q, enable_ocr, image_resolution_scale):
+    """
+    Child process: build the Docling converter **once**, then extract on demand.
+
+    Reads ``(file_path, start_time, MF)`` jobs off ``req_q`` and puts either a
+    :class:`ChunkingResult` or the raised exception on ``res_q``. ``None`` ends
+    the loop. Keeping the converter here is what makes a per-file timeout
+    affordable — the parent can kill a stuck extraction without the rest of the
+    batch paying to reload the model for every file.
+    """
+    from alr.data_analysis.Table_image_extractor import get_shared_doc_converter
+
+    converter = None
+    while True:
+        job = req_q.get()
+        if job is None:
+            return
+        f_path, s_time, MF = job
+        try:
+            if converter is None:
+                converter = get_shared_doc_converter(enable_ocr, image_resolution_scale)
+            d, c, et, tt = _extract_and_chunk(MF, logger, file_path=f_path,
+                                              start_time=s_time, doc_converter=converter)
+            res_q.put(ChunkingResult(doc=d, chunks=c, end_time=et, time_taken=tt))
+        except Exception as e:  # noqa: BLE001 - reported to the parent, never fatal here
+            traceback.print_exc()
+            res_q.put(e)
+
+
+class BatchExtractor:
+    """
+    Docling extraction for a batch: the model is loaded once, in a worker
+    process, and every file is bounded by ``timeout`` seconds.
+
+    The in-process shared converter is faster to set up but gives the caller no
+    way out of a PDF that never finishes — and cancellation is only checked
+    between documents, so one bad file used to hang the whole run. Here a
+    timeout terminates the worker, the file is reported as a
+    :class:`TimeoutError` (the caller skips it and moves on), and the next file
+    starts a fresh worker.
+
+    Use as a context manager, or call :meth:`close` when the batch is done.
+    """
+
+    def __init__(self, timeout=BATCH_EXTRACT_TIMEOUT, enable_ocr=True, image_resolution_scale=1.0):
+        self.timeout = timeout
+        self._ocr = bool(enable_ocr)
+        self._scale = float(image_resolution_scale)
+        self._proc = None
+        self._req_q = None
+        self._res_q = None
+
+    # -- process lifecycle --------------------------------------------------
+    def _start(self):
+        # Fresh queues per worker: a killed worker may have left a half-written
+        # message behind, and reusing the queue would hand it to the next file.
+        self._req_q, self._res_q = Queue(), Queue()
+        self._proc = Process(target=_batch_extractor_worker,
+                             args=(self._req_q, self._res_q, self._ocr, self._scale),
+                             daemon=True)
+        self._proc.start()
+
+    def _kill(self):
+        if self._proc is not None and self._proc.is_alive():
+            self._proc.terminate()
+            self._proc.join(5)
+        self._proc, self._req_q, self._res_q = None, None, None
+
+    def close(self):
+        """Stop the worker (politely if it is idle, forcibly otherwise)."""
+        if self._proc is None:
+            return
+        try:
+            if self._proc.is_alive():
+                self._req_q.put(None)
+                self._proc.join(10)
+        except Exception:  # noqa: BLE001 - shutdown must not raise
+            pass
+        self._kill()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_exc):
+        self.close()
+        return False
+
+    # -- the one operation --------------------------------------------------
+    def extract(self, file_path, start_time, MF):
+        """Extract one PDF. Raises TimeoutError past ``timeout``, or whatever
+        the extraction itself raised."""
+        if self._proc is None or not self._proc.is_alive():
+            self._start()
+
+        self._req_q.put((file_path, start_time, MF))
+        deadline = time.time() + self.timeout
+        while time.time() < deadline:
+            try:
+                result = self._res_q.get(timeout=0.5)
+            except Exception:  # queue.Empty
+                # The worker dying mid-file is a failure for THIS file, not a
+                # reason to wait out the whole timeout.
+                if not self._proc.is_alive():
+                    self._kill()
+                    raise ValueError("Docling worker exited before returning data.")
+                continue
+            if isinstance(result, BaseException):
+                raise result
+            return result
+
+        self._kill()
+        raise TimeoutError(f"Docling extraction timed out after {self.timeout}s "
+                           f"for {Path(file_path).name}")
+
+
 def _extract_chunks(file_path, start_time, MF, doc_converter=None, timeout=300):
     """
     Run Docling extraction and return a :class:`ChunkingResult`.
 
-    When ``doc_converter`` is supplied (batch mode) the extraction runs in-process
-    and reuses that shared converter, so the model pipeline is loaded only once
-    for the whole batch. Otherwise it falls back to the isolated subprocess with a
-    hard timeout (the safe single-file path).
+    ``doc_converter`` may be a :class:`BatchExtractor` (batch mode: the model is
+    loaded once in a worker process and every file is bounded by a timeout), a
+    plain pre-built converter (loaded once, in-process, no timeout), or ``None``
+    (the isolated subprocess-with-timeout path used for single files).
     """
+    if isinstance(doc_converter, BatchExtractor):
+        return doc_converter.extract(file_path, start_time, MF)
     if doc_converter is not None:
         d, c, et, tt = _extract_and_chunk(MF, logger, file_path=file_path,
                                           start_time=start_time, doc_converter=doc_converter)

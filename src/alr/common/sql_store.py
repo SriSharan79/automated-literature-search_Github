@@ -299,6 +299,25 @@ class AnalyzedDataStore:
             row = conn.execute("SELECT * FROM documents WHERE uuid=?", (uuid,)).fetchone()
             return dict(row) if row else None
 
+    def find_document(self, filename, source_folder=None):
+        """
+        Return the newest document row for ``filename`` (optionally restricted to
+        one storage space), or None.
+
+        The per-document pipeline needs this after every file; doing it with
+        ``list_documents()`` pulls the whole table across and filters in Python,
+        which grows with the database instead of with the run.
+        """
+        sql = "SELECT * FROM documents WHERE filename=?"
+        params = [str(filename)]
+        if source_folder is not None:
+            sql += " AND source_folder=?"
+            params.append(str(source_folder))
+        sql += " ORDER BY COALESCE(updated_at, timestamp) DESC LIMIT 1"
+        with self._connect() as conn:
+            row = conn.execute(sql, params).fetchone()
+            return dict(row) if row else None
+
     def count(self) -> int:
         with self._connect() as conn:
             return conn.execute("SELECT COUNT(*) FROM documents").fetchone()[0]

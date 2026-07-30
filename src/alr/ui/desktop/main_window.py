@@ -1704,15 +1704,46 @@ class AutomatedLiteratureUI(tk.Tk):
         # copied across storage/SQL instead of recomputed.
         def work(progress, should_cancel, ask):
             from alr.data_analysis.batch_dedup import find_new_and_duplicate_pdfs
+            from alr.data_analysis.Pdf_File_processor import BatchExtractor
+            from alr.common.skiplog import ANALYSIS_SKIPPED_LOG, append_skiplog, skip_row
             from alr.common.sql_store import sync_one_document, AnalyzedDataStore, DB_PATH
+
+            # Documents that could not be taken through the pipeline at all. Each
+            # one is skipped and recorded here so the run finishes the rest of the
+            # folder; the log is append-only, like every other pass's.
+            not_added = []
+            counts = {"analyzed": 0, "failed": 0, "skipped": 0, "total": 0, "log": None}
+
+            # The bar is rescaled by each phase (documents, then each finalization
+            # sweep), so the text says which phase is running rather than leaving
+            # the user to guess why the bar restarted.
+            phase_no = [0]
+
+            def next_phase(text=None):
+                """Start a new phase (the bar is about to be rescaled)."""
+                phase_no[0] += 1
+                if text is not None:
+                    progress(text=f"[Phase {phase_no[0]}] {text}")
+                return phase_no[0]
+
+            def phase(text, done=None, total=None):
+                """Report inside the current phase."""
+                progress(done=done, total=total, text=f"[Phase {phase_no[0]}] {text}")
+
+            def phased(label):
+                """Start a phase and return a progress_callback for a sweep that
+                reports its own done/total."""
+                n = next_phase(f"{label}…")
+                return lambda d, t, extra=None: progress(
+                    done=d, total=t,
+                    text=f"[Phase {n}] {label} {d}/{t}" + (f": {extra}" if extra else "…"))
+
+            store = AnalyzedDataStore(DB_PATH)
 
             def lookup_doc(filename):
                 """Fetch this document's current SQL row (or None)."""
                 try:
-                    store = AnalyzedDataStore(DB_PATH)
-                    for d in store.list_documents():
-                        if str(d.get("filename")) == str(filename) and d.get("source_folder") == str(MF.folder):
-                            return d
+                    return store.find_document(filename, source_folder=str(MF.folder))
                 except Exception as e:
                     print(f"[DB lookup] {filename}: {e}")
                 return None
@@ -1720,98 +1751,122 @@ class AutomatedLiteratureUI(tk.Tk):
             print("[Processing Strategy Active] Directing targets into analysis execution channels...")
 
             # Build the list of PDFs to process (single file, or a folder with an
-            # optional fuzzy-duplicate pre-scan) plus a shared Docling converter for
-            # batches (loaded once). Single files keep the isolated subprocess path.
+            # optional fuzzy-duplicate pre-scan) plus a batch Docling extractor:
+            # the model is loaded once in a worker process and every file is
+            # bounded by a timeout, so one unreadable PDF cannot hang the run.
+            # Single files keep the isolated subprocess path.
             doc_converter = None
             if result.kind == "pdf_file":
                 to_process = [Path(result.input_path)]
             else:
                 if skip_dupes:
-                    progress(text="Scanning for duplicate titles…")
+                    cb = phased("Scanning for duplicate titles")
                     to_process, skipped = find_new_and_duplicate_pdfs(
                         result.input_path, MF, llm_service=service, components=components,
-                        should_cancel=should_cancel,
-                        progress_callback=lambda d, t: progress(done=d, total=t, text=f"Scanning duplicates {d}/{t}…"))
+                        should_cancel=should_cancel, progress_callback=cb)
                     if skipped:
                         print(f"[Dedup] Skipped {len(skipped)} duplicate(s); logged to {MF.duplicate_log_excel}")
                 else:
                     to_process = sorted(Path(result.input_path).rglob("*.pdf"))
 
                 if to_process and not should_cancel():
-                    progress(text="Loading Docling model (once for the batch)…")
-                    try:
-                        from alr.data_analysis.Table_image_extractor import get_shared_doc_converter
-                        doc_converter = get_shared_doc_converter()
-                    except Exception as e:
-                        print(f"[Docling] Shared converter unavailable; falling back to per-file: {e}")
+                    doc_converter = BatchExtractor()
 
             processed = 0
             total = len(to_process)
-            for i, pdf in enumerate(to_process, 1):
-                if should_cancel():
-                    break
-                pdf = Path(pdf)
+            counts["total"] = total
+            next_phase()
+            try:
+                for i, pdf in enumerate(to_process, 1):
+                    if should_cancel():
+                        break
+                    pdf = Path(pdf)
 
-                # 1. Analyze the document (sectioning + selected components; on-disk
-                #    resume skips already-completed stages). Evaluation runs inside
-                #    right after abstract, honoring eval_mode.
-                progress(done=i, total=total, text=f"[{i}/{total}] Analyzing {pdf.name}")
-                process_pdf_mode_file(str(pdf), str(MF.folder), components=components,
-                                      doc_converter=doc_converter, eval_mode=eval_mode)
-
-                # 2. Copy this document's analysis into SQL immediately (latest wins).
-                progress(text=f"[{i}/{total}] Updating database: {pdf.name}")
-                try:
-                    if not sync_one_document(MF, pdf.name):
-                        print(f"[Database Sync] No registry row yet for {pdf.name}.")
-                except Exception as e:
-                    print(f"[Database Sync] {pdf.name}: {e}")
-
-                doc = lookup_doc(pdf.name)
-
-                # 3. DOI / metadata (precheck copies existing data instead of re-extracting).
-                if do_doi and not should_cancel():
-                    progress(text=f"[{i}/{total}] DOI / metadata: {pdf.name}")
+                    # 1. Analyze the document (sectioning + selected components;
+                    #    on-disk resume skips already-completed stages). Evaluation
+                    #    runs inside right after abstract, honoring eval_mode.
+                    #    A failure here must not end the run: the file is recorded
+                    #    in the skip log and the next one is picked up.
+                    phase(f"[{i}/{total}] Analyzing {pdf.name}", done=i, total=total)
                     try:
-                        from alr.data_analysis.doi_metadata import enrich_space_with_doi
-                        enrich_space_with_doi(MF, input_path=str(pdf), should_cancel=should_cancel)
-                        doc = lookup_doc(pdf.name) or doc
+                        outcome = process_pdf_mode_file(
+                            str(pdf), str(MF.folder), components=components,
+                            doc_converter=doc_converter, eval_mode=eval_mode)
                     except Exception as e:
-                        print(f"[DOI Enrichment] {pdf.name}: {e}")
+                        print(f"❌ {pdf.name} could not be analyzed ({type(e).__name__}: {e}) — "
+                              f"skipped, continuing with the next file.")
+                        not_added.append(skip_row("analyze", e, space=MF.folder, filename=pdf.name))
+                        counts["skipped"] += 1
+                        continue
 
-                # 4. Classification (by title and/or abstract per the user's
-                # choice), copy-or-generate per class_mode.
-                if do_classify and doc and not should_cancel():
-                    progress(text=f"[{i}/{total}] Classifying: {pdf.name}")
+                    if outcome == 'F':
+                        # The processor already recorded the reason in the space's
+                        # failure log; count it and move on rather than enriching
+                        # a document that has no analysis.
+                        print(f"⚠️ {pdf.name} did not complete analysis; see {MF.excel_failed}.")
+                        counts["failed"] += 1
+                        continue
+
+                    # 2. Copy this document's analysis into SQL immediately (latest wins).
+                    phase(f"[{i}/{total}] Updating database: {pdf.name}", done=i, total=total)
                     try:
-                        from alr.analysis_evaluation.publication_classification.classify_runner import classify_document
-                        if do_classify_title:
-                            classify_document(MF, doc, kind="title", service=service, mode=class_mode)
-                        if do_classify_abstract:
-                            classify_document(MF, doc, kind="abstract", service=service, mode=class_mode)
+                        if not sync_one_document(MF, pdf.name):
+                            print(f"[Database Sync] No registry row yet for {pdf.name}.")
                     except Exception as e:
-                        print(f"[Classification] {pdf.name}: {e}")
+                        print(f"[Database Sync] {pdf.name}: {e}")
 
-                processed += 1
+                    doc = lookup_doc(pdf.name)
+
+                    # 3. DOI / metadata (precheck copies existing data instead of re-extracting).
+                    if do_doi and not should_cancel():
+                        phase(f"[{i}/{total}] DOI / metadata: {pdf.name}", done=i, total=total)
+                        try:
+                            from alr.data_analysis.doi_metadata import enrich_space_with_doi
+                            enrich_space_with_doi(MF, input_path=str(pdf), should_cancel=should_cancel)
+                            doc = lookup_doc(pdf.name) or doc
+                        except Exception as e:
+                            print(f"[DOI Enrichment] {pdf.name}: {e}")
+
+                    # 4. Classification (by title and/or abstract per the user's
+                    # choice), copy-or-generate per class_mode.
+                    if do_classify and doc and not should_cancel():
+                        phase(f"[{i}/{total}] Classifying: {pdf.name}", done=i, total=total)
+                        try:
+                            from alr.analysis_evaluation.publication_classification.classify_runner import classify_document
+                            if do_classify_title:
+                                classify_document(MF, doc, kind="title", service=service, mode=class_mode)
+                            if do_classify_abstract:
+                                classify_document(MF, doc, kind="abstract", service=service, mode=class_mode)
+                        except Exception as e:
+                            print(f"[Classification] {pdf.name}: {e}")
+
+                    processed += 1
+                    counts["analyzed"] = processed
+            finally:
+                # Always stop the extraction worker: on success, on a failure and
+                # on a cancel (a live worker would otherwise outlive the pass).
+                if isinstance(doc_converter, BatchExtractor):
+                    doc_converter.close()
+                if not_added:
+                    counts["log"] = append_skiplog(Path(MF.folder) / ANALYSIS_SKIPPED_LOG, not_added)
+                    if counts["log"]:
+                        print(f"[Analysis] {len(not_added)} document(s) skipped; logged to {counts['log']}")
 
             print("Analysis Execution Chain Log Sequence Finished.")
 
             if should_cancel():
-                return processed
+                return counts
 
             # --- Finalization: refresh SQL, then work out what is still missing and
             # let the user decide, per stage, whether to reuse data an earlier dated
             # file already holds, run the stage fresh, or skip it. ---
-            progress(text="Finalizing: syncing the review database…")
             try:
-                synced = sync_storage_to_sql(
-                    MF, progress_callback=lambda d, t, txt: progress(
-                        done=d, total=t, text=f"Database sync {d}/{t}: {txt}"))
+                synced = sync_storage_to_sql(MF, progress_callback=phased("Database sync"))
                 print(f"[Database Sync] {synced} document(s) written to the review database.")
             except Exception as e:
                 print(f"[Database Sync] Skipped/failed: {e}")
 
-            progress(text="Finalizing: checking the database for missing data…")
+            next_phase("Checking the database for missing data…")
             try:
                 from alr.common.analysis_precheck import compute_space_gaps
                 gaps = compute_space_gaps(MF)
@@ -1840,31 +1895,26 @@ class AutomatedLiteratureUI(tk.Tk):
                 mode = mode_for(stage)
                 if not mode or should_cancel():
                     continue
-                progress(text=f"Finalizing: {label.lower()} sweep…")
                 try:
                     from alr.analysis_evaluation.data_evaluator import evaluate_space
                     evaluate_space(MF, should_cancel=should_cancel, mode=mode, target=target,
-                                   progress_callback=lambda d, t, lab=label: progress(
-                                       done=d, total=t, text=f"{lab} {d}/{t}…"))
+                                   progress_callback=phased(label))
                 except Exception as e:
                     print(f"[{label}] Skipped/failed: {e}")
 
             if mode_for("doi") and not should_cancel():
                 # Reuse pulls metadata already sitting in the download logs; fresh
                 # re-runs the DOI lookup for the space.
-                progress(text="Finalizing: DOI / metadata…")
                 try:
                     if decisions.get("doi") == "fresh":
                         from alr.data_analysis.doi_metadata import enrich_space_with_doi
                         enrich_space_with_doi(MF, should_cancel=should_cancel,
-                                              progress_callback=lambda d, t, name: progress(
-                                                  done=d, total=t, text=f"[{d}/{t}] DOI / metadata: {name}"))
+                                              progress_callback=phased("DOI / metadata"))
                     else:
                         from alr.common.download_log_enrich import enrich_from_download_logs
                         from alr.common.file_manager import ALR_main_folder
                         enrich_from_download_logs(ALR_main_folder, should_cancel=should_cancel,
-                                                  progress_callback=lambda d, t: progress(
-                                                      done=d, total=t, text=f"Download-log enrichment {d}/{t}…"))
+                                                  progress_callback=phased("Download-log enrichment"))
                 except Exception as e:
                     print(f"[DOI Enrichment] Skipped/failed: {e}")
 
@@ -1873,13 +1923,11 @@ class AutomatedLiteratureUI(tk.Tk):
                 mode = mode_for(stage)
                 if not mode or should_cancel():
                     continue
-                progress(text=f"Finalizing: {kind} classification sweep…")
                 try:
                     from alr.analysis_evaluation.publication_classification import classify_runner
                     getattr(classify_runner, fn_name)(
                         MF, should_cancel=should_cancel, service=service, mode=mode,
-                        progress_callback=lambda d, t, k=kind: progress(
-                            done=d, total=t, text=f"Classifying {k}s {d}/{t}…"))
+                        progress_callback=phased(f"Classifying {kind}s"))
                 except Exception as e:
                     print(f"[Classification] {kind}: Skipped/failed: {e}")
 
@@ -1890,10 +1938,13 @@ class AutomatedLiteratureUI(tk.Tk):
                                                    ("references_extract", "references"))
                                 if decisions.get(stage) == "fresh"}
             if fresh_components and not should_cancel():
-                progress(text=f"Finalizing: re-extracting {', '.join(sorted(fresh_components))}…")
-                for pdf in to_process:
+                label = f"Re-extracting {', '.join(sorted(fresh_components))}"
+                n_re = len(to_process)
+                next_phase(f"{label}…")
+                for j, pdf in enumerate(to_process, 1):
                     if should_cancel():
                         break
+                    phase(f"{label}: {Path(pdf).name}", done=j, total=n_re)
                     try:
                         process_pdf_mode_file(str(pdf), str(MF.folder), components=fresh_components,
                                               doc_converter=doc_converter, eval_mode=eval_mode)
@@ -1901,9 +1952,13 @@ class AutomatedLiteratureUI(tk.Tk):
                         print(f"[Re-extraction] {Path(pdf).name}: {e}")
                 if not to_process:
                     print("[Re-extraction] No source PDFs in this run to re-extract from.")
+                # The re-extraction restarts the extraction worker; stop it again
+                # so the model is not held in memory through the RAG build.
+                if isinstance(doc_converter, BatchExtractor):
+                    doc_converter.close()
 
             if decisions and not should_cancel():
-                progress(text="Finalizing: saving filled-in data…")
+                next_phase("Saving filled-in data…")
                 try:
                     sync_storage_to_sql(MF)
                 except Exception as e:
@@ -1914,20 +1969,44 @@ class AutomatedLiteratureUI(tk.Tk):
             # db_manager.generate_databases), so re-runs only add missing data.
             if (do_text_db or do_vector_db) and not should_cancel():
                 parts = (["text DB"] if do_text_db else []) + (["vector DB"] if do_vector_db else [])
-                progress(text=f"Building {' + '.join(parts)}…")
                 try:
                     from alr.rag_builders.db_manager import generate_databases as build_rag_databases
                     build_rag_databases(str(MF.folder), do_text=do_text_db, do_vector=do_vector_db,
-                                        progress_callback=lambda d, t, txt: progress(
-                                            done=d, total=t, text=f"[{d}/{t}] {txt}"))
+                                        progress_callback=phased(f"Building {' + '.join(parts)}"))
                 except Exception as e:
                     print(f"[RAG DB] Skipped/failed: {e}")
 
             # Empty files/folders the managers pre-created are pruned by
             # _run_threaded once this pass returns, like every other pass.
-            return processed
+            return counts
 
-        self._run_threaded(work, "Analyzing Literature", "analyzed")
+        self._run_threaded(work, "Analyzing Literature", "analyzed",
+                           on_success=lambda r: self._analysis_summary(r, cancelled=False),
+                           on_cancelled=lambda r: self._analysis_summary(r, cancelled=True))
+
+    @staticmethod
+    def _analysis_summary(counts, cancelled=False):
+        """
+        Report what the analysis pass actually did: how many documents were
+        analyzed, how many failed inside the processor (recorded in the space's
+        failure log) and how many were skipped outright (recorded in
+        ``Analysis_not_added.xlsx``). A run that skipped files must not report
+        the same "processed N" as a clean one.
+        """
+        counts = counts if isinstance(counts, dict) else {}
+        analyzed = counts.get("analyzed", 0)
+        failed, skipped = counts.get("failed", 0), counts.get("skipped", 0)
+        total = counts.get("total", analyzed + failed + skipped)
+
+        head = "Analyzing Literature: cancelled." if cancelled else "Analyzing Literature: done."
+        lines = [head, "", f"Analyzed: {analyzed} of {total} document(s)."]
+        if failed:
+            lines.append(f"Did not complete analysis: {failed} (see the space's failure log).")
+        if skipped:
+            lines.append(f"Skipped after an error: {skipped}.")
+        if counts.get("log"):
+            lines.append(f"\nThe skipped files are listed in:\n{counts['log']}")
+        messagebox.showinfo("Analyzing Literature", "\n".join(lines))
 
     def _run_threaded(self, work, title, result_word="processed", on_success=None,
                       on_cancelled=None):
