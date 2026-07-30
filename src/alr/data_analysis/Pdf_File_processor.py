@@ -365,10 +365,13 @@ def _recheck_title_(excel_success,file_path,llm_service):
     logger.info(f"--- Debug: Starting Recheck for {pdf_name} ---")
 
     
-    # 1. Fetch existing title
-    existing_title = get_corresponding_value(excel_success, "relative_path", file_path, "title")
+    # 1. Fetch existing title. Look the file up by NAME first: the registry
+    #    stores an absolute path in relative_path, so the path lookup almost
+    #    always missed and printed a misleading "is being Processed for the 1st
+    #    time" for files that are in fact already registered.
+    existing_title = get_corresponding_value(excel_success, "filename", pdf_name, "title")
     if not existing_title:
-        existing_title = get_corresponding_value(excel_success, "filename", pdf_name, "title")
+        existing_title = get_corresponding_value(excel_success, "relative_path", file_path, "title")
 
     logger.info(f"DEBUG: Existing title found in Excel: '{existing_title}'")   
 

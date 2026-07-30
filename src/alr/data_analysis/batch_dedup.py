@@ -144,23 +144,51 @@ def find_new_and_duplicate_pdfs(
     # Titles/filenames already analyzed (from the registry), with per-component status.
     known_titles = {}   # normalized title -> original title
     known_files = {}    # filename -> {registry status column: value}
+    title_status = {}   # normalized title -> {registry status column: value}
     status_cols = [c for c in _COMPONENT_COLUMN.values()]
     if Path(manager.excel_success).exists():
         try:
             from alr.common.excel_utils import read_excel_cached
             df = read_excel_cached(manager.excel_success)
-            if "filename" in df.columns:
-                for _, r in df.iterrows():
-                    fname = r.get("filename")
-                    if fname is None or str(fname) == "nan":
-                        continue
-                    known_files[str(fname)] = {col: r.get(col) for col in status_cols if col in df.columns}
-            if "title" in df.columns:
-                for t in df["title"].dropna().tolist():
-                    if _is_usable_title(t):
-                        known_titles[_normalize_title(t)] = str(t)
+            for _, r in df.iterrows():
+                status = {col: r.get(col) for col in status_cols if col in df.columns}
+                fname = r.get("filename") if "filename" in df.columns else None
+                if fname is not None and str(fname) != "nan":
+                    known_files[str(fname)] = status
+                title = r.get("title") if "title" in df.columns else None
+                if title is not None and _is_usable_title(title):
+                    known_titles[_normalize_title(title)] = str(title)
+                    title_status[_normalize_title(title)] = status
         except Exception as e:
             print(f"⚠️ Could not read registry for dedup ({e}); treating all files as new.")
+
+    def _resolve_prior_duplicate(prior):
+        """
+        Decide whether a **stale** 'duplicate' verdict from an earlier scan can
+        still be trusted.
+
+        The scan log records one verdict per filename and it used to be final:
+        a file marked duplicate was skipped by every later run, for ever,
+        without checking that the document it was matched against is still
+        there. If that original failed analysis, was removed, or never reached
+        the registry, the content was silently dropped and no re-run could ever
+        recover it -- while the console only ever said "Already scanned
+        (duplicate)".
+
+        Returns ``(honour, reason)``: ``honour`` False means re-queue the file.
+        """
+        for candidate in (prior.get("matched_value"), prior.get("title")):
+            norm = _normalize_title(candidate)
+            if not norm or norm not in title_status:
+                continue
+            if _components_complete(title_status[norm], components):
+                return True, "analyzed"
+            # The content IS analyzed, but not with everything now requested.
+            # Re-queueing this file would create a SECOND registry entry for the
+            # same document, so name the original instead and let it be topped
+            # up from its own entry.
+            return True, f"analyzed but incomplete (see '{known_titles.get(norm, norm)}')"
+        return False, "its match is not in the registry"
 
     # Files already scanned for duplication in previous batches (persistent log).
     scanned_map = _load_scan_log(manager.dedup_scan_log_excel)
@@ -178,6 +206,12 @@ def find_new_and_duplicate_pdfs(
     total = len(pdfs)
     to_process, skipped = [], []
     batch_titles = {}   # normalized title accepted in this batch -> filename
+    # Why files were skipped, so a run that processes "only a few" of a big
+    # folder says which reason accounts for the rest instead of leaving it to
+    # be reconstructed from hundreds of console lines.
+    from collections import Counter
+    reasons = Counter()
+    requeued = []
 
     for i, pdf in enumerate(pdfs, 1):
         if should_cancel is not None and should_cancel():
@@ -190,7 +224,9 @@ def find_new_and_duplicate_pdfs(
             if _components_complete(known_files[pdf.name], components):
                 skipped.append({"filename": pdf.name, "path": str(pdf), "title": "",
                                 "matched_against": "registry (same filename, components complete)",
-                                "matched_value": pdf.name, "score": 100})
+                                "matched_value": pdf.name, "score": 100,
+                                "reason": "already analyzed with every requested component"})
+                reasons["already analyzed (same filename)"] += 1
             else:
                 to_process.append(pdf)
                 print(f"↻ Re-processing {pdf.name}: adding missing requested component(s).")
@@ -204,12 +240,27 @@ def find_new_and_duplicate_pdfs(
         if prior is not None:
             decision = str(prior.get("decision", "")).strip().lower()
             prior_title = prior.get("title", "")
-            if decision == "duplicate":
+            honour, why = _resolve_prior_duplicate(prior) if decision == "duplicate" else (False, "")
+            if decision == "duplicate" and honour:
                 skipped.append({"filename": pdf.name, "path": str(pdf), "title": str(prior_title),
                                 "matched_against": str(prior.get("matched_against", "prior scan")),
                                 "matched_value": str(prior.get("matched_value", "")),
-                                "score": prior.get("score", "")})
-                print(f"⏭️ Already scanned (duplicate) — skipping {pdf.name}.")
+                                "score": prior.get("score", ""),
+                                "reason": f"prior scan: duplicate, {why}"})
+                reasons[why] += 1
+                if why.startswith("analyzed but incomplete"):
+                    print(f"⏭️ Already scanned (duplicate) — skipping {pdf.name}; "
+                          f"its original is {why[len('analyzed but '):]}")
+                else:
+                    print(f"⏭️ Already scanned (duplicate) — skipping {pdf.name}.")
+            elif decision == "duplicate":
+                # The verdict no longer holds up: process the file rather than
+                # trusting a decision whose evidence has gone.
+                to_process.append(pdf)
+                requeued.append(pdf.name)
+                if _is_usable_title(prior_title):
+                    batch_titles[_normalize_title(prior_title)] = pdf.name
+                print(f"↻ Re-checking {pdf.name}: previously called a duplicate, but {why}.")
             else:
                 # Previously seen as new but not yet analyzed -> process it.
                 to_process.append(pdf)
@@ -243,7 +294,9 @@ def find_new_and_duplicate_pdfs(
             score = round(float(score), 1)
             skipped.append({"filename": pdf.name, "path": str(pdf), "title": str(title),
                             "matched_against": source_label, "matched_value": str(matched_value),
-                            "score": score})
+                            "score": score,
+                            "reason": f"title matches a document in the {source_label} ({score:.0f}%)"})
+            reasons[f"duplicate title ({source_label})"] += 1
             _record(pdf, title, "duplicate", source_label, matched_value, score)
             print(f"⏩ Skipping duplicate: {pdf.name} (title ~ '{matched_value}' in {source_label}, {score:.0f}%)")
         else:
@@ -257,6 +310,21 @@ def find_new_and_duplicate_pdfs(
 
     # Persist this run's scan decisions so future batches skip these files.
     _save_scan_log(manager.dedup_scan_log_excel, scanned_map, new_scan_rows)
+
+    # Say WHY the folder shrank to this many files. Without it a run that takes
+    # 8 of 819 PDFs looks broken, and the reason is buried in 800 console lines.
+    print(f"\n📋 Duplicate scan: {len(to_process)} of {total} PDF(s) will be processed, "
+          f"{len(skipped)} skipped.")
+    for reason, n in reasons.most_common():
+        print(f"      {n:>5}  {reason}")
+    if requeued:
+        print(f"      {len(requeued):>5}  re-queued: an earlier 'duplicate' verdict no longer "
+              f"resolves to an analyzed document")
+    incomplete = sum(n for r, n in reasons.items() if r.startswith("analyzed but incomplete"))
+    if incomplete:
+        print(f"   ⚠️  {incomplete} skipped file(s) duplicate a document that is analyzed but is "
+              f"missing a requested component; top those up from their own registry entries "
+              f"(re-running the copy here would create a second entry for the same document).")
 
     if skipped:
         try:
