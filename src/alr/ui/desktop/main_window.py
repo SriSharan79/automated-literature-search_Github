@@ -3216,23 +3216,40 @@ class AutomatedLiteratureUI(tk.Tk):
                 return n
 
             if mode == "abstract":
+                from alr.common.sql_store import sync_storage_to_sql
                 from alr.data_analysis.Folder_Data_Analyzer import process_abstract
                 progress(text="Re-running abstract analysis pass…")
                 print("[Evaluate] Re-running abstract analysis pass...")
                 process_abstract(DataAnalyzeManager(clean_path),
                                  progress_callback=lambda d, t, name: progress(
                                      done=d, total=t, text=f"[{d}/{t}] Abstract: {name}"))
-                print("[Evaluate] Abstract analysis pass finished.")
+                # This pass WRITES analysis JSONs (a fresh analysis, and any
+                # attribute the resolver's completion stages filled in), so it
+                # must push them into SQL like every other pass here does --
+                # otherwise the new values sit in the storage space and the
+                # review database keeps showing the old, incomplete row.
+                progress(text="Syncing the new analysis into the review database…")
+                try:
+                    n = sync_storage_to_sql(DataAnalyzeManager(clean_path))
+                    print(f"[Evaluate] Abstract analysis pass finished; {n} document(s) synced.")
+                except Exception as e:
+                    print(f"[Database Sync] Skipped/failed: {e}")
                 return 0
 
             if mode == "references":
+                from alr.common.sql_store import sync_storage_to_sql
                 from alr.data_analysis.Folder_Data_Analyzer import process_references
                 progress(text="Re-running reference extraction pass…")
                 print("[Evaluate] Re-running reference extraction pass...")
                 process_references(DataAnalyzeManager(clean_path),
                                    progress_callback=lambda d, t, name: progress(
                                        done=d, total=t, text=f"[{d}/{t}] References: {name}"))
-                print("[Evaluate] Reference extraction pass finished.")
+                progress(text="Syncing the extracted references into the review database…")
+                try:
+                    n = sync_storage_to_sql(DataAnalyzeManager(clean_path))
+                    print(f"[Evaluate] Reference extraction pass finished; {n} document(s) synced.")
+                except Exception as e:
+                    print(f"[Database Sync] Skipped/failed: {e}")
                 return 0
 
             if mode == "evaluate":

@@ -153,6 +153,15 @@ def process_folder(source_path, storage_path, n=25):
         # Process the PDF if it's within the page limit
         process_pdf_mode_file(file_path, storage_path, 'a', doc_converter=doc_converter)
 
+    # Push what was just analyzed into the review database, the way the desktop
+    # pass does. Without this a CLI run leaves the new (and newly completed)
+    # attributes in the storage space only.
+    try:
+        from alr.common.sql_store import sync_storage_to_sql
+        synced = sync_storage_to_sql(storage_path)
+        print(f"🗃️ {synced} document(s) synced into the review database.")
+    except Exception as e:  # noqa: BLE001 - a sync failure must not fail the run
+        print(f"⚠️ Could not sync into the review database: {e}")
 
     print("\n🎉 Synchronization and Processing Complete.")
 
