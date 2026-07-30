@@ -10,12 +10,24 @@ Before this module each ``*_Analyzer.py`` had its own private ladder for
 ``"No information available"`` for every attribute the LLM could not fill.
 Two behaviours are added here, once, for all three targets:
 
-1. **Attribute top-up.** After the first extraction pass, any attribute still
-   holding ``No information available`` triggers ONE more LLM pass over the
-   same section text plus the next :data:`FOLLOW_UP_CHUNKS` chunks of the
-   document. Only the previously-missing attributes are merged back; anything
-   still missing afterwards stays ``No information available`` and the JSON
-   records the attempt (:data:`TOPUP_KEY`) so re-runs never pay for it twice.
+1. **Attribute completion**, in two ordered stages (see
+   :func:`complete_missing_attributes`). Any attribute still holding
+   ``No information available`` after the first extraction pass triggers:
+
+   a. **A plain re-analysis** — the target's ordinary analyzer
+      (``analyze_abstract`` / ``analyze_Introduction`` /
+      ``analyze_results_conclusion``) is simply run again, so the cheap,
+      well-tested heading/keyword location ladder gets a second shot before
+      any positional machinery is involved. The attempt is recorded under
+      :data:`REANALYSIS_KEY`.
+   b. **The window top-up** — only if (a) left gaps behind. ONE more LLM pass
+      over the same section text plus the next :data:`FOLLOW_UP_CHUNKS` chunks
+      of the document, recorded under :data:`TOPUP_KEY`.
+
+   Both stages merge back ONLY the previously-missing attributes, so a value
+   the first pass got right is never overwritten or regressed; anything still
+   missing afterwards stays ``No information available``, and the recorded
+   attempt counters mean re-runs never pay for either stage twice.
 
 2. **A positional fallback on the location ladder**, used when the analyzer's
    own heading/keyword matching finds nothing: the target's share of the
@@ -34,6 +46,7 @@ a new :class:`TargetSpec` row, not new code.
 
 from __future__ import annotations
 
+import importlib
 import json
 import re
 from dataclasses import dataclass
@@ -59,12 +72,25 @@ from alr.data_analysis.Data_analysis_system_prompts import (
     Results_Conclusion_identification_SP,
 )
 
+# The three ordinary analyzers (`analyze_abstract`, `analyze_Introduction`,
+# `analyze_results_conclusion`) are NOT imported here at module level: the
+# analyzers themselves import this module for `resolve_section_text`, so an
+# eager import in either direction is a circular import. They are resolved on
+# first use by `_load_analyzer`, from the module/function names recorded on
+# each TargetSpec.
+
 # The literal the extraction prompts write when an attribute is not present.
 MISSING_TOKEN = "no information available"
 
 # Bookkeeping key written into the analysis JSON once a top-up pass has run,
 # so an already-completed document is never re-processed for the same gap.
 TOPUP_KEY = "Attribute Top-up Attempts"
+
+# Same idea for the cheaper first stage: one plain re-run of the target's own
+# analyzer. Kept as a separate counter so a document can have spent its
+# re-analysis without having spent its top-up (and the reverse, for documents
+# analyzed before this stage existed).
+REANALYSIS_KEY = "Attribute Re-analysis Attempts"
 
 # How many additional chunks a top-up pass appends to the section text.
 FOLLOW_UP_CHUNKS = 3
@@ -112,6 +138,8 @@ class TargetSpec:
     window: tuple[float, float]    # positional chunk window, as fractions of the document
     json_attr: str                 # attribute on DataAnalyzeManager holding the JSON path
     text_key: str                  # key under which the identified text is stored
+    analyzer_module: str = ""      # module holding this target's ordinary analyzer
+    analyzer_func: str = ""        # its `(ID, MF) -> 'P'|'F'` entry point
 
 
 TARGETS: dict[str, TargetSpec] = {
@@ -133,6 +161,8 @@ TARGETS: dict[str, TargetSpec] = {
         window=(0.0, 0.30),
         json_attr="abstract_json_path",
         text_key=ABSTRACT_TEXT_KEY,
+        analyzer_module="alr.data_analysis.Abstract_Analyzer",
+        analyzer_func="analyze_abstract",
     ),
     "intro": TargetSpec(
         name="intro",
@@ -149,6 +179,8 @@ TARGETS: dict[str, TargetSpec] = {
         window=(0.10, 0.40),
         json_attr="intro_json_path",
         text_key=INTRO_TEXT_KEY,
+        analyzer_module="alr.data_analysis.Introduction_Analyzer",
+        analyzer_func="analyze_Introduction",
     ),
     "rescon": TargetSpec(
         name="rescon",
@@ -166,6 +198,8 @@ TARGETS: dict[str, TargetSpec] = {
         window=(0.60, 0.95),
         json_attr="rescon_json_path",
         text_key=RESCON_TEXT_KEY,
+        analyzer_module="alr.data_analysis.Results_Conclusion_Analyzer",
+        analyzer_func="analyze_results_conclusion",
     ),
 }
 
@@ -205,6 +239,17 @@ def _load_json(path) -> Optional[dict]:
 
 def _json_path(MF, spec: TargetSpec):
     return getattr(MF, spec.json_attr, None)
+
+
+def _write_json(path, data: dict, spec: TargetSpec) -> bool:
+    """Write `data` back to `path`, reporting (rather than raising) on failure."""
+    try:
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2)
+        return True
+    except OSError as exc:
+        print(f"⚠️ Could not write {spec.label} JSON: {exc}")
+        return False
 
 
 # ---------------------------------------------------------------------------
@@ -369,7 +414,174 @@ def resolve_section_text(MF, target: str, base_text: str = "",
 
 
 # ---------------------------------------------------------------------------
-# Attribute top-up
+# Stage 1: plain re-analysis with the target's ordinary analyzer
+# ---------------------------------------------------------------------------
+
+def _load_analyzer(spec: TargetSpec):
+    """
+    The target's ordinary `analyze_*(ID, MF) -> 'P'|'F'` entry point.
+
+    Imported on demand rather than at module level: the analyzers import this
+    module, so a top-level import here would be circular.
+    """
+    if not spec.analyzer_module or not spec.analyzer_func:
+        return None
+    try:
+        module = importlib.import_module(spec.analyzer_module)
+        return getattr(module, spec.analyzer_func)
+    except (ImportError, AttributeError) as exc:
+        print(f"⚠️ Analyzer for {spec.label} unavailable ({spec.analyzer_module}): {exc}")
+        return None
+
+
+def _resolve_document_id(MF, spec: TargetSpec, doc_id=None) -> Optional[str]:
+    """
+    The UUID the analyzers expect as their first argument.
+
+    Prefers an explicit `doc_id`, then the manager's `current_id` (set by
+    `update_id_files`), and finally the stem of the target's JSON file, which
+    is always named `<uuid>_<Section>.json`.
+    """
+    if doc_id:
+        return str(doc_id)
+
+    current = getattr(MF, "current_id", None)
+    if current:
+        return str(current)
+
+    path = _json_path(MF, spec)
+    if path:
+        stem = Path(str(path)).stem
+        if "_" in stem:
+            return stem.rsplit("_", 1)[0]
+    return None
+
+
+def reanalysis_attempts(data: dict) -> int:
+    try:
+        return int(data.get(REANALYSIS_KEY, 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _merge_reanalysis(before: dict, after, spec: TargetSpec) -> tuple[dict, list[str]]:
+    """
+    Fold a re-analysis result into the stored one, gap-keys only.
+
+    The analyzers write the whole JSON through `store_to_json_with_text`, so a
+    straight re-run REPLACES everything the first pass produced. This keeps the
+    re-run's values only where the stored one had a gap; every attribute the
+    first pass filled survives untouched, and a re-run that came back with the
+    identification error token is discarded outright.
+    """
+    if not isinstance(after, dict) or not after:
+        return dict(before), []
+
+    if any(spec.error_token in str(value) for value in after.values()):
+        print(f"⚠️ {spec.label}: re-analysis returned {spec.error_token}; keeping the stored analysis.")
+        return dict(before), []
+
+    merged = dict(after)
+    filled: list[str] = []
+
+    for key in spec.keys:
+        old = before.get(key)
+        if key in before and not is_missing(old):
+            merged[key] = old                       # first pass got it right; never regress
+        elif not is_missing(after.get(key)):
+            filled.append(key)                      # merged already carries the new value
+        elif key in before:
+            merged[key] = old                       # both empty; keep the stored literal
+
+    # The stored section text is what every surviving attribute came from, and
+    # what the top-up fallback matches back onto the chunk list, so it wins.
+    old_text = before.get(spec.text_key)
+    if old_text and str(old_text).strip():
+        merged[spec.text_key] = old_text
+
+    for book_key in (TOPUP_KEY, REANALYSIS_KEY):
+        if book_key in before:
+            merged[book_key] = before[book_key]
+
+    return merged, filled
+
+
+def reanalyze_missing_attributes(MF, target: str, doc_id=None,
+                                 force: bool = False) -> list[str]:
+    """
+    Stage 1 of attribute completion: run the target's ORDINARY analyzer once
+    more and merge whatever it manages to fill into the stored analysis.
+
+    This is deliberately the cheap, boring option — the same heading/keyword
+    location ladder and the same extraction prompt the document already went
+    through — and it runs before any positional window work. Returns the list
+    of previously-missing attributes the re-run filled (empty when nothing
+    improved), leaving :func:`top_up_missing_attributes` untouched as the
+    fallback for whatever is still empty afterwards.
+    """
+    spec = TARGETS[target]
+    path = _json_path(MF, spec)
+    before = _load_json(path)
+    if before is None:
+        return []
+
+    gaps = missing_keys(before, spec)
+    if not gaps:
+        return []
+
+    if not force and reanalysis_attempts(before) >= 1:
+        print(f"⏩ {spec.label}: re-analysis already attempted; leaving it to the top-up pass.")
+        return []
+
+    resolved_id = _resolve_document_id(MF, spec, doc_id)
+    if not resolved_id:
+        print(f"⚠️ {spec.label}: no document ID available; skipping re-analysis.")
+        return []
+
+    analyzer = _load_analyzer(spec)
+    if analyzer is None:
+        return []
+
+    print(
+        Fore.YELLOW
+        + f"\n↻ {spec.label}: {len(gaps)} attribute(s) missing "
+          f"({', '.join(gaps)}); re-running the standard analyzer first."
+        + Style.RESET_ALL
+    )
+
+    try:
+        status = analyzer(resolved_id, MF)
+    except Exception as exc:
+        print(f"⚠️ {spec.label} re-analysis failed: {exc}")
+        status = "F"
+
+    # The analyzer calls `update_id_files`, so re-read the path rather than
+    # trusting the one captured above.
+    new_path = _json_path(MF, spec)
+    if str(new_path) != str(path):
+        print(f"⚠️ {spec.label}: re-analysis retargeted the JSON path; restoring the original file.")
+        _write_json(path, before, spec)
+        return []
+
+    after = _load_json(new_path) if status == "P" else None
+    merged, filled = _merge_reanalysis(before, after, spec)
+
+    # Record the attempt even when it fails, so re-runs do not repeat it.
+    merged[REANALYSIS_KEY] = reanalysis_attempts(before) + 1
+
+    if not _write_json(new_path, merged, spec):
+        return []
+
+    if filled:
+        print(Fore.GREEN + f"✓ {spec.label} re-analysis filled: {', '.join(filled)}" + Style.RESET_ALL)
+    else:
+        print(f"ℹ {spec.label}: re-analysis added nothing; falling back to the top-up pass.")
+
+    return filled
+
+
+# ---------------------------------------------------------------------------
+# Stage 2: attribute top-up (fallback)
 # ---------------------------------------------------------------------------
 
 def follow_up_text(MF, spec: TargetSpec, section_text: str,
@@ -498,5 +710,66 @@ def top_up_missing_attributes(MF, target: str, force: bool = False) -> list[str]
         still = missing_keys(data, spec)
         if still:
             print(f"ℹ {spec.label}: {', '.join(still)} stay 'No information available'.")
+
+    return filled
+
+
+# ---------------------------------------------------------------------------
+# Orchestration: re-analysis first, top-up as the fallback
+# ---------------------------------------------------------------------------
+
+def needs_completion(MF, target: str) -> bool:
+    """
+    True when the stored analysis for `target` still has empty attributes AND
+    at least one of the two completion stages is still unspent.
+
+    Like :func:`needs_top_up` this is the cheap pipeline check: one JSON read,
+    no LLM call and no re-extraction.
+    """
+    spec = TARGETS[target]
+    data = _load_json(_json_path(MF, spec))
+    if data is None:
+        return False
+    if not missing_keys(data, spec):
+        return False
+    return reanalysis_attempts(data) < 1 or top_up_attempts(data) < 1
+
+
+def complete_missing_attributes(MF, target: str, doc_id=None,
+                                force: bool = False) -> list[str]:
+    """
+    Fill the attributes still missing from the stored analysis of `target`.
+
+    Two stages, in order, each of which only ever merges back attributes that
+    were missing beforehand:
+
+    1. :func:`reanalyze_missing_attributes` — re-run the target's ordinary
+       analyzer. Cheap, uses the same heading/keyword ladder the document
+       already went through, and needs no positional machinery.
+    2. :func:`top_up_missing_attributes` — the widened window pass, run ONLY
+       for whatever stage 1 could not fill.
+
+    Returns every attribute filled across both stages, in the order they were
+    filled. This is the entry point the pipeline should call; the two stage
+    functions remain individually callable and behave exactly as before.
+    """
+    spec = TARGETS[target]
+    data = _load_json(_json_path(MF, spec))
+    if data is None:
+        return []
+
+    if not missing_keys(data, spec):
+        return []
+
+    filled = list(reanalyze_missing_attributes(MF, target, doc_id=doc_id, force=force))
+
+    # Re-read: stage 1 rewrote the file, and may have closed every gap.
+    data = _load_json(_json_path(MF, spec)) or data
+    if not missing_keys(data, spec):
+        return filled
+
+    for key in top_up_missing_attributes(MF, target, force=force):
+        if key not in filled:
+            filled.append(key)
 
     return filled

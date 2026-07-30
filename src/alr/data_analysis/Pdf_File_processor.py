@@ -31,7 +31,11 @@ from alr.data_analysis.section_resolver import (
     needs_top_up,
     top_up_missing_attributes,
 )
-
+from alr.data_analysis.section_resolver import (
+    TARGETS,
+    needs_completion,            # was: needs_top_up
+    complete_missing_attributes, # was: top_up_missing_attributes
+)
 from colorama import Fore, Style
 from datetime import datetime as dt      # Alias avoids conflicts
 import shutil
@@ -524,26 +528,37 @@ def _stored_analysis_missing(MF, target, pdf_name, uuid):
 def _top_up_if_incomplete(MF, target, pdf_name, uuid):
     """
     Cheap gap check for an already-analyzed document: read the stored analysis
-    JSON and, when attributes are still empty and no top-up has been spent yet,
-    run ONE extra extraction pass with additional chunks.
+    JSON and, when attributes are still empty, complete them in two ordered
+    stages (see `section_resolver.complete_missing_attributes`):
 
-    Costs a single file read per document when nothing is missing, so it is
-    safe to run on every re-pass over a storage space.
+      1. re-run the target's ordinary analyzer, the same cheap heading/keyword
+         path the document already went through;
+      2. only for whatever that leaves empty, ONE extra extraction pass with
+         additional chunks.
+
+    Each stage is spent at most once per document, recorded in the JSON, so
+    this costs a single file read per document when nothing is missing or when
+    both stages are already spent. Safe to run on every re-pass over a storage
+    space.
     """
     spec = TARGETS[target]
     try:
-        if not needs_top_up(MF, target):
+        if not needs_completion(MF, target):
             return
         logger.info(
             f"🔎 {spec.label} attributes incomplete for {pdf_name} :-: {uuid}; "
-            f"re-processing the section with additional chunks."
+            f"re-analyzing the section, then widening to additional chunks if needed."
         )
-        filled = top_up_missing_attributes(MF, target)
+        filled = complete_missing_attributes(MF, target, doc_id=uuid)
         if filled:
-            logger.info(f"✓ {spec.label} completed from extra chunks: {', '.join(filled)}")
+            logger.info(f"✓ {spec.label} completed: {', '.join(filled)}")
+        # Always refresh, even when nothing was filled: stage 1 runs the real
+        # analyzer, which writes its own Excel row from the raw re-run output
+        # BEFORE the merge restores the first pass's values. The log has to be
+        # rebuilt from the merged JSON or it will show the regressed values.
         _refresh_attribute_log(MF, target, uuid)
     except Exception as e:
-        logger.warning(f"⚠️ {spec.label} top-up check failed for {pdf_name}: {e}")
+        logger.warning(f"⚠️ {spec.label} completion check failed for {pdf_name}: {e}")
 
 
 def process_pdf_abstract(file, storage_path=""):
