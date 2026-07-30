@@ -1628,7 +1628,13 @@ class AutomatedLiteratureUI(tk.Tk):
 
         # Process Execute
         btn_run_analysis = ttk.Button(tab, text="Execute Document Extraction & Analysis", command=self._run_analysis_action)
-        btn_run_analysis.pack(pady=20, ipadx=10, ipady=5)
+        btn_run_analysis.pack(pady=(20, 6), ipadx=10, ipady=5)
+
+        # Second entry point: finish an already-analyzed space without any PDFs.
+        # It works purely from what the space holds (the per-document analysis
+        # JSONs + the raw sections JSON), so it needs no input file or folder.
+        ttk.Button(tab, text="Resolve Missing Attributes (storage space only, no PDFs)…",
+                   command=self._resolve_missing_attributes_action).pack(pady=(0, 16), ipadx=10, ipady=4)
 
         # Quick links to the follow-on stages (they open the same tabs).
         next_frame = tk.LabelFrame(tab, text="Next steps (on the active storage space)")
@@ -1645,6 +1651,112 @@ class AutomatedLiteratureUI(tk.Tk):
         else:
             self.analyze_storage_entry.configure(state="disabled")
             self.analyze_storage_btn.configure(state="disabled")
+
+    def _analyze_space_folder(self):
+        """The storage space Tab 1 works on (custom path, else the default)."""
+        if self.custom_path_var_an.get() and self.analyze_storage_entry.get().strip():
+            return clean_folder_path(self.analyze_storage_entry.get().strip())
+        return None
+
+    def _resolve_missing_attributes_action(self):
+        """
+        Finish an already-analyzed storage space **without any PDFs**.
+
+        Everything needed is already in the space: the per-document analysis
+        JSONs hold the attributes (and which completion stages have been spent)
+        and the raw sections JSON holds the chunks a widened pass reads. So this
+        needs no input file or folder, re-extracts nothing, and touches only the
+        documents that still have a gap with an unspent stage. Whatever it fills
+        goes into the analysis JSON, the A/NA log and the review database.
+        """
+        from alr.data_analysis.section_resolver import TARGETS, complete_space, scan_space
+
+        service = _provider_code(self.llm_choice_an.get())
+        folder = self._analyze_space_folder()
+        MF = DataAnalyzeManager(folder) if folder else DataAnalyzeManager()
+        if not Path(MF.excel_success).exists():
+            messagebox.showerror(
+                "Nothing analyzed yet",
+                f"No analyzed documents were found in:\n{MF.folder}\n\n"
+                "Pick the storage space that holds the analysis, then try again.")
+            return
+        if not self._ensure_api_key(service):
+            return
+
+        # Cheap pre-scan (one JSON read per document per target, no LLM call) so
+        # the user sees what it will cost before committing to it.
+        self._set_last_result("Checking the storage space for missing attributes…")
+        self.update_idletasks()
+        try:
+            report = scan_space(MF)
+        except Exception as e:
+            messagebox.showerror("Could not read the storage space", str(e))
+            return
+
+        eligible = {t: info for t, info in report.items() if info["eligible"]}
+        spent = sum(len(info["spent"]) for info in report.values())
+        if not eligible:
+            messagebox.showinfo(
+                "Nothing left to resolve",
+                f"Every analyzed document in\n{MF.folder}\n\nis either complete or has already "
+                f"used both completion attempts.\n\n"
+                + (f"{spent} document(s) still have empty attributes but have had both a "
+                   f"re-analysis and a widened pass; those need a re-analysis of the PDF."
+                   if spent else ""))
+            return
+
+        lines = [f"{TARGETS[t].label}: {len(i['eligible'])} document(s), "
+                 f"{i['attributes']} empty attribute(s)" for t, i in eligible.items()]
+        docs = len({u for i in eligible.values() for u in i["eligible"]})
+        if not messagebox.askokcancel(
+                "Resolve missing attributes",
+                f"Storage space:\n{MF.folder}\n\n" + "\n".join(lines)
+                + f"\n\n{docs} document(s) will be re-examined using the analysis and section "
+                  f"files already in the space — no PDFs are needed and nothing is re-extracted.\n\n"
+                  f"Each document costs at most one re-analysis and one widened pass (both are "
+                  f"recorded, so they are never paid for twice). Newly filled attributes go "
+                  f"straight into the review database.\n\nRun it now?"):
+            return
+
+        MF.update_llm_service(service)
+        self.MF = MF
+        self._set_active_space(str(MF.folder))
+
+        def work(progress, should_cancel):
+            progress(text=f"Resolving missing attributes in {Path(MF.folder).name}…")
+            outcome = complete_space(
+                MF, should_cancel=should_cancel,
+                progress_callback=lambda d, t, name: progress(
+                    done=d, total=t, text=f"[{d}/{t}] {name}"))
+            # A closing full sync catches documents whose per-document push
+            # found no registry match, and refreshes the space's other columns.
+            if not should_cancel():
+                progress(text="Syncing the resolved attributes into the review database…")
+                try:
+                    sync_storage_to_sql(MF)
+                except Exception as e:
+                    print(f"[Database Sync] Skipped/failed: {e}")
+            return outcome
+
+        def summary(outcome, cancelled=False):
+            outcome = outcome if isinstance(outcome, dict) else {}
+            filled, attrs = outcome.get("filled") or {}, outcome.get("attributes", 0)
+            head = ("Resolve missing attributes: cancelled." if cancelled
+                    else "Resolve missing attributes: done.")
+            msg = [head, "",
+                   f"Examined {outcome.get('documents', 0)} document(s).",
+                   f"Filled {attrs} attribute(s) across {len(filled)} document(s)."]
+            if outcome.get("failed"):
+                msg.append(f"{len(outcome['failed'])} document(s) reported an error "
+                           f"(see the console).")
+            if not attrs:
+                msg.append("\nNothing could be filled — the remaining gaps have used up "
+                           "both completion attempts.")
+            messagebox.showinfo("Resolve missing attributes", "\n".join(msg))
+
+        self._run_threaded(work, "Resolve Missing Attributes", "resolved",
+                           on_success=lambda r: summary(r, cancelled=False),
+                           on_cancelled=lambda r: summary(r, cancelled=True))
 
     def _run_analysis_action(self):
         input_target = self.analysis_input_entry.get().strip()

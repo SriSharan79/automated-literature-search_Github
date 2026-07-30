@@ -743,6 +743,158 @@ def needs_completion(MF, target: str) -> bool:
     return reanalysis_attempts(data) < 1 or top_up_attempts(data) < 1
 
 
+def _space_manager(MF):
+    from alr.common.file_manager import DataAnalyzeManager
+    return MF if isinstance(MF, DataAnalyzeManager) else DataAnalyzeManager(str(MF))
+
+
+def _space_documents(MF):
+    """``[(uuid, filename), ...]`` from the space's registry."""
+    from alr.common.excel_utils import read_excel_cached
+
+    registry = Path(MF.excel_success)
+    if not registry.exists():
+        return []
+    try:
+        df = read_excel_cached(registry)
+    except Exception as exc:
+        print(f"⚠️ Could not read the registry {registry}: {exc}")
+        return []
+    if "UUID" not in df.columns:
+        return []
+    names = df["filename"] if "filename" in df.columns else None
+    out = []
+    for i, uuid in enumerate(df["UUID"].tolist()):
+        uuid = str(uuid).strip()
+        if not uuid or uuid.lower() == "nan":
+            continue
+        out.append((uuid, str(names.iloc[i]) if names is not None else ""))
+    return out
+
+
+def scan_space(MF, targets=None) -> dict:
+    """
+    Report which documents of a storage space still have empty attributes and
+    could be completed, **without doing any work**.
+
+    Returns ``{target: {"documents": n, "eligible": [uuid, ...],
+    "attributes": n, "spent": [uuid, ...]}}`` where *eligible* are the
+    documents with a gap AND an unspent completion stage (what
+    :func:`complete_space` would act on) and *spent* are those with a gap whose
+    stages are both used up. Reads one JSON per document per target: no LLM
+    call, no PDF, no re-extraction -- so it can be shown to the user as a cost
+    estimate before they commit.
+    """
+    MF = _space_manager(MF)
+    targets = list(targets) if targets else list(TARGETS)
+    report = {t: {"documents": 0, "eligible": [], "attributes": 0, "spent": []}
+              for t in targets}
+
+    for uuid, _name in _space_documents(MF):
+        MF.update_id_files(uuid)
+        for target in targets:
+            spec = TARGETS[target]
+            data = _load_json(_json_path(MF, spec))
+            if data is None:
+                continue                      # not analyzed for this target
+            report[target]["documents"] += 1
+            gaps = missing_keys(data, spec)
+            if not gaps:
+                continue
+            if reanalysis_attempts(data) < 1 or top_up_attempts(data) < 1:
+                report[target]["eligible"].append(uuid)
+                report[target]["attributes"] += len(gaps)
+            else:
+                report[target]["spent"].append(uuid)
+    return report
+
+
+def complete_space(MF, targets=None, force: bool = False, should_cancel=None,
+                   progress_callback=None, push_sql: bool = True, db_path=None) -> dict:
+    """
+    Complete the missing attributes of a whole storage space **from what the
+    space already holds** -- the per-document analysis JSONs and the raw
+    sections JSON. No PDF file or input folder is needed and nothing is
+    re-extracted: this is the completion ladder of
+    :func:`complete_missing_attributes` applied document by document.
+
+    A document is touched only when it has a gap and an unspent stage, so a
+    space that is already complete costs one JSON read per document per target.
+    Whatever gets filled is written back to the analysis JSON, the per-attribute
+    A/NA log is refreshed, and (unless ``push_sql`` is False) the document is
+    pushed into the review database immediately -- so a cancelled or crashed
+    run keeps everything it had already resolved.
+
+    Returns ``{"documents": n, "filled": {uuid: {target: [keys]}},
+    "attributes": n, "synced": n, "failed": [(uuid, error)]}``.
+    """
+    MF = _space_manager(MF)
+    targets = list(targets) if targets else list(TARGETS)
+    docs = _space_documents(MF)
+
+    result = {"documents": len(docs), "filled": {}, "attributes": 0,
+              "synced": 0, "failed": []}
+    if not docs:
+        print("⚠️ No analyzed documents found in this storage space.")
+        return result
+
+    for i, (uuid, name) in enumerate(docs, 1):
+        if should_cancel is not None and should_cancel():
+            print("Attribute resolution cancelled by user.")
+            break
+        if progress_callback:
+            progress_callback(i, len(docs), name or uuid)
+
+        MF.update_id_files(uuid)
+        filled_here = {}
+        for target in targets:
+            if should_cancel is not None and should_cancel():
+                break
+            try:
+                if not force and not needs_completion(MF, target):
+                    continue
+                filled = complete_missing_attributes(MF, target, doc_id=uuid, force=force)
+                if filled:
+                    filled_here[target] = filled
+                    _refresh_target_log(MF, target, uuid)
+            except Exception as exc:  # noqa: BLE001 - one document must not end the pass
+                print(f"⚠️ {TARGETS[target].label} completion failed for {name or uuid}: {exc}")
+                result["failed"].append((uuid, f"{target}: {exc}"))
+
+        if not filled_here:
+            continue
+
+        result["filled"][uuid] = filled_here
+        result["attributes"] += sum(len(v) for v in filled_here.values())
+        print(Fore.GREEN + f"✓ {name or uuid}: filled "
+              + "; ".join(f"{TARGETS[t].label} → {', '.join(k)}" for t, k in filled_here.items())
+              + Style.RESET_ALL)
+
+        # Push straight away: the newly resolved values are of no use sitting in
+        # the JSON, and a per-document push means a cancel keeps what is done.
+        if push_sql:
+            try:
+                from alr.common.sql_store import sync_one_document, DB_PATH
+                if sync_one_document(MF, name, db_path=db_path or DB_PATH):
+                    result["synced"] += 1
+                else:
+                    print(f"ℹ No registry row matched '{name}'; it will be picked up by a full sync.")
+            except Exception as exc:  # noqa: BLE001
+                print(f"⚠️ Could not sync {name or uuid} into the review database: {exc}")
+
+    return result
+
+
+def _refresh_target_log(MF, target, uuid):
+    """Rewrite the per-attribute A/NA log row after a completion changed the
+    JSON. Imported lazily: the processor imports this module."""
+    try:
+        from alr.data_analysis.Pdf_File_processor import _refresh_attribute_log
+        _refresh_attribute_log(MF, target, uuid)
+    except Exception as exc:  # noqa: BLE001 - the JSON is the source of truth
+        print(f"⚠️ Could not refresh the {target} attribute log: {exc}")
+
+
 def complete_missing_attributes(MF, target: str, doc_id=None,
                                 force: bool = False) -> list[str]:
     """
