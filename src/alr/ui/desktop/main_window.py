@@ -1791,13 +1791,21 @@ class AutomatedLiteratureUI(tk.Tk):
                     try:
                         outcome = process_pdf_mode_file(
                             str(pdf), str(MF.folder), components=components,
-                            doc_converter=doc_converter, eval_mode=eval_mode)
+                            doc_converter=doc_converter, eval_mode=eval_mode,
+                            should_cancel=should_cancel)
                     except Exception as e:
                         print(f"❌ {pdf.name} could not be analyzed ({type(e).__name__}: {e}) — "
                               f"skipped, continuing with the next file.")
                         not_added.append(skip_row("analyze", e, space=MF.folder, filename=pdf.name))
                         counts["skipped"] += 1
                         continue
+
+                    if outcome == 'C':
+                        # Cancel now lands between components, not only between
+                        # documents; whatever finished is on disk and the next
+                        # run resumes from there.
+                        print(f"🛑 Cancelled while processing {pdf.name}.")
+                        break
 
                     if outcome == 'F':
                         # The processor already recorded the reason in the space's
@@ -1817,17 +1825,7 @@ class AutomatedLiteratureUI(tk.Tk):
 
                     doc = lookup_doc(pdf.name)
 
-                    # 3. DOI / metadata (precheck copies existing data instead of re-extracting).
-                    if do_doi and not should_cancel():
-                        phase(f"[{i}/{total}] DOI / metadata: {pdf.name}", done=i, total=total)
-                        try:
-                            from alr.data_analysis.doi_metadata import enrich_space_with_doi
-                            enrich_space_with_doi(MF, input_path=str(pdf), should_cancel=should_cancel)
-                            doc = lookup_doc(pdf.name) or doc
-                        except Exception as e:
-                            print(f"[DOI Enrichment] {pdf.name}: {e}")
-
-                    # 4. Classification (by title and/or abstract per the user's
+                    # 3. Classification (by title and/or abstract per the user's
                     # choice), copy-or-generate per class_mode.
                     if do_classify and doc and not should_cancel():
                         phase(f"[{i}/{total}] Classifying: {pdf.name}", done=i, total=total)
@@ -1856,6 +1854,21 @@ class AutomatedLiteratureUI(tk.Tk):
 
             if should_cancel():
                 return counts
+
+            # DOI / metadata runs ONCE for the whole selection, not per document.
+            # It is a space-wide operation — it lists the SQL table, reads the
+            # DOI workbook, scans the dated DOI folder and rewrites the workbook
+            # on every call — so calling it inside the loop made the run slower
+            # the longer it went. Its own precheck still skips documents whose
+            # metadata is already known, so this costs no extra lookups.
+            if do_doi and not should_cancel():
+                try:
+                    from alr.data_analysis.doi_metadata import enrich_space_with_doi
+                    enrich_space_with_doi(MF, input_path=result.input_path,
+                                          should_cancel=should_cancel,
+                                          progress_callback=phased("DOI / metadata"))
+                except Exception as e:
+                    print(f"[DOI Enrichment] Skipped/failed: {e}")
 
             # --- Finalization: refresh SQL, then work out what is still missing and
             # let the user decide, per stage, whether to reuse data an earlier dated
@@ -2148,7 +2161,14 @@ class AutomatedLiteratureUI(tk.Tk):
                     row=i // 4, column=1 + i % 4, sticky="w", padx=4, pady=1)
         return section_vars
 
-    def _finalization_gap_dialog(self, gaps):
+    # How long the finalization dialog waits for an answer before deciding for
+    # itself. It appears at the END of a run that may have taken hours, which is
+    # exactly when nobody is at the machine — and the worker thread is blocked on
+    # it, holding the busy flag, so an unanswered dialog used to strand the whole
+    # app (the RAG build after it would never start).
+    GAP_DIALOG_TIMEOUT = 15 * 60
+
+    def _finalization_gap_dialog(self, gaps, timeout=None):
         """
         Ask, in ONE modal, what to do about each enrichment stage that is still
         missing from the SQL database after a run (see
@@ -2160,7 +2180,13 @@ class AutomatedLiteratureUI(tk.Tk):
         default when it covers every missing document. Returns
         ``{stage: "reuse"|"fresh"|"skip"}`` -- all "skip" if the user closes or
         cancels the dialog.
+
+        Unanswered for ``timeout`` seconds, it answers itself with the **safe**
+        choice: reuse where a previous file covers the whole gap, skip
+        everything else. Nothing that costs an LLM call is ever started on the
+        user's behalf.
         """
+        timeout = self.GAP_DIALOG_TIMEOUT if timeout is None else timeout
         win = tk.Toplevel(self)
         win.title("Incomplete data found")
         win.transient(self)
@@ -2205,8 +2231,38 @@ class AutomatedLiteratureUI(tk.Tk):
         ttk.Button(action, text="Continue", command=apply_choices).pack(side="right", padx=4)
         ttk.Button(action, text="Skip all", command=win.destroy).pack(side="right", padx=4)
 
+        # Auto-answer so an unattended run finishes instead of waiting forever.
+        countdown = None
+        if timeout and timeout > 0:
+            safe = {stage: ("reuse" if len(info["reusable"]) >= len(info["missing"]) else "skip")
+                    for stage, info in gaps.items()}
+            note = ttk.Label(action, foreground="#666")
+            note.pack(side="left", padx=4)
+            left = [int(timeout)]
+
+            def tick():
+                nonlocal countdown
+                if left[0] <= 0:
+                    result.update(safe)
+                    print("[Completeness Check] No answer within "
+                          f"{int(timeout // 60)} min — reusing what previous files cover "
+                          "and skipping the rest.")
+                    win.destroy()
+                    return
+                mins, secs = divmod(left[0], 60)
+                note.config(text=f"No answer in {mins}:{secs:02d} → reuse where possible, skip the rest")
+                left[0] -= 1
+                countdown = win.after(1000, tick)
+
+            tick()
+
         win.grab_set()
         self.wait_window(win)
+        if countdown is not None:
+            try:
+                win.after_cancel(countdown)
+            except tk.TclError:
+                pass
         # Closing the window without confirming means "do nothing".
         return result or {stage: "skip" for stage in gaps}
 

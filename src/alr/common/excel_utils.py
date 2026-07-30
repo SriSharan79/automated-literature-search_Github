@@ -1,7 +1,85 @@
 import pandas as pd
 import os
 import shutil
+import threading
 from pathlib import Path
+
+# ---------------------------------------------------------------------------
+# Cached workbook reads
+# ---------------------------------------------------------------------------
+# The per-document pipeline asks the SAME small workbooks (the registry, the
+# per-target analysis logs) dozens of times per PDF -- every lookup used to
+# re-parse the whole file, which is O(rows) each and turns a 1000-document run
+# into tens of thousands of full parses.
+#
+# The cache is keyed on the file's identity **and** its modification time and
+# size, so a workbook written by anything at all -- another pass, the Review
+# tool, the user in Excel, a different process -- is re-read on the next
+# access. That makes it transparent: no session to open, no way to serve stale
+# data, and nothing to unwind when a pass fails half way.
+_CACHE = {}
+_CACHE_LOCK = threading.RLock()
+_MAX_CACHED = 64
+
+
+def _stamp(path):
+    try:
+        st = os.stat(path)
+    except OSError:
+        return None
+    return (st.st_mtime_ns, st.st_size)
+
+
+def read_excel_cached(path, sheet_name=0, **kwargs):
+    """
+    Read a workbook, reusing the last parse while the file is unchanged.
+
+    The returned DataFrame is the cached object: **callers must not mutate it**
+    (use ``.copy()`` first, or :func:`write_excel_cached`, which does).
+    Any keyword beyond ``sheet_name`` bypasses the cache -- those reads are
+    rare and not worth a key per option combination.
+    """
+    if kwargs:
+        return pd.read_excel(path, sheet_name=sheet_name, **kwargs)
+
+    key = (str(Path(path)), sheet_name)
+    stamp = _stamp(path)
+    if stamp is None:                      # missing file: let pandas raise as before
+        return pd.read_excel(path, sheet_name=sheet_name)
+
+    with _CACHE_LOCK:
+        hit = _CACHE.get(key)
+        if hit is not None and hit[0] == stamp:
+            return hit[1]
+
+    df = pd.read_excel(path, sheet_name=sheet_name)
+
+    with _CACHE_LOCK:
+        # Re-stamp after the read: a file rewritten *while* we were parsing
+        # must not be cached under the pre-write stamp.
+        _CACHE[key] = (_stamp(path), df)
+        if len(_CACHE) > _MAX_CACHED:
+            for stale in list(_CACHE)[:-_MAX_CACHED]:
+                _CACHE.pop(stale, None)
+    return df
+
+
+def write_excel_cached(df, path, sheet_name=0, **kwargs):
+    """Write a workbook and keep the cache in step with what is now on disk."""
+    df.to_excel(path, index=False, **kwargs)
+    with _CACHE_LOCK:
+        _CACHE[(str(Path(path)), sheet_name)] = (_stamp(path), df)
+
+
+def invalidate_excel_cache(path=None):
+    """Drop cached parses (all of them, or just one file)."""
+    with _CACHE_LOCK:
+        if path is None:
+            _CACHE.clear()
+        else:
+            for key in [k for k in _CACHE if k[0] == str(Path(path))]:
+                _CACHE.pop(key, None)
+
 
 def get_column_value(excel_file, column_name, idx):
     """
@@ -15,8 +93,8 @@ def get_column_value(excel_file, column_name, idx):
     Returns:
         value: The value at the specified index in the specified column.
     """
-    # Load the Excel file into a DataFrame
-    df = pd.read_excel(excel_file)
+    # Load the Excel file into a DataFrame (cached while the file is unchanged)
+    df = read_excel_cached(excel_file)
 
     # Ensure the column exists in the DataFrame
     if column_name not in df.columns:
@@ -40,7 +118,7 @@ def extract_column(file_path: str, column_name: str) -> list:
     try:
         # Read the entire Excel file (it defaults to the first sheet)
         # Setting header=0 (the default) ensures it uses the first row as column names
-        df = pd.read_excel(file_path)
+        df = read_excel_cached(file_path)
 
         # Check if the column exists
         if column_name in df.columns:
@@ -60,8 +138,9 @@ def extract_column(file_path: str, column_name: str) -> list:
 
 def get_corresponding_value(excel_file_path, column_1, value_1, column_2):
     try:
-        # Load the Excel file into a DataFrame
-        df = pd.read_excel(excel_file_path)
+        # Load the Excel file into a DataFrame (cached while unchanged: this is
+        # the single hottest call in the per-document pipeline)
+        df = read_excel_cached(excel_file_path)
         
         # Check if the columns exist in the DataFrame
         if column_1 not in df.columns or column_2 not in df.columns:
@@ -87,8 +166,9 @@ def get_corresponding_value(excel_file_path, column_1, value_1, column_2):
 
 def update_corresponding_value(excel_file_path, column_1, value_1, column_2, new_value):
     try:
-        # Load the Excel file into a DataFrame
-        df = pd.read_excel(excel_file_path)
+        # Load the Excel file into a DataFrame (cached read; the copy below is
+        # what gets mutated, so the cached parse is never altered in place)
+        df = read_excel_cached(excel_file_path)
         
         # Check if the columns exist in the DataFrame
         if column_1 not in df.columns or column_2 not in df.columns:
@@ -107,12 +187,13 @@ def update_corresponding_value(excel_file_path, column_1, value_1, column_2, new
         # Update the corresponding value in column_2. An all-empty column is
         # read back as float64 (all NaN) and pandas then refuses a string
         # assignment, so coerce it to object first.
+        df = df.copy()
         if isinstance(new_value, str) and df[column_2].dtype != object:
             df[column_2] = df[column_2].astype("object")
         df.at[matching_row_index[0], column_2] = new_value
-        
+
         # Save the updated DataFrame back to the Excel file
-        df.to_excel(excel_file_path, index=False)
+        write_excel_cached(df, excel_file_path)
         
         # print(f"Successfully updated the value in '{column_2}' to '{new_value}' for row where '{column_1}' is '{value_1}'.")
         

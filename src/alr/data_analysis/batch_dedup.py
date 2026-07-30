@@ -147,7 +147,8 @@ def find_new_and_duplicate_pdfs(
     status_cols = [c for c in _COMPONENT_COLUMN.values()]
     if Path(manager.excel_success).exists():
         try:
-            df = pd.read_excel(manager.excel_success)
+            from alr.common.excel_utils import read_excel_cached
+            df = read_excel_cached(manager.excel_success)
             if "filename" in df.columns:
                 for _, r in df.iterrows():
                     fname = r.get("filename")

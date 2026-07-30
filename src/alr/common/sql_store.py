@@ -1046,7 +1046,7 @@ def sync_one_document(manager_or_folder, filename, db_path=DB_PATH, search_root=
     columns already in SQL are preserved (COALESCE) because the registry-only
     record does not supply them.
     """
-    import pandas as pd
+    from alr.common.excel_utils import read_excel_cached
 
     if isinstance(manager_or_folder, DataAnalyzeManager):
         manager = manager_or_folder
@@ -1058,7 +1058,8 @@ def sync_one_document(manager_or_folder, filename, db_path=DB_PATH, search_root=
         return False
 
     try:
-        df = pd.read_excel(registry)
+        # Cached while the registry is unchanged: this runs once per document.
+        df = read_excel_cached(registry)
     except Exception as e:
         print(f"Could not read registry {registry}: {e}")
         return False

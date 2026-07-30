@@ -199,11 +199,21 @@ def run_threaded(host, work, title, result_word="processed", on_success=None,
         q.put(("progress", kw))
 
     def ask(handler):
-        """Run ``handler(host)`` on the main thread; block for its result."""
+        """
+        Run ``handler(host)`` on the main thread; block for its result.
+
+        The wait is interruptible: if the pass is cancelled while the modal is
+        still unanswered, the worker is released with ``None`` instead of being
+        parked forever (which would keep the busy flag set and lock the app out
+        of every other pass). Dialogs raised this way should also answer
+        themselves after a while — see ``_finalization_gap_dialog``.
+        """
         done = threading.Event()
         holder = {}
         q.put(("ask", (handler, holder, done)))
-        done.wait()
+        while not done.wait(0.5):
+            if cancel_event.is_set():
+                return None
         return holder.get("result")
 
     def worker():

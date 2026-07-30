@@ -4,6 +4,7 @@ from alr.common.general_utils import caluculate_time_taken, clean_response_json_
 from alr.common.json_utils import get_value_by_pair, pretty_print_json_from_file, store_to_json, get_key_from_file, store_to_json_with_text
 from alr.common.llm_utils import llm_call
 from alr.data_analysis.section_resolver import resolve_section_text, top_up_missing_attributes
+from alr.common.excel_utils import read_excel_cached, write_excel_cached
 
 import re
 import json
@@ -70,12 +71,12 @@ def check_and_log_data(json_file_path, excel_file_path, ID, time_taken):
         # If the file doesn't exist, create it
         if not os.path.exists(excel_file_path):
             df = pd.DataFrame([row_data])
-            df.to_excel(excel_file_path, index=False)
+            write_excel_cached(df, excel_file_path)
             # print(f"Data successfully logged to {excel_file_path}")
             return
 
         # Load existing data
-        df = pd.read_excel(excel_file_path)
+        df = read_excel_cached(excel_file_path).copy()
 
         # Ensure UUID column exists
         if "UUID" not in df.columns:
@@ -109,7 +110,7 @@ def check_and_log_data(json_file_path, excel_file_path, ID, time_taken):
             df = pd.concat([df, new_row_df], ignore_index=True)
 
         # Save back to excel
-        df.to_excel(excel_file_path, index=False)
+        write_excel_cached(df, excel_file_path)
         print(f"Data successfully logged to {excel_file_path}")
 
     except json.JSONDecodeError as e:

@@ -315,7 +315,40 @@ def get_title_metadata(file_path):
         # You can optionally print or log 'e' here if you need to debug
         return "No Metadata Title"
 
-def get_title_in_the_file(file_path,llm_service):
+# Titles already resolved in this process, keyed by (path, mtime, size).
+# The duplicate pre-scan and the sectioning step both ask for the title of every
+# new PDF, so without this each file paid for the DOI/arXiv lookup -- and, on a
+# miss, the LLM disambiguation call -- twice. The file's stamp is part of the
+# key, so replacing a PDF in place still re-resolves it.
+_TITLE_CACHE = {}
+
+
+def _title_key(file_path):
+    try:
+        st = os.stat(file_path)
+    except OSError:
+        return None
+    return (str(file_path), st.st_mtime_ns, st.st_size)
+
+
+def clear_title_cache():
+    """Forget every memoized title (tests, or a deliberate re-extraction)."""
+    _TITLE_CACHE.clear()
+
+
+def get_title_in_the_file(file_path, llm_service):
+        key = _title_key(file_path)
+        if key is not None and key in _TITLE_CACHE:
+            title = _TITLE_CACHE[key]
+            print(Fore.BLUE + 'Title Identified (already resolved this run): ' + str(title) + Style.RESET_ALL)
+            return title
+        title = _extract_title_in_the_file(file_path, llm_service)
+        if key is not None:
+            _TITLE_CACHE[key] = title
+        return title
+
+
+def _extract_title_in_the_file(file_path,llm_service):
         base_data=extract_meta_data_from_doi(file_path)
 
         # If a DOI / arXiv lookup returned an authoritative title, trust it and

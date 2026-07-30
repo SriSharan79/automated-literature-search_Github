@@ -12,7 +12,9 @@ from alr.data_analysis.Introduction_Analyzer import (
 from alr.data_analysis.File_Data_extraction_with_Docling import _categorise_sections, _excel_log_has_file, _extract_and_chunk, _process_sections, _save_section_outputs, _init_excel_data
 from alr.common.file_manager import DataAnalyzeManager
 from alr.common.general_utils import caluculate_time_taken, find_missing_elements, generate_unique_id,_as_path,add_hh_mm_ss
-from alr.common.excel_utils import get_corresponding_value,extract_column,update_corresponding_value
+from alr.common.excel_utils import (get_corresponding_value, extract_column,
+                                    update_corresponding_value, read_excel_cached,
+                                    write_excel_cached)
 from alr.common.json_utils import get_value_by_pair,get_chunks_from_references, pretty_print_json_from_file,print_json_file
 from alr.data_analysis.title_extracter import get_title_in_the_file
 from alr.data_analysis.LLM_Reference_Extractor import process_references_from_chunks_from_Sec_JSON
@@ -277,22 +279,22 @@ def save_logs(new_success, success_path, new_failed, failed_path):
     if new_success:
         df_new = pd.DataFrame(new_success)
         if success_path.exists():
-            df_old = pd.read_excel(success_path)
+            df_old = read_excel_cached(success_path)
             df_final = pd.concat([df_old, df_new], ignore_index=True)
         else:
             df_final = df_new
-        df_final.to_excel(success_path, index=False)
+        write_excel_cached(df_final, success_path)
         logger.info(f"📊 Success log updated: {len(new_success)} entries added.")
 
     # Process Failure Logs
     if new_failed:
         df_new_f = pd.DataFrame(new_failed)
         if failed_path.exists():
-            df_old_f = pd.read_excel(failed_path)
+            df_old_f = read_excel_cached(failed_path)
             df_final_f = pd.concat([df_old_f, df_new_f], ignore_index=True)
         else:
             df_final_f = df_new_f
-        df_final_f.to_excel(failed_path, index=False)
+        write_excel_cached(df_final_f, failed_path)
         logger.warning(f"⚠️ Failure log updated: {len(new_failed)} entries added.")
         
 def _init_manager(storage_path: str):
@@ -330,7 +332,7 @@ def _load_registry(excel_success):
 
     if excel_success.exists():
         try:
-            df_existing = pd.read_excel(excel_success)
+            df_existing = read_excel_cached(excel_success)
             processed_files = set(df_existing["filename"].astype(str).tolist())
             processed_titles = set(df_existing["title"].astype(str).tolist())
             processed_ids = set(df_existing["UUID"].astype(str).tolist())
@@ -346,10 +348,11 @@ def _ensure_registry_column(excel_path, column, default=""):
         p = Path(excel_path)
         if not p.exists():
             return
-        df = pd.read_excel(p)
+        df = read_excel_cached(p)
         if column not in df.columns:
+            df = df.copy()
             df[column] = default
-            df.to_excel(p, index=False)
+            write_excel_cached(df, p)
             logger.info(f"🧾 Registry updated with new column: {column}")
     except Exception as e:
         logger.warning(f"⚠️ Could not ensure registry column '{column}': {e}")
@@ -358,8 +361,6 @@ def _ensure_registry_column(excel_path, column, default=""):
 def _recheck_title_(excel_success,file_path,llm_service):
 
     default_title = "Title Not Found"
-    # 1. Load the Excel file
-    df = pd.read_excel(excel_success)
     pdf_name = file_path.name 
     logger.info(f"--- Debug: Starting Recheck for {pdf_name} ---")
 
@@ -948,7 +949,8 @@ def _resolve_components(mode, components):
     return {"abstract", "intro", "results", "references"}  # mode is None -> full
 
 
-def process_pdf_mode_file(file, storage_path="", mode=None, components=None, doc_converter=None, eval_mode="generate"):
+def process_pdf_mode_file(file, storage_path="", mode=None, components=None, doc_converter=None,
+                          eval_mode="generate", should_cancel=None):
     """
     Orchestrates the PDF processing.
     mode='a': Only attempts Abstract (+ Introduction + Results & Conclusion) extraction.
@@ -965,7 +967,16 @@ def process_pdf_mode_file(file, storage_path="", mode=None, components=None, doc
     ``eval_mode`` (``"generate"``/``"copy"``) is forwarded to the per-document data
     evaluation that runs right after abstract analysis: ``"copy"`` reuses a prior
     evaluation when one already exists, ``"generate"`` recomputes.
+
+    ``should_cancel`` is an optional callable checked **between components**
+    (before sectioning, and before each of abstract / intro / results /
+    references). Without it a Cancel press had to wait out this whole document
+    -- sectioning plus up to four LLM stages. A cancel returns ``'C'``; whatever
+    already finished is on disk and is picked up by the next run's resume.
     """
+    def _cancelled():
+        return should_cancel is not None and should_cancel()
+
     file_path = Path(file)
     
     # Initialize manager to get paths and registry
@@ -996,6 +1007,9 @@ def process_pdf_mode_file(file, storage_path="", mode=None, components=None, doc
     # already exists we must NOT re-run the (expensive) Docling extraction.
     already_sectioned = bool(In_UUID) and Path(MF.raw_sec_json_path).exists()
     if not already_sectioned:
+        if _cancelled():
+            logger.info(f"🛑 Cancelled before sectioning {file_path.name}.")
+            return 'C'
         logger.info(f"📦 Extracting & sectioning: {file_path.name}")
         if not Path(MF.raw_chunks_json_path).exists():
             _extract_chunks(file_path, start_time, MF, doc_converter=doc_converter, timeout=300)
@@ -1022,10 +1036,12 @@ def process_pdf_mode_file(file, storage_path="", mode=None, components=None, doc
         selected = _resolve_components(mode, components)
 
         if "abstract" in selected:
+            if _cancelled():
+                return 'C'
             logger.info(f"📝 Processing Abstract for {file_path.name}...")
             result = process_pdf_abstract(file_path, storage_path)
             # Run data evaluation immediately after abstract analysis of this PDF.
-            if result == 'P':
+            if result == 'P' and not _cancelled():
                 try:
                     from alr.analysis_evaluation.data_evaluator import evaluate_document
                     evaluate_document(str(MF.folder), UUID, push_sql=True, mode=eval_mode)
@@ -1033,15 +1049,21 @@ def process_pdf_mode_file(file, storage_path="", mode=None, components=None, doc
                 except Exception as e:
                     logger.warning(f"⚠️ Data evaluation skipped for {file_path.name}: {e}")
         if "intro" in selected:
+            if _cancelled():
+                return 'C'
             logger.info(f"📝 Processing Introduction for {file_path.name}...")
             result = process_pdf_intro(file_path, storage_path)
         if "results" in selected:
+            if _cancelled():
+                return 'C'
             logger.info(f"📝 Processing Results & Conclusion for {file_path.name}...")
             result = process_pdf_results_conclusion(file_path, storage_path)
         if "abstract" in selected or "intro" in selected or "results" in selected:
             logger.info(f"🏁 Abstract, Introduction & Results/Conclusion Extraction finished ")
 
         if "references" in selected:
+            if _cancelled():
+                return 'C'
             logger.info(f"📚 Processing References for {file_path.name}...")
             result = process_pdf_references(file_path, storage_path)
             logger.info(f"🏁 References Extraction finished ")
