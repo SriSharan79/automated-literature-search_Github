@@ -22,6 +22,7 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
+import threading
 from datetime import datetime
 from pathlib import Path
 
@@ -178,6 +179,72 @@ def _truthy_classification(val) -> bool:
     return text in ("true", "1", "1.0", "yes", "y", "t")
 
 
+# How long a statement waits for another connection's lock before giving up.
+# SQLite's default is 5 s, which a Review tool refreshing its tables or a
+# parallel pass can easily exceed — and the caller then only logs "database is
+# locked" and drops that document's data.
+BUSY_TIMEOUT_SECONDS = 30.0
+
+# Paths whose journal mode has been settled this session: True = WAL is on,
+# False = the file system refused it (see _enable_wal).
+_WAL_STATE = {}
+_WAL_LOCK = threading.Lock()
+
+
+class _ClosingConnection(sqlite3.Connection):
+    """A connection that also **closes** when its ``with`` block ends.
+
+    ``with sqlite3.connect(...) as conn:`` commits on exit but deliberately
+    leaves the connection open — every call site in this module used that
+    form, so each one leaked a connection holding a lock on the database file
+    until the garbage collector happened to reclaim it. With one store
+    constructed per document that is a steady supply of stray locks competing
+    with the pass's own writes.
+    """
+
+    def __exit__(self, exc_type, exc, tb):
+        try:
+            return super().__exit__(exc_type, exc, tb)
+        finally:
+            self.close()
+
+
+def _enable_wal(conn, db_path):
+    """Put the database in WAL mode once per file, if the file system allows it.
+
+    In the default rollback-journal mode a single reader blocks every writer:
+    with the Review tool open on the same database, an evaluation pass writing
+    per document collides constantly. WAL lets readers and one writer proceed
+    together, which is exactly this application's shape.
+
+    WAL needs shared memory beside the database file, which some network
+    shares (NFS/SMB — where these spaces often live) do not provide. The
+    attempt is therefore made once per path and remembered: a refusal falls
+    back to the previous behaviour, which the busy timeout still makes far more
+    patient than before.
+    """
+    key = str(db_path)
+    with _WAL_LOCK:
+        if key in _WAL_STATE:
+            return _WAL_STATE[key]
+        try:
+            current = conn.execute("PRAGMA journal_mode").fetchone()[0]
+            if str(current).lower() != "wal":
+                mode = conn.execute("PRAGMA journal_mode = WAL").fetchone()[0]
+                if str(mode).lower() != "wal":
+                    raise sqlite3.DatabaseError(f"journal mode stayed '{mode}'")
+            # Durable enough for this data (a crash can lose the last commits,
+            # never the file) and much cheaper per write.
+            conn.execute("PRAGMA synchronous = NORMAL")
+            _WAL_STATE[key] = True
+        except Exception as e:  # noqa: BLE001 - a share that cannot do WAL still works
+            print(f"ℹ️ Review database staying in rollback-journal mode "
+                  f"(WAL unavailable here: {e}). Writes wait up to "
+                  f"{BUSY_TIMEOUT_SECONDS:.0f}s for a lock.")
+            _WAL_STATE[key] = False
+        return _WAL_STATE[key]
+
+
 class AnalyzedDataStore:
     """CRUD access to the analyzed-document SQLite database."""
 
@@ -187,28 +254,55 @@ class AnalyzedDataStore:
         self.init_db()
 
     def _connect(self):
-        conn = sqlite3.connect(self.db_path)
+        conn = sqlite3.connect(self.db_path, timeout=BUSY_TIMEOUT_SECONDS,
+                               factory=_ClosingConnection)
         conn.row_factory = sqlite3.Row
+        # `timeout=` above covers the connection itself; the pragma covers
+        # statements on it. Both, so no path waits only the 5 s default.
+        conn.execute(f"PRAGMA busy_timeout = {int(BUSY_TIMEOUT_SECONDS * 1000)}")
+        _enable_wal(conn, self.db_path)
         return conn
 
     def init_db(self):
-        cols_sql = ",\n            ".join(
-            f"{c} TEXT PRIMARY KEY" if c == "uuid" else f"{c} TEXT" for c in COLUMNS
-        )
+        """
+        Create/migrate the schema — but only actually write when something is
+        missing.
+
+        This runs on **every** ``AnalyzedDataStore(...)`` construction, and the
+        passes construct one per document. ``CREATE TABLE IF NOT EXISTS`` and
+        the ALTERs are DDL: they open a write transaction even when they turn
+        out to be no-ops, so an up-to-date database was taking a write lock
+        once per document purely to confirm nothing had changed — the main
+        source of "database is locked" during a long pass. The steady state is
+        now a pure read.
+        """
         with self._connect() as conn:
-            conn.execute(f"CREATE TABLE IF NOT EXISTS documents (\n            {cols_sql}\n        )")
-            # Lightweight migration: add any columns missing from an older DB.
-            existing = {r[1] for r in conn.execute("PRAGMA table_info(documents)").fetchall()}
-            for col in COLUMNS:
-                if col not in existing:
-                    conn.execute(f"ALTER TABLE documents ADD COLUMN {col} TEXT")
+            tables = {r[0] for r in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+            existing = ({r[1] for r in conn.execute("PRAGMA table_info(documents)").fetchall()}
+                        if "documents" in tables else set())
+
             # Reverse direction: adopt user-defined topic columns created by a
             # previous session (custom classification) so they stay visible,
-            # COALESCE-preserved and exportable after a restart.
+            # COALESCE-preserved and exportable after a restart. In-memory
+            # only — no write.
             for col in existing:
                 if col not in COLUMNS and col not in _LEGACY_COLUMNS:
                     ENRICHMENT_COLUMNS.append(col)
                     COLUMNS.append(col)
+
+            missing = [c for c in COLUMNS if c not in existing]
+            if "documents" in tables and not missing and "overview_templates" in tables:
+                return  # already current: nothing to write, no write lock taken
+
+            cols_sql = ",\n            ".join(
+                f"{c} TEXT PRIMARY KEY" if c == "uuid" else f"{c} TEXT" for c in COLUMNS
+            )
+            conn.execute(f"CREATE TABLE IF NOT EXISTS documents (\n            {cols_sql}\n        )")
+            # Lightweight migration: add any columns missing from an older DB.
+            if "documents" in tables:
+                for col in missing:
+                    conn.execute(f"ALTER TABLE documents ADD COLUMN {col} TEXT")
             # Saved overview definitions (field/filter/grouping/chart specs).
             conn.execute(
                 "CREATE TABLE IF NOT EXISTS overview_templates ("
