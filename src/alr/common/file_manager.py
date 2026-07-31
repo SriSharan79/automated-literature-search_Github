@@ -423,6 +423,10 @@ class Vec_DB_Manager:
         self.Abstract_Distance_Metrics = self.Abstract_Overview_folder / f"{current_date}_Abstract_Distance_Metrics.xlsx"
         self.Abstract_Cosine_Metrics = self.Abstract_Overview_folder / f"{current_date}_Abstract_Cosine_Metrics.xlsx"
         self.Abstract_Metrics_Overview = self.Abstract_Overview_folder / f"{current_date}_Abstract_Metrics_Overview.xlsx"
+        # One sheet per individual metric (grounding + the nine metric columns),
+        # each holding one row per extracted item across every section. Written
+        # only by the Evaluation tab.
+        self.Abstract_Per_Metric = self.Abstract_Overview_folder / f"{current_date}_Abstract_Per_Metric.xlsx"
         # Per-document sentence-level metric detail JSONs ({uuid}_..._Sentence_Metrics.json).
         self.Abstract_Metric_Details = self.Abstract_Overview_folder / "Metric_Sentence_Details"
 
@@ -444,6 +448,7 @@ class Vec_DB_Manager:
         self.Introduction_Distance_Metrics = self.Introduction_DB / f"{current_date}_Introduction_Distance_Metrics.xlsx"
         self.Introduction_Cosine_Metrics = self.Introduction_DB / f"{current_date}_Introduction_Cosine_Metrics.xlsx"
         self.Introduction_Metrics_Overview = self.Introduction_DB / f"{current_date}_Introduction_Metrics_Overview.xlsx"
+        self.Introduction_Per_Metric = self.Introduction_DB / f"{current_date}_Introduction_Per_Metric.xlsx"
         self.Introduction_Metric_Details = self.Introduction_DB / "Metric_Sentence_Details"
 
         # Per-intro-section evaluation workbooks (see sections.INTRO_SECTIONS).
@@ -496,6 +501,7 @@ class Vec_DB_Manager:
         self.ResCon_Distance_Metrics = self.ResCon_DB / f"{current_date}_Results_Conclusion_Distance_Metrics.xlsx"
         self.ResCon_Cosine_Metrics = self.ResCon_DB / f"{current_date}_Results_Conclusion_Cosine_Metrics.xlsx"
         self.ResCon_Metrics_Overview = self.ResCon_DB / f"{current_date}_Results_Conclusion_Metrics_Overview.xlsx"
+        self.ResCon_Per_Metric = self.ResCon_DB / f"{current_date}_Results_Conclusion_Per_Metric.xlsx"
         self.ResCon_Metric_Details = self.ResCon_DB / "Metric_Sentence_Details"
 
         self.Results_Mentioned_DB_excel = self.ResCon_DB_Excel / "Results_Mentioned_DB.xlsx"

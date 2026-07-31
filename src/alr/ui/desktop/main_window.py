@@ -3156,6 +3156,7 @@ class AutomatedLiteratureUI(tk.Tk):
                     from alr.analysis_evaluation.data_evaluator import evaluate_space
                     n = max(n, evaluate_space(
                         clean_path, should_cancel=should_cancel, target=t, mode=eval_mode,
+                        per_metric=True,
                         progress_callback=lambda d, tot, lab=label: progress(
                             done=d, total=tot, text=f"Substring evaluation ({lab})  {d}/{tot}…")))
                 if metric_kinds and not should_cancel():
@@ -3163,6 +3164,7 @@ class AutomatedLiteratureUI(tk.Tk):
                     from alr.analysis_evaluation.metric_evaluator import evaluate_space_metrics
                     n = max(n, evaluate_space_metrics(
                         clean_path, metric_kinds, target=t, should_cancel=should_cancel, mode=eval_mode,
+                        per_metric=True,
                         progress_callback=lambda d, tot, lab=label: progress(
                             done=d, total=tot, text=f"Metric evaluation ({lab})  {d}/{tot}…")))
             return n

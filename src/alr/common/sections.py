@@ -453,6 +453,7 @@ METRIC_WORKBOOK_ATTRS = {
         "distance": "Abstract_Distance_Metrics",
         "cosine": "Abstract_Cosine_Metrics",
         "overview": "Abstract_Metrics_Overview",
+        "per_metric": "Abstract_Per_Metric",
         "details": "Abstract_Metric_Details",
     },
     "intro": {
@@ -460,6 +461,7 @@ METRIC_WORKBOOK_ATTRS = {
         "distance": "Introduction_Distance_Metrics",
         "cosine": "Introduction_Cosine_Metrics",
         "overview": "Introduction_Metrics_Overview",
+        "per_metric": "Introduction_Per_Metric",
         "details": "Introduction_Metric_Details",
     },
     "rescon": {
@@ -467,6 +469,7 @@ METRIC_WORKBOOK_ATTRS = {
         "distance": "ResCon_Distance_Metrics",
         "cosine": "ResCon_Cosine_Metrics",
         "overview": "ResCon_Metrics_Overview",
+        "per_metric": "ResCon_Per_Metric",
         "details": "ResCon_Metric_Details",
     },
 }

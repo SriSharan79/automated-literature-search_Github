@@ -5,6 +5,7 @@ from pathlib import Path
 import pandas as pd
 
 from alr.analysis_evaluation import word_grounding
+from alr.analysis_evaluation.per_metric_sheets import GROUNDING_SHEET, open_for
 from alr.common import excel_session
 from alr.common.file_manager import DataAnalyzeManager, Vec_DB_Manager
 from alr.common.sections import build_sections_eval_map, is_literal_match_key
@@ -214,7 +215,7 @@ def _update_master_overview(storage_dir, sheet_name, uuid, title, filename, text
 
 def _sync_sections_for_uuid(UUID, title, file_name, json_data, sections, storage_path,
                             text_key="Abstract Text identified:", overview_path=None,
-                            overwrite=False):
+                            overwrite=False, rows_out=None):
     """
     Iterates through layout mappings to transform and evaluate section lists or
     strings. Returns a stats dict ``{section_key: {"true": t, "false": f}}`` that
@@ -249,6 +250,7 @@ def _sync_sections_for_uuid(UUID, title, file_name, json_data, sections, storage
                 overview_path=overview_path,
                 overwrite=overwrite,
                 vocabulary=vocabulary,
+                rows_out=rows_out,
             )
         else:
             t, f = _save_single_section(
@@ -263,6 +265,7 @@ def _sync_sections_for_uuid(UUID, title, file_name, json_data, sections, storage
                 overview_path=overview_path,
                 overwrite=overwrite,
                 vocabulary=vocabulary,
+                rows_out=rows_out,
             )
         total = t + f
         stats[key] = {
@@ -275,7 +278,27 @@ def _sync_sections_for_uuid(UUID, title, file_name, json_data, sections, storage
     return stats
 
 
-def _save_list_section(UUID, key, content_list, ex_path, title, file_name, abs_txt, storage_path, overview_path=None, overwrite=False, vocabulary=None):
+def _grounding_row(key, uuid, title, file_name, item_no, content, columns):
+    """One row of the per-metric workbook's ``grounding`` sheet.
+
+    ``Check`` records which regime produced it, so a reader knows why the word
+    columns are empty on a ``Research Areas`` / ``Key Concepts`` row rather
+    than reading the blanks as missing data.
+    """
+    row = {
+        "UUID": str(uuid), "Title": title, "Filename": file_name,
+        "Section": key, "Item": item_no, "Content": content,
+        "grounding": columns.get("Is_Subset"),
+        "Check": "literal" if is_literal_match_key(key) else "word",
+    }
+    for col in ("Words_Checked", "Words_Found", "Words_Missing",
+                "Grounding_%", "Missing_Words"):
+        if col in columns:
+            row[col] = columns[col]
+    return row
+
+
+def _save_list_section(UUID, key, content_list, ex_path, title, file_name, abs_txt, storage_path, overview_path=None, overwrite=False, vocabulary=None, rows_out=None):
     """
     Flattens lists horizontally using alternation layouts and uploads aggregate
     statistics. Always computes the true/false counts (returned for SQL), but
@@ -309,6 +332,9 @@ def _save_list_section(UUID, key, content_list, ex_path, title, file_name, abs_t
         entry[f"{key} {count_label} value"] = content_str
         for col, val in columns.items():
             entry[f"{key} {count_label} {col}"] = val
+        if rows_out is not None:
+            rows_out.append(_grounding_row(key, UUID, title, file_name,
+                                           count_label, content_str, columns))
 
         bullet_lines.append(f"- {content_str}")
 
@@ -323,7 +349,7 @@ def _save_list_section(UUID, key, content_list, ex_path, title, file_name, abs_t
     return true_count, false_count
 
 
-def _save_single_section(UUID, key, content_value, ex_path, title, file_name, abs_txt, storage_path, overview_path=None, overwrite=False, vocabulary=None):
+def _save_single_section(UUID, key, content_value, ex_path, title, file_name, abs_txt, storage_path, overview_path=None, overwrite=False, vocabulary=None, rows_out=None):
     """
     Saves single text objects cleanly mapping their matching criteria directly.
     Always computes the true/false counts (returned for SQL), but only writes
@@ -345,6 +371,9 @@ def _save_single_section(UUID, key, content_value, ex_path, title, file_name, ab
         "Content": content_str,
         **columns,
     }
+    if rows_out is not None:
+        rows_out.append(_grounding_row(key, UUID, title, file_name, 1,
+                                       content_str, columns))
 
     if overwrite or not _is_duplicate_in_sheet(Path(ex_path), key, str(UUID)):
         _write_section_sheet_flat(Path(ex_path), key, entry)
@@ -477,7 +506,8 @@ def _load_recorded_rescons(MF):
     return []
 
 
-def evaluate_document(storage_path, uuid, db_path=None, push_sql=True, mode="generate", target="abstract"):
+def evaluate_document(storage_path, uuid, db_path=None, push_sql=True, mode="generate",
+                      target="abstract", per_metric=None):
     """
     Evaluate one analyzed document (by ``uuid``): write its per-section evaluation
     Excel sheets and, when ``push_sql`` is set, mirror the summary into the SQLite
@@ -498,6 +528,13 @@ def evaluate_document(storage_path, uuid, db_path=None, push_sql=True, mode="gen
     (skips recomputation; unevaluated documents are still computed);
     ``mode="generate"`` (default) always recomputes AND rewrites the Excel rows
     of already-evaluated UUIDs in place with the fresh values.
+
+    ``per_metric`` is an open
+    :class:`~alr.analysis_evaluation.per_metric_sheets.PerMetricWorkbook` (or
+    ``None``, the default): when given, this document's per-item grounding rows
+    are also buffered onto its ``grounding`` sheet. Only the Evaluation tab
+    passes one — the per-document analysis pipeline evaluates one document at a
+    time and has no use for a whole-space comparison workbook.
 
     Returns the per-section stats dict, or ``None`` if the source JSON is missing.
     Safe to call repeatedly: the Excel writes upsert per UUID (no duplicates).
@@ -538,12 +575,15 @@ def evaluate_document(storage_path, uuid, db_path=None, push_sql=True, mode="gen
     if not json_data:
         return None
 
+    rows_out = [] if per_metric is not None and per_metric.enabled else None
     stats = _sync_sections_for_uuid(
         UUID=uuid, title=title, file_name=file_name,
         json_data=json_data, sections=sections, storage_path=str(MF.folder),
         text_key=text_key, overview_path=overview_path,
-        overwrite=(mode == "generate"),
+        overwrite=(mode == "generate"), rows_out=rows_out,
     )
+    if rows_out:
+        per_metric.add(GROUNDING_SHEET, uuid, rows_out)
     if push_sql:
         try:
             _push_eval_to_sql(uuid, stats, db_path, target=target)
@@ -568,7 +608,7 @@ def _eval_workbooks(MF, target):
 
 
 def evaluate_space(storage_path, db_path=None, progress_callback=None, should_cancel=None,
-                   mode="generate", target="abstract") -> int:
+                   mode="generate", target="abstract", per_metric=False) -> int:
     """
     Evaluate every analyzed document in a storage space (build the evaluation Excel
     DBs and sync the summary into SQLite). Returns the number of documents evaluated.
@@ -580,6 +620,12 @@ def evaluate_space(storage_path, db_path=None, progress_callback=None, should_ca
     recompute); ``mode="generate"`` (default) recomputes. ``progress_callback(done,
     total)`` is called after each document if given, and ``should_cancel`` is
     checked before each for cooperative cancellation.
+
+    ``per_metric=True`` additionally fills the ``grounding`` sheet of the
+    target's per-metric workbook (``{date}_..._Per_Metric.xlsx``): one row per
+    extracted item across every section and every document, the whole-space
+    counterpart of the per-section eval sheets. It is written by the Evaluation
+    tab only — the analysis pipeline's per-document evaluation leaves it alone.
     """
     from contextlib import ExitStack
 
@@ -604,12 +650,17 @@ def evaluate_space(storage_path, db_path=None, progress_callback=None, should_ca
         # long evaluation pass look frozen).
         books = [stack.enter_context(excel_session.workbook_session(p, first_sheet="Overview"))
                  for p in [overview_path, *section_paths]]
+        # One sheet per metric, filled only when the caller asked for it; the
+        # buffer is flushed on the same checkpoint as the workbooks below.
+        metric_book = stack.enter_context(
+            open_for(Vec_DB_Manager(MF.folder), target, enabled=per_metric))
         for i, uuid in enumerate(recorded, 1):
             if should_cancel is not None and should_cancel():
                 print("Evaluation cancelled by user.")
                 break
             try:
-                evaluate_document(MF, uuid, db_path=db_path, push_sql=True, mode=mode, target=target)
+                evaluate_document(MF, uuid, db_path=db_path, push_sql=True, mode=mode,
+                                  target=target, per_metric=metric_book)
                 count += 1
             except Exception as e:
                 print(Fore.YELLOW + f"⚠️ {target.title()} evaluation failed for {uuid}: {e} "
@@ -622,6 +673,7 @@ def evaluate_space(storage_path, db_path=None, progress_callback=None, should_ca
                         book.flush()
                     except Exception as e:  # noqa: BLE001 - never stop the pass on a checkpoint
                         print(Fore.RED + f"❌ Could not checkpoint {book.path}: {e}")
+                metric_book.flush()
             if progress_callback:
                 progress_callback(i, total)
 

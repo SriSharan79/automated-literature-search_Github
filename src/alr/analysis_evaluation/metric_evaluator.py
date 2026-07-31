@@ -54,6 +54,8 @@ from alr.common.sections import (
     ABSTRACT_TEXT_KEY, INTRO_TEXT_KEY, RESCON_TEXT_KEY,
     build_sections_map_vdb, build_metric_workbooks_map,
 )
+from alr.rag_builders.master_excel_db_builder import FLUSH_EVERY
+from alr.analysis_evaluation import per_metric_sheets
 from alr.analysis_evaluation.data_evaluator import (
     _write_section_sheet_flat, _fetch_metadata, safe_sheet_title,
     _load_abstract_json, _load_intro_json, _load_rescon_json,
@@ -347,6 +349,33 @@ def _sentence_metric_rows(kinds, cosine_ctx, section_key, sentences, candidate, 
     return rows
 
 
+def _add_per_metric_rows(book, kinds, uuid, section_key, rows) -> None:
+    """
+    Fan one section's per-item rows out onto the per-metric workbook: each
+    metric column becomes its own sheet, carrying the value, the reference
+    sentence that produced it and the section it came from.
+
+    Pure re-projection — every number here was already computed for the
+    per-kind workbooks; this is the transposed view (one metric across the
+    whole space) that reading three kind workbooks by section cannot give.
+    """
+    if not book.enabled or not rows:
+        return
+    for kind in (k for k in METRIC_KINDS if k in kinds):
+        for col in _KIND_COLUMNS[kind]:
+            sheet_rows = []
+            for row in rows:
+                out = {c: row.get(c) for c in ("UUID", "Title", "Filename")}
+                out.update({"Section": section_key, "Item": row.get("Item"),
+                            "Content": row.get("Content"),
+                            col: row.get(col),
+                            f"{col}_reference": row.get(f"{col}_reference")})
+                if col == "cosine_similarity" and row.get("cosine_model"):
+                    out["cosine_model"] = row["cosine_model"]
+                sheet_rows.append(out)
+            book.add(col, uuid, sheet_rows)
+
+
 def _write_section_rows(file_path, sheet_name, uuid, rows) -> None:
     """
     Write a document's rows on a section sheet: ONE ROW PER EXTRACTED ITEM
@@ -591,7 +620,7 @@ def _rows_from_previous_workbook(current_overview_path, uuid, needed_cols):
     return sections or None
 
 
-def _reuse_prior_metrics(cfg, kinds, uuid, db_path=None) -> bool:
+def _reuse_prior_metrics(cfg, kinds, uuid, db_path=None, per_metric=None) -> bool:
     """
     Copy mode: if previously recorded metric data exists for ``uuid`` - the
     sentence-detail JSON first, else the latest previous dated workbook (old
@@ -625,6 +654,10 @@ def _reuse_prior_metrics(cfg, kinds, uuid, db_path=None) -> bool:
                 kind_rows.append(kind_row)
             _write_section_rows(workbooks[kind], key, str(uuid), kind_rows)
         _write_section_rows(workbooks["overview"], key, str(uuid), rows)
+        # A harvested document belongs on the per-metric sheets exactly like a
+        # freshly computed one, or copy mode would leave holes in them.
+        if per_metric is not None:
+            _add_per_metric_rows(per_metric, kinds, uuid, key, rows)
         for row in rows:
             base = base or {"UUID": str(uuid), "Title": row.get("Title"),
                             "Filename": row.get("Filename")}
@@ -685,7 +718,8 @@ def _existing_metrics(uuid, metric_cols, sql_label, db_path=None):
 
 
 def evaluate_space_metrics(storage_path, kinds, target="abstract", db_path=None,
-                           progress_callback=None, should_cancel=None, mode="generate") -> int:
+                           progress_callback=None, should_cancel=None, mode="generate",
+                           per_metric=False) -> int:
     """
     Batch-compute the selected metric ``kinds`` (subset of :data:`METRIC_KINDS`)
     for every analyzed document in a storage space, against the ``target`` data
@@ -724,6 +758,13 @@ def evaluate_space_metrics(storage_path, kinds, target="abstract", db_path=None,
     (no duplicates, even when the item count changes).
     ``progress_callback(done, total)`` / ``should_cancel`` support progress
     reporting and cancellation.
+
+    ``per_metric=True`` additionally writes the transposed view into the
+    target's ``{date}_..._Per_Metric.xlsx``: **one sheet per individual
+    metric**, each holding one row per extracted item across every section and
+    every document, with the value and the reference sentence that produced it.
+    Nothing is recomputed for it. It shares that workbook with the substring
+    pass's ``grounding`` sheet, and is written by the Evaluation tab only.
     """
     kinds = {k for k in kinds if k in METRIC_KINDS}
     if not kinds:
@@ -742,6 +783,9 @@ def evaluate_space_metrics(storage_path, kinds, target="abstract", db_path=None,
 
     count = 0
     total = len(cfg["recorded"])
+    # One sheet per individual metric, buffered and checkpointed like the
+    # workbook sessions elsewhere; a no-op object unless per_metric is set.
+    metric_book = per_metric_sheets.open_for(VDB, target, enabled=per_metric)
     for i, uuid in enumerate(cfg["recorded"], 1):
         if should_cancel is not None and should_cancel():
             print("Metric evaluation cancelled by user.")
@@ -752,7 +796,8 @@ def evaluate_space_metrics(storage_path, kinds, target="abstract", db_path=None,
                 # latest previous dated workbook - old wide format included):
                 # it is re-written into TODAY's workbooks in the new
                 # one-row-per-item format instead of being recomputed.
-                if _reuse_prior_metrics(cfg, kinds, uuid, db_path):
+                if _reuse_prior_metrics(cfg, kinds, uuid, db_path,
+                                        per_metric=metric_book):
                     print(Fore.YELLOW + f"⏭️ Reused previous {target} metrics for {uuid} "
                                         "(copy mode, kept in the new per-item format).")
                     count += 1
@@ -855,6 +900,7 @@ def evaluate_space_metrics(storage_path, kinds, target="abstract", db_path=None,
                 for kind in kinds:
                     _write_section_rows(workbooks[kind], key, str(uuid), kind_rows[kind])
                 _write_section_rows(workbooks["overview"], key, str(uuid), combined_rows)
+                _add_per_metric_rows(metric_book, kinds, uuid, key, combined_rows)
                 detail_sections[key] = detail_items
 
             _write_sentence_detail_json(workbooks["details"], uuid, cfg["sql_label"], {
@@ -893,6 +939,10 @@ def evaluate_space_metrics(storage_path, kinds, target="abstract", db_path=None,
             import traceback
             print(Fore.YELLOW + f"⚠️ Metric evaluation failed for {uuid}: {e}")
             traceback.print_exc()
+        # Checkpoint the per-metric buffer between documents, so a crash or a
+        # cancel keeps every document already fanned out.
+        if i % FLUSH_EVERY == 0:
+            metric_book.flush()
         if progress_callback:
             progress_callback(i, total)
 
@@ -900,4 +950,5 @@ def evaluate_space_metrics(storage_path, kinds, target="abstract", db_path=None,
     print(Fore.GREEN + f"✅ Metric evaluation finished: {count} document(s) ({target}).")
     for path in written:
         print(Fore.GREEN + f"   📄 {path}")
+    metric_book.close()
     return count
