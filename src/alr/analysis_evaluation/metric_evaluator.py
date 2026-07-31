@@ -54,7 +54,7 @@ from alr.common.sections import (
     ABSTRACT_TEXT_KEY, INTRO_TEXT_KEY, RESCON_TEXT_KEY,
     build_sections_map_vdb, build_metric_workbooks_map,
 )
-from alr.rag_builders.master_excel_db_builder import FLUSH_EVERY
+from alr.common.excel_utils import Checkpointer
 from alr.analysis_evaluation import per_metric_sheets
 from alr.analysis_evaluation.data_evaluator import (
     _write_section_sheet_flat, _fetch_metadata, safe_sheet_title,
@@ -786,6 +786,7 @@ def evaluate_space_metrics(storage_path, kinds, target="abstract", db_path=None,
     # One sheet per individual metric, buffered and checkpointed like the
     # workbook sessions elsewhere; a no-op object unless per_metric is set.
     metric_book = per_metric_sheets.open_for(VDB, target, enabled=per_metric)
+    checkpointer = Checkpointer()
     for i, uuid in enumerate(cfg["recorded"], 1):
         if should_cancel is not None and should_cancel():
             print("Metric evaluation cancelled by user.")
@@ -940,8 +941,9 @@ def evaluate_space_metrics(storage_path, kinds, target="abstract", db_path=None,
             print(Fore.YELLOW + f"⚠️ Metric evaluation failed for {uuid}: {e}")
             traceback.print_exc()
         # Checkpoint the per-metric buffer between documents, so a crash or a
-        # cancel keeps every document already fanned out.
-        if i % FLUSH_EVERY == 0:
+        # cancel keeps every document already fanned out — time-spaced, since a
+        # rewrite of the whole workbook gets slower as the space grows.
+        if checkpointer.due(i):
             metric_book.flush()
         if progress_callback:
             progress_callback(i, total)

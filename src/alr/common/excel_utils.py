@@ -2,6 +2,7 @@ import pandas as pd
 import os
 import shutil
 import threading
+import time
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -146,6 +147,44 @@ def _flush_locked(paths=None):
         except Exception as e:  # noqa: BLE001 - keep it dirty and try again later
             print(f"⚠️ Could not write {path}: {e}")
     return written
+
+
+# A checkpoint rewrites whole workbooks, so its cost grows with the space while
+# the interval between checkpoints does not: at "every 25 documents" a pass over
+# N documents pays N/25 rewrites of an ever-larger file — quadratic, and by a
+# few thousand documents a single checkpoint stalls for tens of seconds with the
+# progress bar frozen (nothing reports progress *inside* one). Checkpoints are
+# therefore also spaced in TIME: at most one per CHECKPOINT_MIN_SECONDS, which
+# bounds the work a crash can lose by that many seconds instead of by a document
+# count, and bounds the number of rewrites by the pass's duration instead of by
+# its size.
+CHECKPOINT_EVERY = 25
+CHECKPOINT_MIN_SECONDS = 30.0
+
+
+class Checkpointer:
+    """Decides when a batch pass should write its buffers to disk.
+
+    ``due(i)`` is True at most once per ``min_seconds``, and only on a multiple
+    of ``every`` — so a short pass still checkpoints on the familiar document
+    boundary, while a long one stops paying for a full rewrite every 25
+    documents. The caller always flushes once more when the pass ends, so
+    nothing depends on a checkpoint having happened.
+    """
+
+    def __init__(self, every=CHECKPOINT_EVERY, min_seconds=CHECKPOINT_MIN_SECONDS):
+        self.every = max(1, int(every))
+        self.min_seconds = float(min_seconds)
+        self._last = time.monotonic()
+
+    def due(self, i):
+        if i % self.every:
+            return False
+        now = time.monotonic()
+        if now - self._last < self.min_seconds:
+            return False
+        self._last = now
+        return True
 
 
 def set_cell(df, mask, col, value):

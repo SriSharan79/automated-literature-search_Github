@@ -7,7 +7,7 @@ import pandas as pd
 from alr.analysis_evaluation import word_grounding
 from alr.analysis_evaluation.per_metric_sheets import GROUNDING_SHEET, open_for
 from alr.common import excel_session
-from alr.common.excel_utils import set_cell as _set_cell
+from alr.common.excel_utils import Checkpointer, set_cell as _set_cell
 from alr.common.file_manager import DataAnalyzeManager, Vec_DB_Manager
 from alr.common.sections import build_sections_eval_map, is_literal_match_key
 from alr.rag_builders.master_excel_db_builder import (
@@ -669,6 +669,7 @@ def evaluate_space(storage_path, db_path=None, progress_callback=None, should_ca
 
     count = 0
     total = len(recorded)
+    checkpointer = Checkpointer()
     # Documents that could not be evaluated; the pass carries on and these end
     # up in EVAL_SKIPPED_LOG next to the overview.
     not_added = []
@@ -696,7 +697,11 @@ def evaluate_space(storage_path, db_path=None, progress_callback=None, should_ca
                                     f"— skipped, continuing with the next document.")
                 not_added.append(_skip_row(f"evaluate-{target}", e, uuid=uuid))
             # Checkpoint so a crash or a cancel keeps the work done so far.
-            if i % FLUSH_EVERY == 0:
+            # Checkpoint so a crash or a cancel keeps the work done so far —
+            # but not so often that rewriting the (growing) workbooks costs
+            # more than the evaluation itself; see excel_utils.Checkpointer.
+            if checkpointer.due(i):
+                print(f"💾 Checkpointing evaluation workbooks at document {i}/{total}…")
                 for book in books:
                     try:
                         book.flush()
