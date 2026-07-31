@@ -4,7 +4,7 @@ from datetime import datetime
 from colorama import Fore, Style
 import pandas as pd
 from alr.common.file_manager import DataAnalyzeManager, Vec_DB_Manager
-from alr.common.excel_utils import extract_column, get_corresponding_value
+from alr.common.excel_utils import extract_column, get_corresponding_value, set_cell
 from alr.common.skiplog import append_skiplog, skip_row
 import json
 import os
@@ -157,11 +157,11 @@ def _apply_section_entry(sheets, order, sheet_name, data_entry):
 
     match_mask = df_overview["UUID"] == original_uuid
     if match_mask.any():
-        df_overview.loc[match_mask, sheet_name] = content_value
+        set_cell(df_overview, match_mask, sheet_name, content_value)
         if title:
-            df_overview.loc[match_mask, "Title"] = title
+            set_cell(df_overview, match_mask, "Title", title)
         if filename:
-            df_overview.loc[match_mask, "Filename"] = filename
+            set_cell(df_overview, match_mask, "Filename", filename)
     else:
         df_overview = pd.concat(
             [df_overview, pd.DataFrame([{

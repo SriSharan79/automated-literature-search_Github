@@ -148,6 +148,49 @@ def _flush_locked(paths=None):
     return written
 
 
+def set_cell(df, mask, col, value):
+    """
+    Assign ``value`` into ``df.loc[mask, col]``, widening the column when the
+    value does not fit its dtype.
+
+    The workbooks this package updates row-by-row are ragged by nature: a
+    document with three Research Areas leaves ``Research Areas 4 Is_Subset``
+    empty, a document with no Results section leaves the overview's ``Results``
+    column empty — and a column nothing has filled yet is read back from Excel
+    as all-NaN ``float64``. pandas 3 refuses to put a bool or a string into such
+    a column ("Invalid value 'False' for dtype 'float64'") where pandas 1.x
+    silently widened it, which aborts the write for that whole section or
+    document. The column is therefore promoted to ``object`` on demand — Excel
+    is untyped, so nothing is lost, and columns that stay homogeneous keep
+    their dtype.
+
+    Booleans get the same treatment up front rather than on failure. Only a
+    *Python* ``False`` raises against a float column; a numpy ``np.False_`` —
+    which is what ``DataFrame[col].values[0]`` yields for a bool column — is a
+    numeric subtype and would be accepted silently, writing ``0.0``/``1.0``
+    into the sheet where the reader expects TRUE/FALSE. The column is widened
+    first and the value normalised to a plain ``bool``, so an ``Is_Subset``
+    cell reads as a boolean no matter which document created the column.
+
+    Use this instead of a bare ``df.loc[mask, col] = value`` anywhere a sheet is
+    updated in place with values whose type varies by row.
+    """
+    import numpy as np
+    import pandas as pd
+
+    if col not in df.columns:
+        df[col] = pd.Series([None] * len(df), dtype=object)
+    if isinstance(value, (bool, np.bool_)):
+        value = bool(value)
+        if df[col].dtype != object:
+            df[col] = df[col].astype(object)
+    try:
+        df.loc[mask, col] = value
+    except (TypeError, ValueError):
+        df[col] = df[col].astype(object)
+        df.loc[mask, col] = value
+
+
 def checkpoint():
     """Flush the deferred workbooks now (call between documents)."""
     with _CACHE_LOCK:

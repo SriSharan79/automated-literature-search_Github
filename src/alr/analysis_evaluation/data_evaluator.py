@@ -7,6 +7,7 @@ import pandas as pd
 from alr.analysis_evaluation import word_grounding
 from alr.analysis_evaluation.per_metric_sheets import GROUNDING_SHEET, open_for
 from alr.common import excel_session
+from alr.common.excel_utils import set_cell as _set_cell
 from alr.common.file_manager import DataAnalyzeManager, Vec_DB_Manager
 from alr.common.sections import build_sections_eval_map, is_literal_match_key
 from alr.rag_builders.master_excel_db_builder import (
@@ -128,7 +129,7 @@ def _apply_flat_entry(book, sheet_name, data_entry):
         if match_mask.any():
             # Update row to dynamically balance any column structure changes
             for col in df_new.columns:
-                df_sheet.loc[match_mask, col] = df_new[col].values[0]
+                _set_cell(df_sheet, match_mask, col, df_new[col].values[0])
         else:
             df_sheet = pd.concat([df_sheet, df_new], ignore_index=True)
     book.set_sheet(sheet_name, df_sheet)
@@ -179,12 +180,12 @@ def _update_master_overview(storage_dir, sheet_name, uuid, title, filename, text
         percent = round(100.0 * int(true_count) / counted, 1) if counted else None
 
         if match_mask.any():
-            df_overview.loc[match_mask, sheet_name] = text_content
-            df_overview.loc[match_mask, true_col] = true_count
-            df_overview.loc[match_mask, false_col] = false_count
-            df_overview.loc[match_mask, pct_col] = percent
-            if title: df_overview.loc[match_mask, "Title"] = title
-            if filename: df_overview.loc[match_mask, "Filename"] = filename
+            _set_cell(df_overview, match_mask, sheet_name, text_content)
+            _set_cell(df_overview, match_mask, true_col, true_count)
+            _set_cell(df_overview, match_mask, false_col, false_count)
+            _set_cell(df_overview, match_mask, pct_col, percent)
+            if title: _set_cell(df_overview, match_mask, "Title", title)
+            if filename: _set_cell(df_overview, match_mask, "Filename", filename)
         else:
             new_row = {
                 "UUID": str(uuid),
