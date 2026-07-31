@@ -35,6 +35,18 @@ def _is_subset_match(content_str, abs_txt):
     return _normalize_for_match(content_str) in _normalize_for_match(abs_txt)
 
 
+# What the analysis pipeline writes where it has no content: the section
+# locator's "Not Found", the attribute extractor's "No information available",
+# and what an absent JSON key or an empty Excel cell reads back as. These are
+# markers, not answers.
+_PLACEHOLDERS = ("not found", "no information available", "nan", "none", "null")
+
+
+def _is_placeholder(text):
+    """True when a value is one of the pipeline's "nothing here" markers."""
+    return str(text or "").strip().lower() in ("",) + _PLACEHOLDERS
+
+
 def _usable_reference(text):
     """True when a reference text is real content rather than a missing marker.
 
@@ -42,8 +54,7 @@ def _usable_reference(text):
     text; matching against it would let the literal words "not" and "found"
     ground themselves.
     """
-    s = str(text or "").strip()
-    return bool(s) and s.lower() not in ("not found", "no information available", "nan")
+    return not _is_placeholder(text)
 
 
 def _grade(key, content_str, reference, vocabulary=None):
@@ -63,7 +74,21 @@ def _grade(key, content_str, reference, vocabulary=None):
     evaluation cells to write beside the value. In the word regime the counts
     are **words**, not values, so the existing per-section totals and the SQL
     evaluation score become graded coverage without changing shape.
+
+    A value the analyzer never produced (``"Not Found"``, ``"No information
+    available"``, blank) counts **neither true nor false**: grounding measures
+    how well an extracted answer is supported by the source, and there is no
+    answer here to support. Counting it as a miss — which is what happened
+    before — punished a document for an attribute the extractor left empty and
+    dragged its score down for a reason unrelated to grounding quality. The row
+    is still written, so the gap stays visible in the sheet; it simply does not
+    vote. (:func:`alr.data_analysis.section_resolver.complete_space` is what
+    fills those gaps.)
     """
+    if _is_placeholder(content_str):
+        return 0, 0, {"Is_Subset": False, "Words_Checked": 0, "Words_Found": 0,
+                      "Words_Missing": 0, "Grounding_%": None, "Missing_Words": ""}
+
     if is_literal_match_key(key):
         is_subset = _is_subset_match(content_str, reference)
         return (1 if is_subset else 0), (0 if is_subset else 1), {"Is_Subset": is_subset}
@@ -284,13 +309,16 @@ def _grounding_row(key, uuid, title, file_name, item_no, content, columns):
 
     ``Check`` records which regime produced it, so a reader knows why the word
     columns are empty on a ``Research Areas`` / ``Key Concepts`` row rather
-    than reading the blanks as missing data.
+    than reading the blanks as missing data — and marks the rows that carry no
+    extracted value at all, whose zero tally is a non-vote rather than a
+    perfect miss.
     """
     row = {
         "UUID": str(uuid), "Title": title, "Filename": file_name,
         "Section": key, "Item": item_no, "Content": content,
         "grounding": columns.get("Is_Subset"),
-        "Check": "literal" if is_literal_match_key(key) else "word",
+        "Check": ("not evaluated (no value extracted)" if _is_placeholder(content)
+                  else "literal" if is_literal_match_key(key) else "word"),
     }
     for col in ("Words_Checked", "Words_Found", "Words_Missing",
                 "Grounding_%", "Missing_Words"):
