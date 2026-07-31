@@ -102,6 +102,9 @@ class CustomTerminalText(tk.Text):
         # reads as a plain activity feed. Toggled by the "Verbose log" checkbox.
         self.verbose = False
         self._suppressing = False
+        # Optional callback fired (on the main thread) when a poll tick actually
+        # inserted output. The window uses it to flag a folded-away console.
+        self.on_output = None
         self._poll_write_queue()
 
     def _strip_ansi(self, line):
@@ -225,6 +228,11 @@ class CustomTerminalText(tk.Text):
                 self.see(tk.END)
             except tk.TclError:
                 return
+            if self.on_output is not None:
+                try:
+                    self.on_output()
+                except Exception:  # noqa: BLE001 - a notifier must never kill the poller
+                    pass
         self.after(50, self._poll_write_queue)
 
     def flush(self):
@@ -317,8 +325,7 @@ class AutomatedLiteratureUI(tk.Tk):
         # Body: a draggable vertical split between the notebook (top) and the
         # console (bottom). Unlike the old fixed 60/40 place() layout, the user
         # can drag the sash to give the tabs more room or expand the console.
-        body = ttk.PanedWindow(self, orient="vertical")
-        body.pack(fill="both", expand=True)
+        self.body = body = ttk.PanedWindow(self, orient="vertical")
 
         # Tab Control (Notebook) -> top pane.
         notebook_pane = ttk.Frame(body)
@@ -336,21 +343,33 @@ class AutomatedLiteratureUI(tk.Tk):
         # Tuck Evaluation & Enrichment behind a browser-style "+" tab.
         self._setup_optional_tabs()
 
-        # Console pane -> bottom. A one-line status label above it echoes the
-        # last action's result, so the user doesn't have to read the raw log.
-        console_pane = ttk.Frame(body)
+        # Console: a drop-down pinned to the bottom of the window, shared by
+        # every tab (it sits outside the notebook, so one console covers all of
+        # them). The header bar is always visible — it carries the last action's
+        # result, so a collapsed log still tells the user how the run ended —
+        # while the log itself drops down and folds away on demand, giving the
+        # tabs the whole window when it is not wanted.
+        console_bar = ttk.Frame(self)
+        console_bar.pack(side="bottom", fill="x", padx=6, pady=(0, 4))
 
-        console_head = ttk.Frame(console_pane)
-        console_head.pack(fill="x", padx=4, pady=(2, 0))
+        self.console_open_var = tk.BooleanVar(value=True)
+        self._console_toggle = ttk.Button(console_bar, width=24,
+                                          command=self._toggle_console)
+        self._console_toggle.pack(side="left")
+
         self.last_result_var = tk.StringVar(value="Ready.")
-        self._last_result_lbl = tk.Label(console_head, textvariable=self.last_result_var,
+        self._last_result_lbl = tk.Label(console_bar, textvariable=self.last_result_var,
                                          anchor="w", font=("Arial", 9))
-        self._last_result_lbl.pack(side="left", fill="x", expand=True)
+        self._last_result_lbl.pack(side="left", fill="x", expand=True, padx=8)
+
+        ttk.Button(console_bar, text="Clear log",
+                   command=self._clear_console).pack(side="right", padx=(6, 0))
         self.verbose_log_var = tk.BooleanVar(value=False)
-        ttk.Checkbutton(console_head, text="Verbose log", variable=self.verbose_log_var,
+        ttk.Checkbutton(console_bar, text="Verbose log", variable=self.verbose_log_var,
                         command=self._toggle_verbose_log).pack(side="right")
 
-        terminal_frame = tk.LabelFrame(console_pane, text="Console Output Log")
+        self.console_pane = ttk.Frame(body)
+        terminal_frame = tk.LabelFrame(self.console_pane, text="Console Output Log")
         terminal_frame.pack(fill="both", expand=True)
 
         self.terminal_output = CustomTerminalText(terminal_frame, wrap="word", background="black", foreground="white", font=("Courier New", 10))
@@ -359,7 +378,15 @@ class AutomatedLiteratureUI(tk.Tk):
 
         scrollbar.pack(side="right", fill="y")
         self.terminal_output.pack(side="left", fill="both", expand=True)
-        body.add(console_pane, weight=2)
+
+        # A collapsed console must not hide the fact that something is being
+        # logged: the poller tells us when output arrived, and the toggle says
+        # so until the log is opened again.
+        self._console_unread = False
+        self.terminal_output.on_output = self._note_console_output
+
+        body.pack(fill="both", expand=True)
+        self._apply_console_visibility()
 
         # Restore the storage paths / inputs from the last session, and save
         # them again when the window closes (so the tool starts where it was
@@ -536,6 +563,64 @@ class AutomatedLiteratureUI(tk.Tk):
         if hasattr(self, "terminal_output"):
             self.terminal_output.verbose = bool(self.verbose_log_var.get())
 
+    # -- console drop-down ---------------------------------------------------
+    def _toggle_console(self):
+        """Fold the console log away, or drop it back down."""
+        self.console_open_var.set(not bool(self.console_open_var.get()))
+        self._apply_console_visibility()
+
+    def _apply_console_visibility(self):
+        """Add or remove the log pane, and label the toggle for what it will do.
+
+        The pane is removed from (and re-added to) the paned window rather than
+        merely shrunk, so a folded console really gives its space back to the
+        tabs instead of leaving a stub the sash can be dragged over.
+        """
+        if not hasattr(self, "console_pane"):
+            return
+        show = bool(self.console_open_var.get())
+        pane = str(self.console_pane)
+        try:
+            panes = [str(p) for p in self.body.panes()]
+            if show and pane not in panes:
+                self.body.add(self.console_pane, weight=2)
+            elif not show and pane in panes:
+                self.body.forget(self.console_pane)
+        except tk.TclError:
+            return
+        if show:
+            self._console_unread = False
+        self._refresh_console_toggle()
+
+    def _refresh_console_toggle(self):
+        """Label the toggle, flagging output that arrived while it was folded."""
+        if not hasattr(self, "_console_toggle"):
+            return
+        if self.console_open_var.get():
+            text = "▾ Hide console log"
+        else:
+            text = "▸ Show console log ●" if self._console_unread else "▸ Show console log"
+        try:
+            self._console_toggle.config(text=text)
+        except tk.TclError:
+            pass
+
+    def _note_console_output(self):
+        """The log received output — mark the toggle when nobody can see it."""
+        if not self.console_open_var.get() and not self._console_unread:
+            self._console_unread = True
+            self._refresh_console_toggle()
+
+    def _clear_console(self):
+        """Empty the console log (the widget only; nothing on disk changes)."""
+        try:
+            self.terminal_output.delete("1.0", tk.END)
+        except tk.TclError:
+            return
+        self._console_unread = False
+        self._refresh_console_toggle()
+        print("🧹 Console log cleared.")
+
     def _set_last_result(self, text, ok=True):
         """Echo the last action's outcome on the one-line status label above the
         console (green when ok, red on failure/cancel)."""
@@ -697,6 +782,10 @@ class AutomatedLiteratureUI(tk.Tk):
         # restored (active-space consumers + the analyze custom-path entry).
         self._apply_active_space()
         self._toggle_analyze_path_btn()
+        # console_open_var is cached like any other BooleanVar; restoring it
+        # only sets the flag, so the pane has to be re-laid-out to match.
+        self._apply_console_visibility()
+        self._toggle_verbose_log()
         # First upgrade (no cached active space): seed it from a restored
         # analyze/visualize/eval path so the mirrored tabs aren't blanked.
         active = state.get("active_space")
