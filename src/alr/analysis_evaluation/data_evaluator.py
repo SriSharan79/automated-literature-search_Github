@@ -4,9 +4,10 @@ import sys
 from pathlib import Path
 import pandas as pd
 
+from alr.analysis_evaluation import word_grounding
 from alr.common import excel_session
 from alr.common.file_manager import DataAnalyzeManager, Vec_DB_Manager
-from alr.common.sections import build_sections_eval_map
+from alr.common.sections import build_sections_eval_map, is_literal_match_key
 from alr.rag_builders.master_excel_db_builder import (
     FLUSH_EVERY, _append_skiplog, _fetch_metadata, _load_abstract_json,
     _load_recorded_abstracts, _skip_row,
@@ -27,9 +28,57 @@ def _normalize_for_match(text):
 
 def _is_subset_match(content_str, abs_txt):
     """Whitespace-insensitive, case-insensitive substring containment check."""
-    if abs_txt == "Not Found":
+    if not _usable_reference(abs_txt):
         return False
     return _normalize_for_match(content_str) in _normalize_for_match(abs_txt)
+
+
+def _usable_reference(text):
+    """True when a reference text is real content rather than a missing marker.
+
+    ``"Not Found"`` is what the analyzer writes when it could not identify the
+    text; matching against it would let the literal words "not" and "found"
+    ground themselves.
+    """
+    s = str(text or "").strip()
+    return bool(s) and s.lower() not in ("not found", "no information available", "nan")
+
+
+def _grade(key, content_str, reference, vocabulary=None):
+    """
+    Grounding of one extracted value against the reference text.
+
+    Two regimes, selected by the attribute (:func:`is_literal_match_key`):
+
+    * ``Research Areas`` / ``Key Concepts`` keep the original whole-string
+      substring check — one True/False per value.
+    * every other attribute is graded **word by word**: articles and
+      prepositions are dropped, the remaining content words are each looked up
+      in the reference text, and the value's grounding is the percentage of
+      them that are present (:mod:`alr.analysis_evaluation.word_grounding`).
+
+    Returns ``(true_count, false_count, columns)`` where ``columns`` are the
+    evaluation cells to write beside the value. In the word regime the counts
+    are **words**, not values, so the existing per-section totals and the SQL
+    evaluation score become graded coverage without changing shape.
+    """
+    if is_literal_match_key(key):
+        is_subset = _is_subset_match(content_str, reference)
+        return (1 if is_subset else 0), (0 if is_subset else 1), {"Is_Subset": is_subset}
+
+    if not _usable_reference(reference):
+        # Nothing to ground against: every content word counts as missing.
+        res = word_grounding.grounding(content_str, "", vocabulary=frozenset())
+    else:
+        res = word_grounding.grounding(content_str, reference, vocabulary=vocabulary)
+    return res["true"], res["false"], {
+        "Is_Subset": res["grounded"],
+        "Words_Checked": res["checked"],
+        "Words_Found": res["true"],
+        "Words_Missing": res["false"],
+        "Grounding_%": res["percent"],
+        "Missing_Words": word_grounding.missing_preview(res),
+    }
 
 
 # =====================================================================
@@ -121,11 +170,18 @@ def _update_master_overview(storage_dir, sheet_name, uuid, title, filename, text
         # Dynamic target tracking column assignments
         true_col = f"{sheet_name}_True_Count"
         false_col = f"{sheet_name}_False_Count"
+        # Grounding of this attribute: the share of the counted units (words for
+        # the prose attributes, whole values for Research Areas / Key Concepts)
+        # that were found in the reference text.
+        pct_col = f"{sheet_name}_Grounding_%"
+        counted = int(true_count) + int(false_count)
+        percent = round(100.0 * int(true_count) / counted, 1) if counted else None
 
         if match_mask.any():
             df_overview.loc[match_mask, sheet_name] = text_content
             df_overview.loc[match_mask, true_col] = true_count
             df_overview.loc[match_mask, false_col] = false_count
+            df_overview.loc[match_mask, pct_col] = percent
             if title: df_overview.loc[match_mask, "Title"] = title
             if filename: df_overview.loc[match_mask, "Filename"] = filename
         else:
@@ -135,7 +191,8 @@ def _update_master_overview(storage_dir, sheet_name, uuid, title, filename, text
                 "Filename": filename,
                 sheet_name: text_content,
                 true_col: true_count,
-                false_col: false_count
+                false_col: false_count,
+                pct_col: percent,
             }
             df_overview = pd.concat([df_overview, pd.DataFrame([new_row])], ignore_index=True)
 
@@ -171,9 +228,13 @@ def _sync_sections_for_uuid(UUID, title, file_name, json_data, sections, storage
     untouched and only appends UUIDs not yet in the sheets.
     """
     stats = {}
+    reference_text = json_data.get(text_key, "Not Found")
+    # The reference is tokenized ONCE per document; every word-level check below
+    # is then a set lookup instead of re-splitting the whole abstract per value.
+    vocabulary = (word_grounding.reference_words(reference_text)
+                  if _usable_reference(reference_text) else frozenset())
     for key, (ex_path, _) in sections.items():
         content_value = json_data.get(key, "Not Found")
-        reference_text = json_data.get(text_key, "Not Found")
 
         if isinstance(content_value, list):
             t, f = _save_list_section(
@@ -186,7 +247,8 @@ def _sync_sections_for_uuid(UUID, title, file_name, json_data, sections, storage
                 abs_txt=reference_text,
                 storage_path=storage_path,
                 overview_path=overview_path,
-                overwrite=overwrite
+                overwrite=overwrite,
+                vocabulary=vocabulary,
             )
         else:
             t, f = _save_single_section(
@@ -199,19 +261,31 @@ def _sync_sections_for_uuid(UUID, title, file_name, json_data, sections, storage
                 abs_txt=reference_text,
                 storage_path=storage_path,
                 overview_path=overview_path,
-                overwrite=overwrite
+                overwrite=overwrite,
+                vocabulary=vocabulary,
             )
-        stats[key] = {"true": t, "false": f}
+        total = t + f
+        stats[key] = {
+            "true": t, "false": f,
+            # "literal" = whole-string substring check (counts are values);
+            # "word" = article/preposition-stripped word check (counts are words).
+            "mode": "literal" if is_literal_match_key(key) else "word",
+            "percent": round(100.0 * t / total, 1) if total else None,
+        }
     return stats
 
 
-def _save_list_section(UUID, key, content_list, ex_path, title, file_name, abs_txt, storage_path, overview_path=None, overwrite=False):
+def _save_list_section(UUID, key, content_list, ex_path, title, file_name, abs_txt, storage_path, overview_path=None, overwrite=False, vocabulary=None):
     """
     Flattens lists horizontally using alternation layouts and uploads aggregate
-    statistics. Always computes the true/false subset counts (returned for SQL),
-    but only writes the Excel sheet when this UUID has not already been evaluated
+    statistics. Always computes the true/false counts (returned for SQL), but
+    only writes the Excel sheet when this UUID has not already been evaluated
     -- unless ``overwrite=True``, which updates the existing row in place
     (_write_section_sheet_flat upserts by UUID).
+
+    The counts come from :func:`_grade`: values of ``Research Areas`` /
+    ``Key Concepts`` are counted whole (one True/False each), every other
+    attribute's items are counted **word by word**.
     """
     entry = {
         "UUID": str(UUID),
@@ -225,18 +299,16 @@ def _save_list_section(UUID, key, content_list, ex_path, title, file_name, abs_t
 
     for idx, item in enumerate(content_list):
         content_str = str(item)
-        is_subset = _is_subset_match(content_str, abs_txt)
-
-        if is_subset:
-            true_count += 1
-        else:
-            false_count += 1
+        t, f, columns = _grade(key, content_str, abs_txt, vocabulary)
+        true_count += t
+        false_count += f
 
         # Populate alternating structural sequence columns
         count_label = idx + 1
         # entry[f"{key} {count_label}"] = f"{key} {count_label}"
         entry[f"{key} {count_label} value"] = content_str
-        entry[f"{key} {count_label} Is_Subset"] = is_subset
+        for col, val in columns.items():
+            entry[f"{key} {count_label} {col}"] = val
 
         bullet_lines.append(f"- {content_str}")
 
@@ -251,25 +323,27 @@ def _save_list_section(UUID, key, content_list, ex_path, title, file_name, abs_t
     return true_count, false_count
 
 
-def _save_single_section(UUID, key, content_value, ex_path, title, file_name, abs_txt, storage_path, overview_path=None, overwrite=False):
+def _save_single_section(UUID, key, content_value, ex_path, title, file_name, abs_txt, storage_path, overview_path=None, overwrite=False, vocabulary=None):
     """
     Saves single text objects cleanly mapping their matching criteria directly.
-    Always computes the true/false subset counts (returned for SQL), but only
-    writes the Excel sheet when this UUID has not already been evaluated --
-    unless ``overwrite=True``, which updates the existing row in place.
+    Always computes the true/false counts (returned for SQL), but only writes
+    the Excel sheet when this UUID has not already been evaluated -- unless
+    ``overwrite=True``, which updates the existing row in place.
+
+    For the prose attributes the row now carries the word-level grounding
+    beside the value: how many content words were checked, how many were found
+    in the reference text, the resulting ``Grounding_%`` and the words that
+    were missing (see :func:`_grade`).
     """
     content_str = str(content_value)
-    is_subset = _is_subset_match(content_str, abs_txt)
-
-    true_count = 1 if is_subset else 0
-    false_count = 0 if is_subset else 1
+    true_count, false_count, columns = _grade(key, content_str, abs_txt, vocabulary)
 
     entry = {
         "UUID": str(UUID),
         "Title": title,
         "Filename": file_name,
         "Content": content_str,
-        "Is_Subset": is_subset
+        **columns,
     }
 
     if overwrite or not _is_duplicate_in_sheet(Path(ex_path), key, str(UUID)):
@@ -282,7 +356,12 @@ def _save_single_section(UUID, key, content_value, ex_path, title, file_name, ab
 
 
 def _eval_score(stats):
-    """Overall subset-coverage from per-section stats: (percent, total_true, total_false)."""
+    """Overall grounding from per-section stats: (percent, total_true, total_false).
+
+    The counted units are whatever each attribute counts — words for the prose
+    attributes, whole values for Research Areas / Key Concepts — so a document's
+    score is the share of all counted units grounded in its reference text.
+    """
     total_true = sum(int(v.get("true", 0)) for v in stats.values())
     total_false = sum(int(v.get("false", 0)) for v in stats.values())
     total = total_true + total_false

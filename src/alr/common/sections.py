@@ -383,6 +383,21 @@ def build_sections_eval_map(vdb) -> dict[str, tuple]:
 # same way data_evaluator treats the abstract sections.
 # ---------------------------------------------------------------------------
 
+# Attributes whose grounding stays a WHOLE-STRING substring check. Their values
+# are short terms lifted verbatim out of the source text, so "is this exact
+# string in the reference?" is the meaningful question and a word-level tally
+# would be noise (every single-word term would score 0% or 100% anyway).
+# Every other attribute — the prose ones, which the analyzer paraphrases — is
+# graded word by word instead; see
+# :mod:`alr.analysis_evaluation.word_grounding`.
+LITERAL_MATCH_KEYS = frozenset({"Research Areas", "Key Concepts"})
+
+
+def is_literal_match_key(key) -> bool:
+    """True when ``key`` keeps the whole-string substring check."""
+    return str(key) in LITERAL_MATCH_KEYS
+
+
 # The key store_to_json_with_text writes for the raw texts.
 ABSTRACT_TEXT_KEY = "Abstract Text identified:"
 INTRO_TEXT_KEY = "Introduction Text identified:"
