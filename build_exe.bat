@@ -24,9 +24,14 @@ pyinstaller --clean --noconfirm UI_pipeline.spec
 
 echo.
 echo ============================================================================
-echo  Build finished.
-echo  Executable: dist\AutomatedLiteratureReview\AutomatedLiteratureReview.exe
-echo  Distribute the WHOLE dist\AutomatedLiteratureReview folder (not just the .exe).
+echo  Build finished. Both applications are in one folder and share their
+echo  bundled dependencies:
+echo.
+echo    Main GUI    : dist\AutomatedLiteratureReview\AutomatedLiteratureReview.exe
+echo    Review tool : dist\AutomatedLiteratureReview\ReviewTool.exe
+echo.
+echo  Distribute the WHOLE dist\AutomatedLiteratureReview folder - neither .exe
+echo  runs on its own, and copying just one of them out will not work.
 echo ============================================================================
 
 deactivate
