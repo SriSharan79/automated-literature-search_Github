@@ -7,7 +7,9 @@ trust"*, without you opening the PDFs one at a time.
 - **New here?** Read *What the tool does*, then *Concepts*, then work through
   the *Worked example*.
 - **Looking for a specific button?** Jump to the tab you are on.
-- **Looking for a function or class?** See [CODE_REFERENCE.md](CODE_REFERENCE.md).
+- **Looking for a function or class?** See [CODE_REFERENCE.md](CODE_REFERENCE.md),
+  or open [CODE_MAP.html](CODE_MAP.html) in a browser to see how it links to
+  everything else.
 - **Looking for exact behaviour and edge cases?** See
   [FUNCTIONALITY_AUDIT.md](FUNCTIONALITY_AUDIT.md).
 

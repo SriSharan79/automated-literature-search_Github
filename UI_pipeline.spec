@@ -104,7 +104,7 @@ a = Analysis(
     hiddenimports=hiddenimports,
     hookspath=['.'],          # picks up hook-tiktoken.py
     hooksconfig={},
-    runtime_hooks=[],
+    runtime_hooks=['runtime_hook_stdio.py'],
     excludes=[],
     noarchive=False,
     optimize=0,
@@ -122,7 +122,11 @@ exe = EXE(
     bootloader_ignore_signals=False,
     strip=False,
     upx=False,                # UPX can corrupt torch/onnx DLLs; keep off
-    console=True,             # app streams logs to stdout; set False for a pure GUI
+    # Windowed: no console window beside the GUI. The app has its own console
+    # drop-down, so the second black window was only ever duplication.
+    # runtime_hook_stdio.py supplies a stdout/stderr sink, without which a
+    # windowed build dies on import (sys.stdout is None -> .isatty() raises).
+    console=False,
     disable_windowed_traceback=False,
     argv_emulation=False,
     target_arch=None,
@@ -139,7 +143,7 @@ a_review = Analysis(
     hiddenimports=hiddenimports,
     hookspath=['.'],
     hooksconfig={},
-    runtime_hooks=[],
+    runtime_hooks=['runtime_hook_stdio.py'],
     excludes=[],
     noarchive=False,
     optimize=0,
@@ -155,7 +159,7 @@ exe_review = EXE(
     bootloader_ignore_signals=False,
     strip=False,
     upx=False,
-    console=True,
+    console=False,            # see the note on the main executable above
     disable_windowed_traceback=False,
     argv_emulation=False,
     target_arch=None,
