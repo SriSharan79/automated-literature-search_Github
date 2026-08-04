@@ -20,6 +20,7 @@ from alr.common.sections import (
     build_sections_map_vdb, build_sections_map_vdb_excel,
 )
 from alr.common.excel_utils import extract_column
+from datetime import datetime as dt      # Alias avoids conflicts
 
 
 def _all_rag_keys() -> tuple:
@@ -91,7 +92,7 @@ def update_VDB_status(VDB, key, str_count, vec_count):
 
     # If nothing changed, do nothing (keep your existing logic)
     if skip_json:
-        print(Fore.YELLOW + f"⏭️ No changes for '{key}' (entries={str_count}, vecs={vec_count}). Skipping update.")
+        print(Fore.YELLOW + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:⏭️ No changes for '{key}' (entries={str_count}, vecs={vec_count}). Skipping update.")
         return False
 
     # Ensure list format
@@ -116,11 +117,11 @@ def update_VDB_status(VDB, key, str_count, vec_count):
             json.dump(existing_json_data, f, ensure_ascii=False, indent=2)
 
         action = "Updated" if updated else "Added"
-        print(Fore.GREEN + f"✅ {action} VDB status for '{key}' -> entries={str_count}, vecs={vec_count}")
+        print(Fore.GREEN + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:✅ {action} VDB status for '{key}' -> entries={str_count}, vecs={vec_count}")
         return True
 
     except Exception as e:
-        print(Fore.RED + f"❌ Failed to write VDB status log: {e}")
+        print(Fore.RED + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:❌ Failed to write VDB status log: {e}")
         return False
 
 
@@ -144,10 +145,10 @@ def _excel_content_strings(excel_path):
     try:
         df = pd.read_excel(excel_path)
     except Exception as e:
-        print(Fore.RED + f"   ❌ Could not read Excel DB '{excel_path.name}': {e}" + Style.RESET_ALL)
+        print(Fore.RED + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:   ❌ Could not read Excel DB '{excel_path.name}': {e}" + Style.RESET_ALL)
         return []
     if "Content" not in df.columns:
-        print(Fore.RED + f"   ❌ No 'Content' column in '{excel_path.name}'." + Style.RESET_ALL)
+        print(Fore.RED + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:   ❌ No 'Content' column in '{excel_path.name}'." + Style.RESET_ALL)
         return []
     # Keep one string per row; placeholder for blanks (some embedding APIs
     # reject empty strings, and we must keep positional alignment).
@@ -197,7 +198,7 @@ def _sync_sections_VDB(VDB, sections, rebuild: bool = False, rebuild_text_db=Non
             _sync_one_section_VDB(VDB, key, VDB_path, ex_path, rebuild,
                                   rebuild_text_db=rebuild_text_db)
         except Exception as e:  # noqa: BLE001 - one bad index must not stop the rest
-            print(Fore.RED + f"   ❌ Vector sync failed for '{key}' ({type(e).__name__}: {e}); "
+            print(Fore.RED + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:   ❌ Vector sync failed for '{key}' ({type(e).__name__}: {e}); "
                              f"continuing with the next attribute." + Style.RESET_ALL)
             failures[key] = f"{type(e).__name__}: {e}"
     return failures
@@ -205,19 +206,19 @@ def _sync_sections_VDB(VDB, sections, rebuild: bool = False, rebuild_text_db=Non
 
 def _sync_one_section_VDB(VDB, key, VDB_path, ex_path, rebuild, rebuild_text_db=None):
     """One attribute's index-vs-Excel sync (see _sync_sections_VDB)."""
-    print(Fore.LIGHTBLUE_EX + f"\n— Section: {key}" + Style.RESET_ALL)
+    print(Fore.LIGHTBLUE_EX + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:\n— Section: {key}" + Style.RESET_ALL)
     strings = _excel_content_strings(ex_path)
     str_count = len(strings)
 
     if str_count == 0:
-        print(Fore.YELLOW + f"   ⏭️  No Excel content for '{key}'. Skipping (index left untouched)." + Style.RESET_ALL)
+        print(Fore.YELLOW + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:   ⏭️  No Excel content for '{key}'. Skipping (index left untouched)." + Style.RESET_ALL)
         return
 
     if rebuild:
-        print(Fore.CYAN + f"   🔄 Rebuilding index from Excel ({str_count} rows)..." + Style.RESET_ALL)
+        print(Fore.CYAN + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:   🔄 Rebuilding index from Excel ({str_count} rows)..." + Style.RESET_ALL)
         vec_count = _rebuild_section_index(VDB_path, strings)
         update_VDB_status(VDB, key, str_count, vec_count)
-        print(Fore.GREEN + f"   ✅ Rebuilt: {key} ({vec_count} vectors)" + Style.RESET_ALL)
+        print(Fore.GREEN + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:   ✅ Rebuilt: {key} ({vec_count} vectors)" + Style.RESET_ALL)
         return
 
     index = load_index_file(VDB_path)
@@ -240,8 +241,8 @@ def _sync_one_section_VDB(VDB, key, VDB_path, ex_path, rebuild, rebuild_text_db=
             # that lost data, and re-embedding it as it stands would make that
             # loss permanent.
             print(Fore.YELLOW
-                  + f"   ♻️  Index has more vectors ({vec_count}) than Excel rows ({str_count}); "
-                  + f"rebuilding '{key}' to restore alignment..."
+                  + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:   ♻️  Index has more vectors ({vec_count}) than Excel rows ({str_count}); "
+                  + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:rebuilding '{key}' to restore alignment..."
                   + Style.RESET_ALL)
             if rebuild_text_db is not None:
                 try:
@@ -250,19 +251,19 @@ def _sync_one_section_VDB(VDB, key, VDB_path, ex_path, rebuild, rebuild_text_db=
                     str_count = len(strings)
                     print(f"   • Excel rows after the text-DB rebuild: {str_count}")
                 except Exception as e:  # noqa: BLE001 - fall back to index-only
-                    print(Fore.RED + f"   ❌ Could not rebuild the Excel of '{key}' ({e}); "
+                    print(Fore.RED + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:   ❌ Could not rebuild the Excel of '{key}' ({e}); "
                                      f"realigning the index to the Excel as it stands.")
             if str_count == 0:
-                print(Fore.YELLOW + f"   ⏭️  '{key}' has no Excel content; index left untouched."
+                print(Fore.YELLOW + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:   ⏭️  '{key}' has no Excel content; index left untouched."
                       + Style.RESET_ALL)
                 return
             vec_count = _rebuild_section_index(VDB_path, strings)
             update_VDB_status(VDB, key, str_count, vec_count)
-            print(Fore.GREEN + f"   ✅ Realigned: {key} ({vec_count} vectors)" + Style.RESET_ALL)
+            print(Fore.GREEN + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:   ✅ Realigned: {key} ({vec_count} vectors)" + Style.RESET_ALL)
             return
 
         new_strings = strings[vec_count:]
-        print(Fore.CYAN + f"   ➕ Adding {len(new_strings)} new strings to index..." + Style.RESET_ALL)
+        print(Fore.CYAN + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:   ➕ Adding {len(new_strings)} new strings to index..." + Style.RESET_ALL)
 
         add_new_strings_to_index(VDB_path, new_strings)
 
@@ -271,13 +272,13 @@ def _sync_one_section_VDB(VDB, key, VDB_path, ex_path, rebuild, rebuild_text_db=
         vec_count = index_in.ntotal
         update_VDB_status(VDB, key, str_count, vec_count)
 
-        print(Fore.GREEN + f"   ✅ Done: {key} (added {len(new_strings)} vectors)" + Style.RESET_ALL)
+        print(Fore.GREEN + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:   ✅ Done: {key} (added {len(new_strings)} vectors)" + Style.RESET_ALL)
     else:
         print(Fore.YELLOW + "   🆕 No existing index found. Creating a new FAISS index from Excel..." + Style.RESET_ALL)
         vec_count = _rebuild_section_index(VDB_path, strings)
         print(Fore.CYAN + "   📝 Updating VDB status log..." + Style.RESET_ALL)
         update_VDB_status(VDB, key, str_count, vec_count)
-        print(Fore.GREEN + f"   ✅ Created index and synced: {key}" + Style.RESET_ALL)
+        print(Fore.GREEN + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:   ✅ Created index and synced: {key}" + Style.RESET_ALL)
 
 
 def _source_uuids_and_json(MF, source):
@@ -305,7 +306,7 @@ def rebuild_section_text_db(MF, VDB, key, master_excel_file=None) -> int:
     source = RAG_SOURCE_BY_KEY[key]
     uuids, json_path_of = _source_uuids_and_json(MF, source)
     if not uuids:
-        print(Fore.YELLOW + f"   ⏭️  No recorded {source} documents; '{key}' left as it is.")
+        print(Fore.YELLOW + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:   ⏭️  No recorded {source} documents; '{key}' left as it is.")
         return 0
 
     master_excel_file = master_excel_file or VDB.Abstract_Overview
@@ -320,10 +321,10 @@ def rebuild_section_text_db(MF, VDB, key, master_excel_file=None) -> int:
             if p.exists():
                 p.unlink()
         except OSError as e:
-            print(Fore.RED + f"   ❌ Could not clear '{p.name}' for the rebuild: {e}")
+            print(Fore.RED + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:   ❌ Could not clear '{p.name}' for the rebuild: {e}")
             return 0
 
-    print(Fore.CYAN + f"   🔄 Rebuilding the text DB of '{key}' from {len(uuids)} "
+    print(Fore.CYAN + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:   🔄 Rebuilding the text DB of '{key}' from {len(uuids)} "
                       f"recorded {source} document(s)...")
     uuid_cache = {}
     written = 0
@@ -345,7 +346,7 @@ def rebuild_section_text_db(MF, VDB, key, master_excel_file=None) -> int:
                     flush_db_cache(uuid_cache)
     finally:
         flush_db_cache(uuid_cache)
-    print(Fore.GREEN + f"   ✅ Text DB of '{key}' rebuilt from {written} document(s).")
+    print(Fore.GREEN + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:   ✅ Text DB of '{key}' rebuilt from {written} document(s).")
     return written
 
 
@@ -369,7 +370,7 @@ def rebuild_vector_databases(Storage_path):
     """
     VDB = Vec_DB_Manager(Storage_path)
     secs_VDB = build_sections_map_vdb_excel(VDB, only=_all_rag_keys())
-    print(Fore.CYAN + Style.BRIGHT + f"--- Rebuilding all vector DBs from Excel: {Storage_path} ---" + Style.RESET_ALL)
+    print(Fore.CYAN + Style.BRIGHT + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:--- Rebuilding all vector DBs from Excel: {Storage_path} ---" + Style.RESET_ALL)
     _sync_sections_VDB(VDB, secs_VDB, rebuild=True)
     print(Fore.GREEN + Style.BRIGHT + "--- Vector DB rebuild complete ---" + Style.RESET_ALL)
 
@@ -392,7 +393,7 @@ def _sync_analysis_source_text(MF, VDB, master_excel_file, uuid_cache, source):
     master_map = build_sections_master_map(VDB, master_excel_file, only=keys)
 
     label = "Introduction" if source == "intro" else "Results & Conclusion"
-    print(Fore.CYAN + f"--- Syncing {label} data ({len(uuids)} recorded document(s)) ---")
+    print(Fore.CYAN + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:--- Syncing {label} data ({len(uuids)} recorded document(s)) ---")
     # Batched like the abstract sync (the session is reference-counted, so an
     # outer one in generate_databases just stays open).
     with workbook_session(master_excel_file):
@@ -608,7 +609,7 @@ def _load_common_known(common_path, sections):
                     rows_by_uuid[uuid] = r
             return known, manifest_rows, rows_by_uuid
         except Exception as e:
-            print(Fore.YELLOW + f"⚠️ Could not read common-DB manifest ({e}); adopting from section DBs.")
+            print(Fore.YELLOW + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:⚠️ Could not read common-DB manifest ({e}); adopting from section DBs.")
 
     # No manifest yet: adopt identities from the existing section Excel DBs.
     # Each document is credited with exactly the sections whose Excel it
@@ -646,7 +647,7 @@ def _load_common_known(common_path, sections):
             manifest_rows.append(r)
             rows_by_uuid[uuid] = r
     if manifest_rows:
-        print(Fore.CYAN + f"🧾 Adopted {len(manifest_rows)} existing document(s) from the common DB's section Excels.")
+        print(Fore.CYAN + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:🧾 Adopted {len(manifest_rows)} existing document(s) from the common DB's section Excels.")
     return known, manifest_rows, rows_by_uuid
 
 
@@ -676,7 +677,7 @@ def _save_common_manifest(common_path, manifest_rows):
     try:
         pd.DataFrame(manifest_rows).to_excel(manifest_path, index=False)
     except Exception as e:
-        print(Fore.RED + f"❌ Could not write common-DB manifest: {e}")
+        print(Fore.RED + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:❌ Could not write common-DB manifest: {e}")
 
 
 def _save_common_skiplog(common_path, skipped_rows):
@@ -732,7 +733,7 @@ def _sql_documents_for_space(space_path):
                 continue  # row exists but the abstract was never analyzed
             docs[uuid] = (row.get("title"), row.get("filename"), json_data)
     except Exception as e:
-        print(Fore.YELLOW + f"⚠️ SQL lookup failed for {space_path}: {e}")
+        print(Fore.YELLOW + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:⚠️ SQL lookup failed for {space_path}: {e}")
         return {}
     return docs
 
@@ -837,7 +838,7 @@ def _collect_space_documents(space_path, known, selected_set, match_filename):
                 continue
             docs[uuid] = (title, filename, json_data, handled, origin)
         except Exception as e:
-            print(Fore.YELLOW + f"⚠️ Could not read '{filename or uuid}' from {Path(space_path).name} "
+            print(Fore.YELLOW + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:⚠️ Could not read '{filename or uuid}' from {Path(space_path).name} "
                                 f"({type(e).__name__}: {e}) — skipped, not added to the common DB.")
             failures.append(_skip_row("collect", e, space=space_path, uuid=uuid,
                                       title=title, filename=filename))
@@ -918,7 +919,7 @@ def build_common_database(source_paths, common_path, match_filename: bool = True
             break
         space = Path(space)
         if space == common_path:
-            print(Fore.YELLOW + f"⏭️ Skipping source '{space}': it IS the common DB folder.")
+            print(Fore.YELLOW + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:⏭️ Skipping source '{space}': it IS the common DB folder.")
             continue
         if progress_callback:
             progress_callback(0, 1, f"Checking '{space.name}' for documents not yet in the common DB…")
@@ -926,13 +927,13 @@ def build_common_database(source_paths, common_path, match_filename: bool = True
             docs, prefiltered, failures = _collect_space_documents(
                 space, known, selected_set, match_filename)
         except Exception as e:
-            print(Fore.RED + f"❌ Source space '{space}' could not be read ({type(e).__name__}: {e}) "
+            print(Fore.RED + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:❌ Source space '{space}' could not be read ({type(e).__name__}: {e}) "
                              f"— its documents were NOT added to the common DB; continuing.")
             skipped_rows.append(_skip_row("space", e, space=space,
                                           filename="<entire source space>"))
             continue
         skipped_rows.extend(failures)
-        print(Fore.CYAN + f"📄 {space.name}: {len(docs)} document(s) with new data to add, "
+        print(Fore.CYAN + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:📄 {space.name}: {len(docs)} document(s) with new data to add, "
                           f"{prefiltered} already in the common DB — skipped without reprocessing."
               + (f" {len(failures)} unreadable — not added." if failures else ""))
         skipped += prefiltered
@@ -977,7 +978,7 @@ def build_common_database(source_paths, common_path, match_filename: bool = True
                     if failed_sections:
                         # Some attributes did not reach the master workbook: don't
                         # credit them, so a later build copies them in.
-                        print(Fore.RED + f"❌ '{filename or uuid}': {len(failed_sections)} attribute(s) "
+                        print(Fore.RED + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:❌ '{filename or uuid}': {len(failed_sections)} attribute(s) "
                                          f"were not added to the common DB's master workbook.")
                         skipped_rows.append(_skip_row(
                             "master-sections",
@@ -991,7 +992,7 @@ def build_common_database(source_paths, common_path, match_filename: bool = True
                     # This document's data could not be written: leave the known
                     # sets and the manifest untouched (so a later run retries it),
                     # record it and move on to the next file.
-                    print(Fore.RED + f"❌ '{filename or uuid}' could not be synchronized into the common DB "
+                    print(Fore.RED + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:❌ '{filename or uuid}' could not be synchronized into the common DB "
                                      f"({type(e).__name__}: {e}) — skipped, continuing with the next file.")
                     skipped_rows.append(_skip_row("sync", e, space=space, uuid=uuid, title=title,
                                                   filename=filename,
@@ -1032,8 +1033,8 @@ def build_common_database(source_paths, common_path, match_filename: bool = True
 
     _save_common_manifest(common_path, manifest_rows)
     print(Fore.GREEN + Style.BRIGHT
-          + f"--- Common text DB: {added} added, {extended} extended with missing sections, "
-          + f"{skipped} already-known skipped ---" + Style.RESET_ALL)
+          + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:--- Common text DB: {added} added, {extended} extended with missing sections, "
+          + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:{skipped} already-known skipped ---" + Style.RESET_ALL)
 
     if do_vector and not should_cancel():
         if progress_callback:
@@ -1044,14 +1045,14 @@ def build_common_database(source_paths, common_path, match_filename: bool = True
                 skipped_rows.append(_skip_row("vector-sync", err, filename="<vector index>",
                                               sections=sec_key))
         except Exception as e:
-            print(Fore.RED + f"❌ Vector index sync failed ({type(e).__name__}: {e}); the text DB is "
+            print(Fore.RED + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:❌ Vector index sync failed ({type(e).__name__}: {e}); the text DB is "
                              f"still updated — re-run the build to retry the indexes.")
             skipped_rows.append(_skip_row("vector-sync", e, filename="<vector indexes>"))
 
     if skipped_rows:
         log_path = _save_common_skiplog(common_path, skipped_rows)
         print(Fore.YELLOW + Style.BRIGHT
-              + f"⚠️ {len(skipped_rows)} item(s) were NOT added to the common DB"
+              + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:⚠️ {len(skipped_rows)} item(s) were NOT added to the common DB"
               + (f" — see {log_path}" if log_path else "") + Style.RESET_ALL)
 
     return added, skipped, extended, skipped_rows

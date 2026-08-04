@@ -54,6 +54,7 @@ from pathlib import Path
 from typing import Optional
 
 from colorama import Fore, Style
+from datetime import datetime as dt      # Alias avoids conflicts
 
 from alr.common.json_utils import get_key_from_file
 from alr.common.llm_utils import llm_call
@@ -374,7 +375,7 @@ def identify_via_window(MF, spec: TargetSpec, llm_service) -> tuple[str, list[st
 
     print(
         Fore.BLUE
-        + f"\nLocating {spec.label} positionally: body chunks {start + 1}-{end} of {len(chunks)}."
+        + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:\nLocating {spec.label} positionally: body chunks {start + 1}-{end} of {len(chunks)}."
         + Style.RESET_ALL
     )
 
@@ -544,7 +545,7 @@ def reanalyze_missing_attributes(MF, target: str, doc_id=None,
 
     print(
         Fore.YELLOW
-        + f"\n↻ {spec.label}: {len(gaps)} attribute(s) missing "
+        + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:\n↻ {spec.label}: {len(gaps)} attribute(s) missing "
           f"({', '.join(gaps)}); re-running the standard analyzer first."
         + Style.RESET_ALL
     )
@@ -573,7 +574,7 @@ def reanalyze_missing_attributes(MF, target: str, doc_id=None,
         return []
 
     if filled:
-        print(Fore.GREEN + f"✓ {spec.label} re-analysis filled: {', '.join(filled)}" + Style.RESET_ALL)
+        print(Fore.GREEN + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:✓ {spec.label} re-analysis filled: {', '.join(filled)}" + Style.RESET_ALL)
     else:
         print(f"ℹ {spec.label}: re-analysis added nothing; falling back to the top-up pass.")
 
@@ -683,7 +684,7 @@ def top_up_missing_attributes(MF, target: str, force: bool = False) -> list[str]
     filled: list[str] = []
     print(
         Fore.YELLOW
-        + f"\n↻ {spec.label}: {len(gaps)} attribute(s) missing "
+        + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:\n↻ {spec.label}: {len(gaps)} attribute(s) missing "
           f"({', '.join(gaps)}); retrying with {FOLLOW_UP_CHUNKS} more chunks."
         + Style.RESET_ALL
     )
@@ -713,7 +714,7 @@ def top_up_missing_attributes(MF, target: str, force: bool = False) -> list[str]
         return []
 
     if filled:
-        print(Fore.GREEN + f"✓ {spec.label} top-up filled: {', '.join(filled)}" + Style.RESET_ALL)
+        print(Fore.GREEN + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:✓ {spec.label} top-up filled: {', '.join(filled)}" + Style.RESET_ALL)
     else:
         still = missing_keys(data, spec)
         if still:
@@ -866,7 +867,7 @@ def complete_space(MF, targets=None, force: bool = False, should_cancel=None,
 
         result["filled"][uuid] = filled_here
         result["attributes"] += sum(len(v) for v in filled_here.values())
-        print(Fore.GREEN + f"✓ {name or uuid}: filled "
+        print(Fore.GREEN + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:✓ {name or uuid}: filled "
               + "; ".join(f"{TARGETS[t].label} → {', '.join(k)}" for t, k in filled_here.items())
               + Style.RESET_ALL)
 

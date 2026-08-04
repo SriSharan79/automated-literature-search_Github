@@ -3,6 +3,7 @@ import re
 from colorama import Fore,Style
 
 from difflib import SequenceMatcher
+from datetime import datetime as dt      # Alias avoids conflicts
 
 import os
 import pandas as pd
@@ -59,9 +60,9 @@ def extract_chunk_heading(chunk):
 #             try:
 #                 actual_text_content = doc.texts[text_index].text
 #             except IndexError:
-#                 print(Fore.RED + f"    Warning: text_index {text_index} out of bounds for doc.texts (self_ref: {self_ref})." + Fore.RESET)
+#                 print(Fore.RED + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:    Warning: text_index {text_index} out of bounds for doc.texts (self_ref: {self_ref})." + Fore.RESET)
 #             except AttributeError:
-#                 print(Fore.RED + f"    Warning: Object at doc.texts[{text_index}] does not have a .text attribute (self_ref: {self_ref})." + Fore.RESET)
+#                 print(Fore.RED + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:    Warning: Object at doc.texts[{text_index}] does not have a .text attribute (self_ref: {self_ref})." + Fore.RESET)
 #     return actual_text_content
 
 def get_actual_text_content(doc_item, doc):
@@ -85,9 +86,9 @@ def get_actual_text_content(doc_item, doc):
             try:
                 actual_text_content = doc.texts[text_index].text
             except IndexError:
-                print(Fore.RED + f"    Warning: text_index {text_index} out of bounds for doc.texts." + Fore.RESET)
+                print(Fore.RED + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:    Warning: text_index {text_index} out of bounds for doc.texts." + Fore.RESET)
             except AttributeError:
-                print(Fore.RED + f"    Warning: Object at doc.texts[{text_index}] lacks .text attribute." + Fore.RESET)
+                print(Fore.RED + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:    Warning: Object at doc.texts[{text_index}] lacks .text attribute." + Fore.RESET)
     return actual_text_content
 
 def handle_text_label(actual_text_content, text_in_chunk, last_text_item_index, processed_document_texts, previous_Heading, chunk_heading):

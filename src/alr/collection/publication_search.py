@@ -26,6 +26,7 @@ from typing import List
 import pandas as pd
 import requests
 from colorama import Fore, Style
+from datetime import datetime as dt      # Alias avoids conflicts
 
 from alr.common.general_utils import (retry_after_seconds,
                                       MAX_RETRY_AFTER_SECONDS,
@@ -80,8 +81,8 @@ class RateLimiter:
                 wait = self.window - (now - self._calls[0])
             if wait > 0:
                 print(Fore.YELLOW
-                      + f"⏳ {self.name} rate limit ({self.max_requests}/"
-                      + f"{self.window:g}s) reached; waiting {wait:.1f}s..."
+                      + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:⏳ {self.name} rate limit ({self.max_requests}/"
+                      + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:{self.window:g}s) reached; waiting {wait:.1f}s..."
                       + Style.RESET_ALL)
                 time.sleep(min(wait, self.window))
 
@@ -128,8 +129,8 @@ def mark_scholar_blocked(reason: str) -> None:
     global _scholar_blocked_until
     _scholar_blocked_until = time.time() + SCHOLAR_COOLDOWN_SECONDS
     print(Fore.YELLOW
-          + f"⚠️ Google Scholar blocked the scraper ({reason}). "
-          + f"Scholar is disabled for {SCHOLAR_COOLDOWN_SECONDS // 60} minutes; "
+          + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:⚠️ Google Scholar blocked the scraper ({reason}). "
+          + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:Scholar is disabled for {SCHOLAR_COOLDOWN_SECONDS // 60} minutes; "
           + "collection continues via the OpenAlex API."
           + Style.RESET_ALL)
 
@@ -176,8 +177,8 @@ def _openalex_get(params: dict, timeout: int = 30, max_retries: int = 3) -> dict
                 if asked is not None:
                     if asked > MAX_RETRY_AFTER_SECONDS:
                         print(Fore.RED
-                              + f"❌ OpenAlex: HTTP {resp.status_code} with "
-                              + f"Retry-After {asked:.0f}s ({asked / 3600:.1f}h) — "
+                              + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:❌ OpenAlex: HTTP {resp.status_code} with "
+                              + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:Retry-After {asked:.0f}s ({asked / 3600:.1f}h) — "
                               + "a quota reset, not congestion, so OpenAlex is "
                               + "given up on now instead of blocking the run."
                               + Style.RESET_ALL)
@@ -190,8 +191,8 @@ def _openalex_get(params: dict, timeout: int = 30, max_retries: int = 3) -> dict
             last_exc = e
         if attempt < max_retries:
             print(Fore.YELLOW
-                  + f"⚠️ OpenAlex request failed ({last_exc}); retrying in {wait:.0f}s "
-                  + f"(attempt {attempt}/{max_retries})..." + Style.RESET_ALL)
+                  + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:⚠️ OpenAlex request failed ({last_exc}); retrying in {wait:.0f}s "
+                  + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:(attempt {attempt}/{max_retries})..." + Style.RESET_ALL)
             time.sleep(wait)
             delay = min(delay * 2, RETRY_BACKOFF_CAP_SECONDS)
     raise last_exc
@@ -265,7 +266,7 @@ def scrape_scholar_data(search_query, Num_Results, Total_keywords):
             class MaxTriesExceededException(Exception):
                 pass
     except ImportError as e:
-        print(Fore.RED + f"❌ scholarly is not installed ({e}); Scholar backend unavailable." + Style.RESET_ALL)
+        print(Fore.RED + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:❌ scholarly is not installed ({e}); Scholar backend unavailable." + Style.RESET_ALL)
         return []
 
     print(f"Searching Google Scholar for: '{search_query}'")
@@ -320,7 +321,7 @@ def scrape_scholar_data(search_query, Num_Results, Total_keywords):
         # keep whatever was collected before the block.
         mark_scholar_blocked(str(e) or "MaxTriesExceededException")
     except Exception as e:
-        print(Fore.RED + f"❌ Google Scholar search failed: {e}" + Style.RESET_ALL)
+        print(Fore.RED + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:❌ Google Scholar search failed: {e}" + Style.RESET_ALL)
         traceback.print_exc()
 
     return publications_data  # Return the collected list
@@ -353,12 +354,12 @@ def collect_publications(search_query, Num_Results, Total_keywords, backend: str
         else:
             wait_min = max(0.0, (_scholar_blocked_until - time.time()) / 60)
             print(Fore.YELLOW
-                  + f"⚠️ Scholar is on block-cooldown for another {wait_min:.0f} min; using OpenAlex."
+                  + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:⚠️ Scholar is on block-cooldown for another {wait_min:.0f} min; using OpenAlex."
                   + Style.RESET_ALL)
         try:
             return search_openalex(search_query, Num_Results, Total_keywords)
         except Exception as e:
-            print(Fore.RED + f"❌ OpenAlex failover also failed: {e}" + Style.RESET_ALL)
+            print(Fore.RED + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:❌ OpenAlex failover also failed: {e}" + Style.RESET_ALL)
             return []
 
     # 'auto' and 'openalex': OpenAlex is the primary backend.
@@ -366,7 +367,7 @@ def collect_publications(search_query, Num_Results, Total_keywords, backend: str
     try:
         rows = search_openalex(search_query, Num_Results, Total_keywords)
     except Exception as e:
-        print(Fore.RED + f"❌ OpenAlex search failed: {e}" + Style.RESET_ALL)
+        print(Fore.RED + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:❌ OpenAlex search failed: {e}" + Style.RESET_ALL)
 
     if rows or backend == "openalex":
         return rows
@@ -374,8 +375,8 @@ def collect_publications(search_query, Num_Results, Total_keywords, backend: str
     if not scholar_available():
         wait_min = max(0.0, (_scholar_blocked_until - time.time()) / 60)
         print(Fore.YELLOW
-              + f"⚠️ No OpenAlex results and Scholar is on block-cooldown "
-              + f"for another {wait_min:.0f} min; returning what we have."
+              + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:⚠️ No OpenAlex results and Scholar is on block-cooldown "
+              + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:for another {wait_min:.0f} min; returning what we have."
               + Style.RESET_ALL)
         return rows
 

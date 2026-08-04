@@ -4,6 +4,7 @@ import time
 from pathlib import Path
 import numpy as np
 from colorama import Fore, Style, init
+from datetime import datetime as dt      # Alias avoids conflicts
 
 from alr.collection.search_phrase_generator_utils import rank_search_phrases
 from alr.common.file_manager import Vec_DB_Manager
@@ -129,7 +130,7 @@ def write_index_metadata(index_file, method, service, model, dim) -> None:
         with open(_meta_path(index_file), "w", encoding="utf-8") as f:
             json.dump(meta, f, indent=2)
     except OSError as e:
-        print(Fore.YELLOW + f"⚠️ Could not write index metadata for {index_file}: {e}" + Style.RESET_ALL)
+        print(Fore.YELLOW + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:⚠️ Could not write index metadata for {index_file}: {e}" + Style.RESET_ALL)
 
 
 def read_index_metadata(index_file):
@@ -166,9 +167,9 @@ def _validate_query_against_index(index_file, method, service, model, query_dim)
     if meta.get("model") and query_model and meta["model"] != query_model:
         print(
             Fore.RED
-            + f"⚠️ Embedding backend mismatch for '{index_file}': index built with "
-            + f"model='{meta['model']}' (method='{meta.get('method')}') but querying with "
-            + f"model='{query_model}' (method='{method}'). Similarity scores may be invalid."
+            + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:⚠️ Embedding backend mismatch for '{index_file}': index built with "
+            + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:model='{meta['model']}' (method='{meta.get('method')}') but querying with "
+            + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:model='{query_model}' (method='{method}'). Similarity scores may be invalid."
             + Style.RESET_ALL
         )
 
@@ -223,7 +224,7 @@ def vectorize_strings(
             # never DLR Ollama - regardless of the session-selected service.
             service = "BlaBla"
             print(Fore.YELLOW
-                  + f"⚠️ Local embedding model failed ({e}); falling back to API service 'BlaBla'."
+                  + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:⚠️ Local embedding model failed ({e}); falling back to API service 'BlaBla'."
                   + Style.RESET_ALL)
             method = "api"
 
@@ -252,17 +253,17 @@ def vectorize_strings(
                         # batches already collected -> reject and retry rather
                         # than silently mixing embedding spaces.
                         print(Fore.YELLOW
-                              + f"\u26a0\ufe0f {batch_label}: got vectors from {got} but this run is "
-                              + f"pinned to {pinned}; discarding batch and retrying "
-                              + f"(attempt {attempt}/{max_retries})."
+                              + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:\u26a0\ufe0f {batch_label}: got vectors from {got} but this run is "
+                              + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:pinned to {pinned}; discarding batch and retrying "
+                              + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:(attempt {attempt}/{max_retries})."
                               + Style.RESET_ALL)
                     else:
                         result = candidate
                         break
                 else:
                     print(Fore.YELLOW
-                          + f"\u26a0\ufe0f Embedding call failed for {batch_label} "
-                          + f"(attempt {attempt}/{max_retries}); see errors above."
+                          + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:\u26a0\ufe0f Embedding call failed for {batch_label} "
+                          + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:(attempt {attempt}/{max_retries}); see errors above."
                           + Style.RESET_ALL)
                 if attempt < max_retries:
                     wait = retry_wait * attempt  # 10s, 20s, ... linear backoff

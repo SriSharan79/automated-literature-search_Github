@@ -12,6 +12,7 @@ from alr.common.general_utils import clean_folder_path, generate_unique_id
 from alr.collection.search_phrase_generator_logger import log_Keyword_Json
 from alr.collection.search_phrase_generator_utils import Keywords_Processing_with_scope, run_scholarly
 from alr.collection.collection_system_prompts import KEYWORD_GENERATOR_PROMPT, SCOPE_DERIVATOR_PROMPT
+from datetime import datetime as dt      # Alias avoids conflicts
 
 from alr.common.general_utils import Proccess_string_to_list
 from alr.common.llm_utils import (
@@ -1800,7 +1801,7 @@ class AutomatedLiteratureUI(tk.Tk):
         if not messagebox.askokcancel(
                 "Resolve missing attributes",
                 f"Storage space:\n{MF.folder}\n\n" + "\n".join(lines)
-                + f"\n\n{docs} document(s) will be re-examined using the analysis and section "
+                + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:\n\n{docs} document(s) will be re-examined using the analysis and section "
                   f"files already in the space — no PDFs are needed and nothing is re-extracted.\n\n"
                   f"Each document costs at most one re-analysis and one widened pass (both are "
                   f"recorded, so they are never paid for twice). Newly filled attributes go "
@@ -3220,8 +3221,8 @@ class AutomatedLiteratureUI(tk.Tk):
         eval_mode = self.eval_mode_var.get()
         print(f"[Evaluation] types: "
               + ", ".join((["substring"] if do_substring else []) + sorted(metric_kinds))
-              + f" | target(s): {', '.join(targets)}"
-              + f" | existing results: {'reuse (only new docs)' if eval_mode == 'copy' else 'rewrite all'}")
+              + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]: | target(s): {', '.join(targets)}"
+              + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]: | existing results: {'reuse (only new docs)' if eval_mode == 'copy' else 'rewrite all'}")
 
         def work(progress, should_cancel):
             from alr.common.sql_store import sync_storage_to_sql

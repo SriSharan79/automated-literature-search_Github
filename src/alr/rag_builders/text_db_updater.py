@@ -5,6 +5,7 @@ from alr.common.file_manager import DataAnalyzeManager, Vec_DB_Manager
 from alr.common.excel_utils import extract_column, get_corresponding_value
 from alr.rag_builders import db_cache
 import json
+from datetime import datetime as dt      # Alias avoids conflicts
 
 def _load_db_pair(excel_path, json_path):
     """
@@ -27,7 +28,7 @@ def _load_db_pair(excel_path, json_path):
             if not excel_df.empty and "UUID" in excel_df.columns:
                 excel_uuids = set(excel_df["UUID"].astype(str).values)
         except Exception as e:
-            print(Fore.YELLOW + f"⚠️ Excel read error (will attempt overwrite): {e}")
+            print(Fore.YELLOW + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:⚠️ Excel read error (will attempt overwrite): {e}")
             excel_df = None
             excel_read_error = True
 
@@ -73,7 +74,7 @@ def flush_db_cache(uuid_cache):
                     df.to_excel(entry["excel_path"], index=False, engine="openpyxl")
                 entry["dirty_excel"] = False
             except Exception as e:
-                print(Fore.RED + f"❌ Failed to save Excel {entry['excel_path']}: {e}")
+                print(Fore.RED + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:❌ Failed to save Excel {entry['excel_path']}: {e}")
         if entry.get("dirty_json"):
             try:
                 Path(entry["json_path"]).parent.mkdir(parents=True, exist_ok=True)
@@ -81,7 +82,7 @@ def flush_db_cache(uuid_cache):
                     json.dump(entry["json_data"], f, indent=4)
                 entry["dirty_json"] = False
             except Exception as e:
-                print(Fore.RED + f"❌ Failed to save JSON {entry['json_path']}: {e}")
+                print(Fore.RED + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:❌ Failed to save JSON {entry['json_path']}: {e}")
 
 
 def save_to_db(excel_path, json_path, data_entry, uuid_cache=None):
@@ -127,7 +128,7 @@ def save_to_db(excel_path, json_path, data_entry, uuid_cache=None):
                     if target_uuid in df_check["UUID"].astype(str).values:
                         skip_excel = True
             except Exception as e:
-                print(Fore.YELLOW + f"⚠️ Excel read error (will attempt overwrite): {e}")
+                print(Fore.YELLOW + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:⚠️ Excel read error (will attempt overwrite): {e}")
 
         # --- Check for Duplicates in JSON (original per-call behaviour) ---
         skip_json = False
@@ -175,7 +176,7 @@ def save_to_db(excel_path, json_path, data_entry, uuid_cache=None):
                 # Explicitly use 'openpyxl' engine for writing
                 df_final.to_excel(excel_path, index=False, engine='openpyxl')
         except Exception as e:
-            print(Fore.RED + f"❌ Failed to save Excel: {e}")
+            print(Fore.RED + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:❌ Failed to save Excel: {e}")
 
     # --- Save to JSON ---
     if not skip_json:
@@ -197,7 +198,7 @@ def save_to_db(excel_path, json_path, data_entry, uuid_cache=None):
                 with open(json_path, 'w', encoding='utf-8') as f:
                     json.dump(existing_json_data, f, indent=4)
         except Exception as e:
-            print(Fore.RED + f"❌ Failed to save JSON: {e}")
+            print(Fore.RED + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:❌ Failed to save JSON: {e}")
      
 
 # -------------------------
@@ -229,7 +230,7 @@ def _load_abstract_json(MF, UUID):
         with open(MF.abstract_json_path, "r", encoding="utf-8") as f:
             return json.load(f)
     except Exception as e:
-        print(Fore.RED + f"Error loading {UUID}: {e}")
+        print(Fore.RED + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:Error loading {UUID}: {e}")
         return None
 
 
@@ -282,9 +283,9 @@ def _save_list_section(UUID, key, content_list, ex_path, j_path, title, file_nam
         try:
             save_to_db(ex_path, j_path, entry, uuid_cache=uuid_cache)
         except Exception as e:
-            print(Fore.RED + f"Error saving list item in {key} for {UUID}: {e}")
+            print(Fore.RED + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:Error saving list item in {key} for {UUID}: {e}")
 
-    print(Fore.GREEN + f"✅ Synced list '{key}' ({len(content_list)} items) for UUID: {UUID}")
+    print(Fore.GREEN + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:✅ Synced list '{key}' ({len(content_list)} items) for UUID: {UUID}")
 
 
 def _save_single_section(UUID, key, content_value, ex_path, j_path, title, file_name, uuid_cache=None):
@@ -298,9 +299,9 @@ def _save_single_section(UUID, key, content_value, ex_path, j_path, title, file_
     }
     try:
         save_to_db(ex_path, j_path, entry, uuid_cache=uuid_cache)
-        print(Fore.GREEN + f"✅ Successfully synchronized {key} for UUID: {UUID}")
+        print(Fore.GREEN + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:✅ Successfully synchronized {key} for UUID: {UUID}")
     except Exception as e:
-        print(Fore.RED + f"Error saving {key} for {UUID}: {e}")
+        print(Fore.RED + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:Error saving {key} for {UUID}: {e}")
 
 if __name__ == "__main__":
     storage_path=r'U:\ALR DATA\SLR_Process_Main\SLR_Process_results'

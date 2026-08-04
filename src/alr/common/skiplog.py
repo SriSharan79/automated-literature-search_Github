@@ -19,6 +19,7 @@ imports keep working.
 
 from datetime import datetime
 from pathlib import Path
+from datetime import datetime as dt      # Alias avoids conflicts
 
 import pandas as pd
 from colorama import Fore, Style
@@ -55,5 +56,5 @@ def append_skiplog(log_path, skipped_rows):
         pd.DataFrame(rows).to_excel(log_path, index=False)
         return log_path
     except Exception as e:
-        print(Fore.RED + f"❌ Could not write the skip log {log_path}: {e}" + Style.RESET_ALL)
+        print(Fore.RED + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:❌ Could not write the skip log {log_path}: {e}" + Style.RESET_ALL)
         return None

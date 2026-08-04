@@ -13,6 +13,7 @@ from collections import deque
 from colorama import Fore, Style, init
 import pandas as pd
 from datetime import datetime
+from datetime import datetime as dt      # Alias avoids conflicts
 import traceback                  
 import sys
 import textwrap
@@ -51,8 +52,8 @@ def _respect_rate_limit():
                 return
             wait = RATE_WINDOW_SECONDS - (now - REQUEST_TIMES[0])
         print(Fore.YELLOW
-              + f"⚠️ Rate limit reached ({RATE_MAX_REQUESTS} requests/{RATE_WINDOW_SECONDS}s). "
-              + f"Waiting {wait:.1f}s..." + Style.RESET_ALL)
+              + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:⚠️ Rate limit reached ({RATE_MAX_REQUESTS} requests/{RATE_WINDOW_SECONDS}s). "
+              + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:Waiting {wait:.1f}s..." + Style.RESET_ALL)
         time.sleep(max(wait, 0.1))
 
 
@@ -90,9 +91,9 @@ def _post_with_retries(url, headers, payload, timeout, service, max_retries=3):
                 if asked is not None:
                     if asked > MAX_RETRY_AFTER_SECONDS:
                         print(Fore.RED
-                              + f"❌ {service}: HTTP {resp.status_code} with "
-                              + f"Retry-After {asked:.0f}s "
-                              + f"({asked / 3600:.1f}h) — that is a quota "
+                              + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:❌ {service}: HTTP {resp.status_code} with "
+                              + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:Retry-After {asked:.0f}s "
+                              + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:({asked / 3600:.1f}h) — that is a quota "
                               + "reset, not congestion, so this service is "
                               + "given up on now instead of blocking the run."
                               + Style.RESET_ALL)
@@ -106,8 +107,8 @@ def _post_with_retries(url, headers, payload, timeout, service, max_retries=3):
             last_exc = e
         if attempt < max_retries:
             print(Fore.YELLOW
-                  + f"⚠️ {service} request failed ({last_exc}); "
-                  + f"retrying in {wait:.0f}s (attempt {attempt}/{max_retries})..."
+                  + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:⚠️ {service} request failed ({last_exc}); "
+                  + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:retrying in {wait:.0f}s (attempt {attempt}/{max_retries})..."
                   + Style.RESET_ALL)
             time.sleep(wait)
             delay = min(delay * 2, RETRY_BACKOFF_CAP_SECONDS)
@@ -159,7 +160,7 @@ def set_selected_model(service: str, model: str) -> None:
     if service not in SELECTED_MODELS:
         raise ValueError(f"Unknown service '{service}'. Expected one of {list(SELECTED_MODELS)}.")
     SELECTED_MODELS[service] = model
-    print(Fore.GREEN + f"✅ {service} model set to: {model}" + Style.RESET_ALL)
+    print(Fore.GREEN + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:✅ {service} model set to: {model}" + Style.RESET_ALL)
 
 
 def list_blablador_models(blablador_key: str = None) -> list:
@@ -178,7 +179,7 @@ def list_blablador_models(blablador_key: str = None) -> list:
         resp.raise_for_status()
         return [m['id'] for m in resp.json().get('data', [])]
     except Exception as e:
-        print(Fore.RED + f"❌ Failed to list Blablador models: {e}" + Style.RESET_ALL)
+        print(Fore.RED + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:❌ Failed to list Blablador models: {e}" + Style.RESET_ALL)
         return []
 
 
@@ -198,7 +199,7 @@ def list_chatai_models(chatai_key: str = None) -> list:
         resp.raise_for_status()
         return [m['id'] for m in resp.json().get('data', [])]
     except Exception as e:
-        print(Fore.RED + f"❌ Failed to list Chat AI models: {e}" + Style.RESET_ALL)
+        print(Fore.RED + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:❌ Failed to list Chat AI models: {e}" + Style.RESET_ALL)
         return []
 
 
@@ -222,7 +223,7 @@ def list_ollama_models(ollama_key: str = None) -> list:
             return [m.get('name') or m.get('model') for m in data['models'] if (m.get('name') or m.get('model'))]
         return []
     except Exception as e:
-        print(Fore.RED + f"❌ Failed to list DLR Ollama models: {e}" + Style.RESET_ALL)
+        print(Fore.RED + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:❌ Failed to list DLR Ollama models: {e}" + Style.RESET_ALL)
         return []
 
 
@@ -256,7 +257,7 @@ def _save_model_list_cache() -> None:
         with open(MODEL_LIST_CACHE_FILE, "w", encoding="utf-8") as f:
             json.dump(_MODEL_LIST_CACHE or {}, f, indent=2)
     except OSError as e:
-        print(Fore.YELLOW + f"⚠️ Could not save model-list cache: {e}" + Style.RESET_ALL)
+        print(Fore.YELLOW + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:⚠️ Could not save model-list cache: {e}" + Style.RESET_ALL)
 
 
 def get_cached_models(service: str) -> list:
@@ -331,22 +332,22 @@ def select_model_interactive(service: str) -> str:
     models = list_available_models(service)   # cached
 
     if not models:
-        print(Fore.YELLOW + f"⚠️ No stored models for {service} (type 'r' to fetch). "
+        print(Fore.YELLOW + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:⚠️ No stored models for {service} (type 'r' to fetch). "
               f"Keeping current: {current}" + Style.RESET_ALL)
 
     while True:
         if models:
-            print(Fore.CYAN + f"\nAvailable {service} models:" + Style.RESET_ALL)
+            print(Fore.CYAN + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:\nAvailable {service} models:" + Style.RESET_ALL)
             for i, m in enumerate(models, 1):
                 marker = "  (current)" if m == current else ""
                 print(f"  {i}. {m}{marker}")
         choice = input(f"Select a {service} model [1-{len(models)}], 'r' to "
                        f"refresh the list, or Enter to keep '{current}': ").strip()
         if choice == "":
-            print(Fore.GREEN + f"Keeping current {service} model: {current}" + Style.RESET_ALL)
+            print(Fore.GREEN + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:Keeping current {service} model: {current}" + Style.RESET_ALL)
             return current
         if choice.lower() == "r":
-            print(Fore.CYAN + f"Refreshing {service} models…" + Style.RESET_ALL)
+            print(Fore.CYAN + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:Refreshing {service} models…" + Style.RESET_ALL)
             models = list_available_models(service, force_refresh=True)
             continue
         if choice.isdigit() and 1 <= int(choice) <= len(models):
@@ -420,7 +421,7 @@ def get_default_embedding_model(service: str, preferred: str = None) -> str:
     embedding_models = list_embedding_models(service)
 
     if not embedding_models:
-        print(Fore.YELLOW + f"⚠️ No embedding models found for {service}; falling back to '{preferred}'." + Style.RESET_ALL)
+        print(Fore.YELLOW + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:⚠️ No embedding models found for {service}; falling back to '{preferred}'." + Style.RESET_ALL)
         SELECTED_EMBEDDING_MODELS[service] = preferred
         return preferred
 
@@ -430,13 +431,13 @@ def get_default_embedding_model(service: str, preferred: str = None) -> str:
     for m in embedding_models:
         if m.lower() == preferred.lower() or preferred.lower() in m.lower():
             SELECTED_EMBEDDING_MODELS[service] = m
-            print(Fore.GREEN + f"✅ {service} default embedding model: {m}" + Style.RESET_ALL)
+            print(Fore.GREEN + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:✅ {service} default embedding model: {m}" + Style.RESET_ALL)
             return m
 
     # Preferred model not available for this service; use the first one found.
     chosen = embedding_models[0]
     SELECTED_EMBEDDING_MODELS[service] = chosen
-    print(Fore.YELLOW + f"⚠️ '{preferred}' not available for {service}; using '{chosen}' instead." + Style.RESET_ALL)
+    print(Fore.YELLOW + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:⚠️ '{preferred}' not available for {service}; using '{chosen}' instead." + Style.RESET_ALL)
     return chosen
 
 
@@ -445,7 +446,7 @@ def set_selected_embedding_model(service: str, model: str) -> None:
     if service not in SELECTED_EMBEDDING_MODELS:
         raise ValueError(f"Unknown service '{service}'. Expected one of {list(SELECTED_EMBEDDING_MODELS)}.")
     SELECTED_EMBEDDING_MODELS[service] = model
-    print(Fore.GREEN + f"✅ {service} embedding model set to: {model}" + Style.RESET_ALL)
+    print(Fore.GREEN + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:✅ {service} embedding model set to: {model}" + Style.RESET_ALL)
 
 
 # Session-wide embedding backend selection (set from the desktop UI).
@@ -476,14 +477,14 @@ def set_embedding_backend(method: str = None, service: str = None) -> None:
         # emergency API fallback if the local model fails to load. Printing it
         # as the active backend was misleading.
         print(Fore.GREEN
-              + f"✅ Embedding backend set to: method=local "
-              + f"(local model: {embedding_model_repo_id}; "
-              + f"API service '{SELECTED_EMBEDDING_BACKEND['service']}' used only as fallback)"
+              + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:✅ Embedding backend set to: method=local "
+              + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:(local model: {embedding_model_repo_id}; "
+              + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:API service '{SELECTED_EMBEDDING_BACKEND['service']}' used only as fallback)"
               + Style.RESET_ALL)
     else:
         print(Fore.GREEN
-              + f"✅ Embedding backend set to: method={SELECTED_EMBEDDING_BACKEND['method']}, "
-              + f"service={SELECTED_EMBEDDING_BACKEND['service']}"
+              + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:✅ Embedding backend set to: method={SELECTED_EMBEDDING_BACKEND['method']}, "
+              + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:service={SELECTED_EMBEDDING_BACKEND['service']}"
               + Style.RESET_ALL)
 
 
@@ -526,7 +527,7 @@ def _embed_in_halves(texts, embed_fn, label="embedding"):
         if len(texts) <= 1:
             raise
         mid = (len(texts) + 1) // 2
-        print(Fore.YELLOW + f"⚠️ {label} pool of {len(texts)} failed ({exc}) "
+        print(Fore.YELLOW + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:⚠️ {label} pool of {len(texts)} failed ({exc}) "
               f"— splitting into {mid} + {len(texts) - mid} and retrying."
               + Style.RESET_ALL)
         return (_embed_in_halves(texts[:mid], embed_fn, label)
@@ -623,8 +624,8 @@ def get_embedding(
 
     print(
         Fore.GREEN
-        + f"✅ {service} embeddings received ({len(embeddings)} vector(s), model={resolved_model}, "
-        + f"{caluculate_time_taken(start_time, end_time)})"
+        + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:✅ {service} embeddings received ({len(embeddings)} vector(s), model={resolved_model}, "
+        + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:{caluculate_time_taken(start_time, end_time)})"
         + Style.RESET_ALL
     )
 
@@ -664,7 +665,7 @@ def save_embedding_result(result: dict, out_dir: str = None, prefix: str = "embe
     with open(path, "w", encoding="utf-8") as f:
         json.dump(payload, f, indent=2)
 
-    print(Fore.GREEN + f"💾 Saved embedding result to: {path}" + Style.RESET_ALL)
+    print(Fore.GREEN + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:💾 Saved embedding result to: {path}" + Style.RESET_ALL)
     return path
 
 
@@ -736,7 +737,7 @@ def load_embedding_model_and_tokenizer(local_dir: str = None):
         )
         model.eval()
     except Exception as e:
-        print(Fore.RED + f"Error loading local embedding model: {e}" + Fore.RESET)
+        print(Fore.RED + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:Error loading local embedding model: {e}" + Fore.RESET)
         print(Fore.RED + "Please ensure the model is correctly downloaded at the specified path and all required libraries (transformers, torch, accelerate) are installed." + Fore.RESET)
         raise
 
@@ -1154,7 +1155,7 @@ def blabla_ask_llm(
     try:
         content = result["choices"][0]["message"]["content"]
 
-        # print(Fore.GREEN + f" Blablador sucess. Full response: {result}"+ Style.RESET_ALL)
+        # print(Fore.GREEN + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]: Blablador sucess. Full response: {result}"+ Style.RESET_ALL)
         
         # ADD THIS NULL CHECK
         if content is None:
@@ -1260,7 +1261,7 @@ def hf_pipeline_with_Lamma():
             )
             model.eval()
         except Exception as e:
-            print(Fore.RED + f"Error loading local Hugging Face model: {e}" + Fore.RESET)
+            print(Fore.RED + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:Error loading local Hugging Face model: {e}" + Fore.RESET)
             print(Fore.RED + "Please ensure the model is correctly downloaded at the specified path and all required libraries (transformers, torch, accelerate) are installed." + Fore.RESET)
             exit()
 
@@ -1334,7 +1335,7 @@ def Local_Model_call(prompt: str, sys_prompt: str) :
             return raw_llm_response_text
 
         except Exception as e:
-            print(Fore.RED + f"An unexpected error occurred during LLM call or pre-parsing: {e}" + Style.RESET_ALL)
+            print(Fore.RED + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:An unexpected error occurred during LLM call or pre-parsing: {e}" + Style.RESET_ALL)
             raw_llm_response_text=f"An unexpected error occurred during LLM call or pre-parsing: {e}"
             print(Fore.RED + "Returning empty response due to error." + Style.RESET_ALL)
             traceback.print_exc()              
@@ -1425,9 +1426,9 @@ def llm_call(prompt: str, system_prompt: str, service: str, model: str = None,
             fallback_used = name != primary_name
             if fallback_used:
                 print(Fore.YELLOW
-                      + f"⚠️ Chat fallback used: '{primary_name}' failed "
-                      + f"({errors[-1]}); this answer came from '{name}' "
-                      + f"(model={get_selected_model(name)})."
+                      + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:⚠️ Chat fallback used: '{primary_name}' failed "
+                      + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:({errors[-1]}); this answer came from '{name}' "
+                      + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:(model={get_selected_model(name)})."
                       + Style.RESET_ALL)
             _record_call_info(kind="chat", requested_service=primary_name,
                               service_used=name, model_used=get_selected_model(name),
@@ -1436,12 +1437,12 @@ def llm_call(prompt: str, system_prompt: str, service: str, model: str = None,
             return response
         except Exception as e:
             errors.append(f"{name}: {e}")
-            print(Fore.RED + f"❌ {name} chat call failed after retries: {e}" + Style.RESET_ALL)
+            print(Fore.RED + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:❌ {name} chat call failed after retries: {e}" + Style.RESET_ALL)
 
     _record_call_info(kind="chat", requested_service=primary_name, service_used=None,
                       model_used=None, fallback_used=False, error="; ".join(errors))
     print(Fore.RED
-          + f"❌ llm_call failed on every allowed service ({'; '.join(errors)}); returning None."
+          + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:❌ llm_call failed on every allowed service ({'; '.join(errors)}); returning None."
           + Style.RESET_ALL)
     return None
 
@@ -1569,7 +1570,7 @@ def embedding_call(texts, service: str, model: str = None, timeout: int = 120,
             break
         except Exception as e:
             errors.append(f"{name}: {e}")
-            print(Fore.RED + f"❌ {name} embedding call failed after retries: {e}" + Style.RESET_ALL)
+            print(Fore.RED + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:❌ {name} embedding call failed after retries: {e}" + Style.RESET_ALL)
 
     if response is None:
         _record_call_info(kind="embedding", requested_service=requested,
@@ -1579,8 +1580,8 @@ def embedding_call(texts, service: str, model: str = None, timeout: int = 120,
 
     if response.get("service") and response["service"] != requested:
         print(Fore.YELLOW
-              + f"⚠️ Embedding fallback used: requested '{requested}' but vectors came from "
-              + f"'{response['service']}' (model={response.get('model')}). These vectors are in a "
+              + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:⚠️ Embedding fallback used: requested '{requested}' but vectors came from "
+              + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:'{response['service']}' (model={response.get('model')}). These vectors are in a "
               + "different embedding space - rebuild/query FAISS indexes with a consistent backend."
               + Style.RESET_ALL)
     return response

@@ -23,6 +23,7 @@ their original read-modify-write-per-entry behaviour.
 import json
 from pathlib import Path
 
+from datetime import datetime as dt      # Alias avoids conflicts
 from colorama import Fore
 
 _entries = {}   # str(path) -> {"path", "data", "uuids", "dirty"}

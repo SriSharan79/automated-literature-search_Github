@@ -27,6 +27,7 @@ from pathlib import Path
 
 import pandas as pd
 from colorama import Fore
+from datetime import datetime as dt      # Alias avoids conflicts
 
 _SESSIONS = {}   # str(path) -> [Book, refcount]
 
@@ -51,7 +52,7 @@ class Book:
                         self.sheets[name] = pd.read_excel(
                             self.path, sheet_name=name, engine="openpyxl")
             except Exception as e:
-                print(Fore.YELLOW + f"⚠️ Workbook read error for {self.path.name} "
+                print(Fore.YELLOW + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:⚠️ Workbook read error for {self.path.name} "
                                     f"(will attempt overwrite): {e}")
                 self.sheets, self.order = {}, []
 
@@ -111,7 +112,7 @@ class workbook_session:
             try:
                 entry[0].flush()
             except Exception as e:  # noqa: BLE001 - report, never mask the body's error
-                print(Fore.RED + f"❌ Failed to write {entry[0].path}: {e}")
+                print(Fore.RED + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:❌ Failed to write {entry[0].path}: {e}")
         return False
 
 

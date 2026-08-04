@@ -11,6 +11,7 @@ import os
 # ADD:
 from alr.common.sections import build_sections_master_map
 from alr.rag_builders import db_cache
+from datetime import datetime as dt      # Alias avoids conflicts
 
 # Documents that could NOT be written into a built database. A failure on one
 # document never aborts a build: it is skipped, recorded in one of these logs
@@ -72,7 +73,7 @@ class _WorkbookSession:
                         self.uuids[s_name] = (set(df["UUID"].astype(str).values)
                                               if "UUID" in df.columns else set())
             except Exception as e:
-                print(Fore.YELLOW + f"⚠️ Master workbook read error (will attempt overwrite): {e}")
+                print(Fore.YELLOW + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:⚠️ Master workbook read error (will attempt overwrite): {e}")
                 self.sheets, self.order, self.uuids = {}, [], {}
 
     def flush(self):
@@ -124,7 +125,7 @@ class workbook_session:
             try:
                 entry[0].flush()
             except Exception as e:  # noqa: BLE001 - report, never mask the body's error
-                print(Fore.RED + f"❌ Failed to write the master workbook {entry[0].path}: {e}")
+                print(Fore.RED + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:❌ Failed to write the master workbook {entry[0].path}: {e}")
         db_cache.close_scope()
         return False
 
@@ -211,7 +212,7 @@ def save_to_db(master_excel_path, sheet_name, json_path, data_entry):
                         if target_uuid in df_check["UUID"].astype(str).values:
                             skip_excel = True
         except Exception as e:
-            print(Fore.YELLOW + f"⚠️ Excel sheet '{sheet_name}' read error (will attempt overwrite): {e}")
+            print(Fore.YELLOW + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:⚠️ Excel sheet '{sheet_name}' read error (will attempt overwrite): {e}")
 
     # --- Check for Duplicates in JSON ---
     skip_json = False
@@ -251,7 +252,7 @@ def save_to_db(master_excel_path, sheet_name, json_path, data_entry):
                     all_sheets_data[s_name].to_excel(writer, sheet_name=s_name, index=False)
 
         except Exception as e:
-            print(Fore.RED + f"❌ Failed to save Excel steps for sheet '{sheet_name}': {e}")
+            print(Fore.RED + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:❌ Failed to save Excel steps for sheet '{sheet_name}': {e}")
 
     # --- Save to JSON ---
     if not skip_json:
@@ -260,7 +261,7 @@ def save_to_db(master_excel_path, sheet_name, json_path, data_entry):
             with open(json_path, 'w', encoding='utf-8') as f:
                 json.dump(existing_json_data, f, indent=4)
         except Exception as e:
-            print(Fore.RED + f"❌ Failed to save JSON: {e}")
+            print(Fore.RED + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:❌ Failed to save JSON: {e}")
 
 
 # -------------------------
@@ -292,7 +293,7 @@ def _load_abstract_json(MF, UUID):
         with open(MF.abstract_json_path, "r", encoding="utf-8") as f:
             return json.load(f)
     except Exception as e:
-        print(Fore.RED + f"Error loading {UUID}: {e}")
+        print(Fore.RED + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:Error loading {UUID}: {e}")
         return None
 
 
@@ -305,7 +306,7 @@ def _load_json_file(path, UUID, label):
             data = json.load(f)
         return data if isinstance(data, dict) else {}
     except Exception as e:
-        print(Fore.RED + f"Error loading {label} for {UUID}: {e}")
+        print(Fore.RED + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:Error loading {label} for {UUID}: {e}")
         return {}
 
 
@@ -378,16 +379,16 @@ def _sync_sections_master_for_uuid(UUID, title, file_name, json_data, sections):
 #         try:
 #             save_to_db(ex_path, sheet_name, j_path, entry)
 #         except Exception as e:
-#             print(Fore.RED + f"Error saving list item in {key} for {UUID}: {e}")
+#             print(Fore.RED + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:Error saving list item in {key} for {UUID}: {e}")
 
-#     print(Fore.GREEN + f"✅ Synced list '{key}' ({len(content_list)} items) to Sheet '{sheet_name}' for UUID: {UUID}")
+#     print(Fore.GREEN + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:✅ Synced list '{key}' ({len(content_list)} items) to Sheet '{sheet_name}' for UUID: {UUID}")
 
 def _save_list_section(UUID, key, content_list, ex_path, sheet_name, j_path, title, file_name):
     """Save list-like sections onto specific sheets as a single bulleted string.
     Returns None on success, or the error string when the section could not be
     written (never raises, so the remaining sections still get their chance)."""
     if not content_list:
-        print(Fore.YELLOW + f"⚠️ Content list for '{key}' is empty. Skipping save.")
+        print(Fore.YELLOW + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:⚠️ Content list for '{key}' is empty. Skipping save.")
         return None
 
     # 1. Combine all items into a single string formatted with bullet points
@@ -405,10 +406,10 @@ def _save_list_section(UUID, key, content_list, ex_path, sheet_name, j_path, tit
     # 3. Save the single consolidated entry to the database
     try:
         save_to_db(ex_path, sheet_name, j_path, entry)
-        print(Fore.GREEN + f"✅ Synced list '{key}' ({len(content_list)} items consolidated) to Sheet '{sheet_name}' for UUID: {UUID}")
+        print(Fore.GREEN + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:✅ Synced list '{key}' ({len(content_list)} items consolidated) to Sheet '{sheet_name}' for UUID: {UUID}")
         return None
     except Exception as e:
-        print(Fore.RED + f"Error saving list content in {key} for {UUID}: {e}")
+        print(Fore.RED + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:Error saving list content in {key} for {UUID}: {e}")
         return f"{type(e).__name__}: {e}"
 
 def _save_single_section(UUID, key, content_value, ex_path, sheet_name, j_path, title, file_name):
@@ -423,10 +424,10 @@ def _save_single_section(UUID, key, content_value, ex_path, sheet_name, j_path, 
     }
     try:
         save_to_db(ex_path, sheet_name, j_path, entry)
-        print(Fore.GREEN + f"✅ Successfully synchronized {key} to Sheet '{sheet_name}' for UUID: {UUID}")
+        print(Fore.GREEN + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:✅ Successfully synchronized {key} to Sheet '{sheet_name}' for UUID: {UUID}")
         return None
     except Exception as e:
-        print(Fore.RED + f"Error saving {key} for {UUID}: {e}")
+        print(Fore.RED + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:Error saving {key} for {UUID}: {e}")
         return f"{type(e).__name__}: {e}"
 
 def build_master_excel_db(storage_path, master_excel_path=None, progress_callback=None,
@@ -478,7 +479,7 @@ def build_master_excel_db(storage_path, master_excel_path=None, progress_callbac
 
     # UUIDs to process come from the processed-file registry.
     if not Path(MF.excel_success).exists():
-        print(Fore.RED + f"⚠️ No processed-file registry found at {MF.excel_success}. Nothing to consolidate.")
+        print(Fore.RED + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:⚠️ No processed-file registry found at {MF.excel_success}. Nothing to consolidate.")
         return 0, master_excel_path, []
 
     recorded_uuids = extract_column(MF.excel_success, "UUID")
@@ -506,7 +507,7 @@ def build_master_excel_db(storage_path, master_excel_path=None, progress_callbac
                     failed = _sync_sections_master_for_uuid(
                         uuid, title, file_name, json_data, sections_map)
                     if failed:
-                        print(Fore.RED + f"❌ '{file_name or uuid}': {len(failed)} attribute(s) could not be "
+                        print(Fore.RED + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:❌ '{file_name or uuid}': {len(failed)} attribute(s) could not be "
                                          f"written to the master workbook — continuing with the next file.")
                         not_added.append(_skip_row(
                             "partial" if len(failed) < len(sections_map) else "sync",
@@ -516,7 +517,7 @@ def build_master_excel_db(storage_path, master_excel_path=None, progress_callbac
                     if len(failed) < len(sections_map):
                         written += 1
             except Exception as e:
-                print(Fore.RED + f"❌ '{file_name or uuid}' could not be consolidated into the master "
+                print(Fore.RED + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:❌ '{file_name or uuid}' could not be consolidated into the master "
                                  f"workbook ({type(e).__name__}: {e}) — skipped, continuing with the next file.")
                 not_added.append(_skip_row("document", e, uuid=uuid, title=title, filename=file_name))
 
@@ -526,16 +527,16 @@ def build_master_excel_db(storage_path, master_excel_path=None, progress_callbac
                 try:
                     session.flush()
                 except Exception as e:  # noqa: BLE001 - a failed checkpoint must not stop the build
-                    print(Fore.RED + f"❌ Could not checkpoint the master workbook: {e}")
+                    print(Fore.RED + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:❌ Could not checkpoint the master workbook: {e}")
 
             if progress_callback:
                 progress_callback(i, total)
 
-    print(Fore.GREEN + f"✅ Master Excel workbook updated with {written} document(s): {master_excel_path}")
+    print(Fore.GREEN + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:✅ Master Excel workbook updated with {written} document(s): {master_excel_path}")
     if not_added:
         log_path = _save_master_skiplog(master_excel_path, not_added)
         print(Fore.YELLOW + Style.BRIGHT
-              + f"⚠️ {len(not_added)} document(s) were NOT (fully) added to the master workbook"
+              + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:⚠️ {len(not_added)} document(s) were NOT (fully) added to the master workbook"
               + (f" — see {log_path}" if log_path else "") + Style.RESET_ALL)
     return written, master_excel_path, not_added
 

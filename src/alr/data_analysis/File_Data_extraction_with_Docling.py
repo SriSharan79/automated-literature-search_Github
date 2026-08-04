@@ -15,6 +15,7 @@ import time  # <--- Add this line
 import json
 import traceback
 from datetime import datetime
+from datetime import datetime as dt      # Alias avoids conflicts
 from pathlib import Path
 import os
 import pandas as pd
@@ -66,7 +67,7 @@ def get_llm_refined_lists(unique_headings_list,llm_service):
     refined_headings = process_llm_refined_structure(text_refined)
 
 
-    # print(Fore.GREEN + f"\n refined_headings Success: {refined_headings}." + Fore.RESET)
+    # print(Fore.GREEN + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:\n refined_headings Success: {refined_headings}." + Fore.RESET)
 
     # Step 2: Get Body Headings
     prompt_body = f"List of Headings: {refined_headings}"
@@ -75,7 +76,7 @@ def get_llm_refined_lists(unique_headings_list,llm_service):
     body_headings = process_llm_refined_structure(text_body)
 
 
-    # print(Fore.GREEN + f"\n body_headings Success: {body_headings}." + Fore.RESET)
+    # print(Fore.GREEN + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:\n body_headings Success: {body_headings}." + Fore.RESET)
 
     return refined_headings, body_headings
 
@@ -98,9 +99,9 @@ def reference_pipeline_worker(chunks, doc, ref_json_path, excel_log_path, pdf_na
         # 3. Logging
         log_Ref_data_extracted(excel_log_path, ref_json_path, pdf_name, ID)
         
-        # print(Fore.CYAN + f"\n[Background] Reference processing complete for {pdf_name}" + Fore.RESET)
+        # print(Fore.CYAN + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:\n[Background] Reference processing complete for {pdf_name}" + Fore.RESET)
     except Exception as e:
-        print(Fore.RED + f"\n[Background Error] Reference Pipeline failed: {e}" + Fore.RESET)
+        print(Fore.RED + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:\n[Background Error] Reference Pipeline failed: {e}" + Fore.RESET)
         traceback.print_exc()
 
 def _init_excel_data(file_path, ID):
@@ -159,7 +160,7 @@ def _excel_log_has_file(excel_path, pdf_name, filename_col_candidates=None):
 
     except Exception as e:
         # Fail-open: if checking the log fails, don't skip processing
-        print(Fore.YELLOW + f"⚠ Error checking Excel log '{excel_path}': {e}" + Fore.RESET)
+        print(Fore.YELLOW + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:⚠ Error checking Excel log '{excel_path}': {e}" + Fore.RESET)
         traceback.print_exc()
         return False
 
@@ -175,14 +176,14 @@ def _decide_skip_paths(Main_Folder, pdf_name):
     ref_exists = _excel_log_has_file(Main_Folder.refrences_excel_log_path, pdf_name)
 
     if section_exists and ref_exists:
-        print(Fore.WHITE + f"ℹ Info: refrence data '{pdf_name}' already exists . Running ABSTRACT-ONLY flow." + Fore.RESET)
+        print(Fore.WHITE + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:ℹ Info: refrence data '{pdf_name}' already exists . Running ABSTRACT-ONLY flow." + Fore.RESET)
         return True, True, True  # skip_sections, skip_refs, abstract_only
 
     if section_exists:
-        print(Fore.WHITE + f"ℹ Info: text processed data for'{pdf_name}' already exists. Skipping text processing and logging." + Fore.RESET)
+        print(Fore.WHITE + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:ℹ Info: text processed data for'{pdf_name}' already exists. Skipping text processing and logging." + Fore.RESET)
 
     if ref_exists:
-        print(Fore.WHITE + f"ℹ Info: refrence data '{pdf_name}' already exists in  Skipping reference extraction + reference logging." + Fore.RESET)
+        print(Fore.WHITE + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:ℹ Info: refrence data '{pdf_name}' already exists in  Skipping reference extraction + reference logging." + Fore.RESET)
 
     return section_exists, ref_exists, True
 
@@ -216,7 +217,7 @@ def _extract_and_chunk(MF,logger, file_path, start_time, doc_converter=None):
                     
             print(Fore.GREEN + "ℹ Info: Loaded chunks successfully from JSON cache file." + Fore.RESET)
         except Exception as e:
-            print(Fore.YELLOW + f"Failed to parse cache file: {e}" + Fore.RESET)
+            print(Fore.YELLOW + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:Failed to parse cache file: {e}" + Fore.RESET)
             logger.error(f"Failed to parse cache file: {e}", exc_info=True)
             traceback.print_exc()
     
@@ -306,7 +307,7 @@ def _extract_and_chunk(MF,logger, file_path, start_time, doc_converter=None):
                 chunk_dict["meta"]["page_numbers"] = sorted(list(chunk_pages))
                 chunks_data.append(chunk_dict)
 
-            print(Fore.GREEN + f"ℹ Info: Chunking done" + Fore.RESET)
+            print(Fore.GREEN + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:ℹ Info: Chunking done" + Fore.RESET)
             logger.info(f"Chunking process complete. Extracted {len(chunks_data)} chunks.")
             
             # Save structural representations, tables, and images into JSON cache safely
@@ -323,7 +324,7 @@ def _extract_and_chunk(MF,logger, file_path, start_time, doc_converter=None):
             print(Fore.GREEN + "Backend parsing complete. Structure saved to cache.")
             
         except Exception as e:
-            print(Fore.RED + f"Critical Exception during Docling processing: {e}" + Fore.RESET)
+            print(Fore.RED + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:Critical Exception during Docling processing: {e}" + Fore.RESET)
             logger.error(f"Critical Exception during Docling processing: {e}", exc_info=True)
             traceback.print_exc()
 
@@ -368,7 +369,7 @@ def _save_section_outputs(processed_data_for_json, Main_Folder, excel_data, time
         time_taken_4_chunking,
         time_taken_4_section_processing,
     )
-    print(Fore.GREEN + f"✓ Success: {pdf_name} sections logged." + Fore.RESET)
+    print(Fore.GREEN + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:✓ Success: {pdf_name} sections logged." + Fore.RESET)
 
 
 

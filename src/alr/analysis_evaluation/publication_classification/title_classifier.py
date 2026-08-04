@@ -1,5 +1,6 @@
 from alr.common.file_manager import DataAnalyzeManager, Vec_DB_Manager
 from alr.common.llm_utils import llm_call
+from datetime import datetime as dt      # Alias avoids conflicts
 
 from colorama import Fore, Style, init
 import pandas as pd
@@ -110,7 +111,7 @@ The JSON must follow this exact structure, covering all specified dimensions:
 #         # If the oldest request happened less than 60 seconds ago, we must wait
 #         if elapsed_since_oldest < 60:
 #             sleep_time = 60 - elapsed_since_oldest
-#             print(Fore.YELLOW + f"⚠️ Rate limit approaching. Sleeping for {sleep_time:.2f} seconds..." + Style.RESET_ALL)
+#             print(Fore.YELLOW + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:⚠️ Rate limit approaching. Sleeping for {sleep_time:.2f} seconds..." + Style.RESET_ALL)
 #             time.sleep(sleep_time)
             
 #     # Record the current timestamp for this request execution
@@ -123,7 +124,7 @@ The JSON must follow this exact structure, covering all specified dimensions:
 #     model = "15 - Apertus-8B-Instruct-2509 - A new swiss model from September 2025"
 #     print(f"🤖 Using model: {model}")
 
-#     print(Fore.GREEN + f" Prompt : \n {prompt}"+ Style.RESET_ALL)
+#     print(Fore.GREEN + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]: Prompt : \n {prompt}"+ Style.RESET_ALL)
     
 #     messages = [
 #         {'role': 'system', 'content': sys_prompt},
@@ -180,7 +181,7 @@ def classify_title(title, service=None):
                 - {title}
             """
     try:
-        print(Fore.GREEN + f" Prompt : \n {Prompt}"+ Style.RESET_ALL)
+        print(Fore.GREEN + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]: Prompt : \n {Prompt}"+ Style.RESET_ALL)
         response = llm_call(Prompt, system_prompt_sysE, service) if service else llm_call(Prompt, system_prompt_sysE)
         
         print(Fore.CYAN + "\n--- RAW LLM RESPONSE START ---" + Style.RESET_ALL)
@@ -283,7 +284,7 @@ def classify_custom(text, tags, topic="the given taxonomy", service=None, source
                 - {text}
             """
     try:
-        print(Fore.GREEN + f" Prompt : \n {Prompt}" + Style.RESET_ALL)
+        print(Fore.GREEN + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]: Prompt : \n {Prompt}" + Style.RESET_ALL)
         response = llm_call(Prompt, system_prompt, service) if service else llm_call(Prompt, system_prompt)
 
         print(Fore.CYAN + "\n--- RAW LLM RESPONSE START ---" + Style.RESET_ALL)
@@ -314,7 +315,7 @@ def classify_abstract(abstract_text, service=None):
             """
     try:
         
-        print(Fore.GREEN + f" Prompt : \n {Prompt}"+ Style.RESET_ALL)
+        print(Fore.GREEN + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]: Prompt : \n {Prompt}"+ Style.RESET_ALL)
         response = llm_call(Prompt, system_prompt_sysE, service) if service else llm_call(Prompt, system_prompt_sysE)
         
         print(Fore.CYAN + "\n--- RAW LLM RESPONSE START ---" + Style.RESET_ALL)

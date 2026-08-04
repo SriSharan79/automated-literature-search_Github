@@ -11,6 +11,7 @@ from datetime import datetime
 import time
 from itertools import chain, combinations,product
 from alr.common.llm_utils import blabla_ask_llm
+from datetime import datetime as dt      # Alias avoids conflicts
 # langchain_core.prompts.PromptTemplate transitively pulls in transformers/torch,
 # so it is imported lazily inside Phrase_Processing() where it is actually used.
 from alr.collection.collection_system_prompts import SYSTEM_PROMPT_ClASSIFIER,PROMPT_TEMPLATE_ClASSIFIER
@@ -87,7 +88,7 @@ def Classification_of_Phrase(qa_prompt_template, Phrase):
    
 
     except Exception as e:
-        print(Fore.RED + f"An unexpected error occurred during LLM call or pre-parsing: {e}" + Style.RESET_ALL)
+        print(Fore.RED + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:An unexpected error occurred during LLM call or pre-parsing: {e}" + Style.RESET_ALL)
         print(Fore.RED + "Returning empty response due to error." + Style.RESET_ALL)
         
         traceback.print_exc()       

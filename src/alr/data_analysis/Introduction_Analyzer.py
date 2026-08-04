@@ -6,6 +6,7 @@ from alr.common.llm_utils import llm_call
 from alr.data_analysis.section_resolver import resolve_section_text, top_up_missing_attributes
 from alr.common.excel_utils import read_excel_cached, write_excel_cached
 
+from datetime import datetime as dt      # Alias avoids conflicts
 import re
 import json
 import time
@@ -140,7 +141,7 @@ def get_Introduction_text(MF):
                 Introduction_text = ''
 
             if Introduction_text:
-                print(Fore.BLUE + f"\nIdentifid Introductiont Text:{Introduction_text}")
+                print(Fore.BLUE + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:\nIdentifid Introductiont Text:{Introduction_text}")
 
     # Nothing matched by heading or in the first chunks: ask the LLM which
     # headings carry the introduction, then fall back to a chunk window.
@@ -158,7 +159,7 @@ def analyze_Introduction(ID,MF):
     Introduction_text=get_Introduction_text(MF)
 
     if Introduction_text:
-        # print(Fore.YELLOW + f"\n --- Abstarct Sending to LLM ({len(Introduction_text)} chars) ---\n {Introduction_text}" + Style.RESET_ALL)
+        # print(Fore.YELLOW + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:\n --- Abstarct Sending to LLM ({len(Introduction_text)} chars) ---\n {Introduction_text}" + Style.RESET_ALL)
         start_time = time.time()
         User_prompt=f"Introduction text:\n {Introduction_text}"
         llm_service=MF.llm_service
@@ -174,7 +175,7 @@ def analyze_Introduction(ID,MF):
         top_up_missing_attributes(MF, "intro")
 
         print(Fore.MAGENTA + "\nIdentifid Introduction Text:")
-        # print(Fore.LIGHTYELLOW_EX + f"  {Introduction_text}")
+        # print(Fore.LIGHTYELLOW_EX + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:  {Introduction_text}")
         # pretty_print_json_from_file(MF.intro_json_path)
         print_json_file(MF.intro_json_path)
         check_and_log_data(MF.intro_json_path,MF.AD_Intro_log_path,ID,time_taken)

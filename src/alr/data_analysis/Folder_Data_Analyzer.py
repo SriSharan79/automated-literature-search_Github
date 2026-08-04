@@ -4,6 +4,7 @@ import time
 
 import PyPDF2
 from colorama import Fore
+from datetime import datetime as dt      # Alias avoids conflicts
 
 from alr.data_analysis.Abstract_Analyzer import analyze_abstract
 from alr.common.excel_utils import extract_column, get_corresponding_value
@@ -111,9 +112,9 @@ def process_references(MF, progress_callback=None):
                                 item_id,
                                 time_taken_4_ref_processing,
                             )
-                            print(Fore.GREEN + f"✓ Success: {pdf_name} references logged." + Fore.RESET)
+                            print(Fore.GREEN + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:✓ Success: {pdf_name} references logged." + Fore.RESET)
                 except Exception as e:
-                    print(Fore.YELLOW + f"⚠ Error checking reference JSON: {e}" + Fore.RESET)
+                    print(Fore.YELLOW + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:⚠ Error checking reference JSON: {e}" + Fore.RESET)
                     traceback.print_exc()   
 
 

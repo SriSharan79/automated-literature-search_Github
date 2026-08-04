@@ -41,6 +41,7 @@ import os
 import shutil
 import tempfile
 from pathlib import Path
+from datetime import datetime as dt      # Alias avoids conflicts
 
 import pandas as pd
 
@@ -202,7 +203,7 @@ def load_common_db_sources(common_path):
         with open(cfg_path, "r", encoding="utf-8") as f:
             cfg = json.load(f)
     except (OSError, json.JSONDecodeError) as e:
-        print(Fore.RED + f"[Rebuild] Could not read common DB config {cfg_path}: {e}")
+        print(Fore.RED + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:[Rebuild] Could not read common DB config {cfg_path}: {e}")
         return [], None
 
     if not isinstance(cfg, dict):
@@ -316,7 +317,7 @@ def _backup_once(path, suffix=".prerebuild"):
         try:
             shutil.copy2(str(path), str(backup))
         except OSError as e:
-            print(Fore.YELLOW + f"[Rebuild] Could not back up {path.name}: {e}")
+            print(Fore.YELLOW + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:[Rebuild] Could not back up {path.name}: {e}")
 
 
 # --------------------------------------------------------------------------
@@ -405,7 +406,7 @@ def _index_sources(sources, match_filename, should_cancel=None):
             MF = DataAnalyzeManager(src)
             uuids = _load_recorded_abstracts(MF) or []
         except Exception as e:
-            print(Fore.RED + f"[Rebuild] Source unreadable: {src} ({e})")
+            print(Fore.RED + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:[Rebuild] Source unreadable: {src} ({e})")
             continue
 
         added = 0
@@ -464,10 +465,10 @@ def _rebuild_index_from_excel(VDB, key, excel_path, bin_path):
 
     strings = read_content_column(excel_path)
     if not strings:
-        print(Fore.YELLOW + f"[Rebuild] '{key}': no rows to embed; index untouched.")
+        print(Fore.YELLOW + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:[Rebuild] '{key}': no rows to embed; index untouched.")
         return 0
 
-    print(Fore.CYAN + f"[Rebuild] '{key}': embedding {len(strings)} row(s)...")
+    print(Fore.CYAN + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:[Rebuild] '{key}': embedding {len(strings)} row(s)...")
     embeds = vectorize_strings(strings)
     if len(embeds) != len(strings):
         raise RuntimeError(
@@ -480,7 +481,7 @@ def _rebuild_index_from_excel(VDB, key, excel_path, bin_path):
 
     vec_count = getattr(index, "ntotal", len(embeds))
     update_VDB_status(VDB, key, len(strings), vec_count)
-    print(Fore.GREEN + f"[Rebuild] '{key}': index rebuilt "
+    print(Fore.GREEN + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:[Rebuild] '{key}': index rebuilt "
                        f"({len(strings)} rows / {vec_count} vectors).")
     return vec_count
 
@@ -521,7 +522,7 @@ def rebuild_one_section(storage_path, key, plan, match_filename=False,
         rows.extend(_section_rows(uuid, content, title, file_name))
 
     if not rows:
-        print(Fore.YELLOW + f"[Rebuild] '{key}': nothing to write; skipped.")
+        print(Fore.YELLOW + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:[Rebuild] '{key}': nothing to write; skipped.")
         return 0
 
     frame = _rows_to_frame(rows)
@@ -596,7 +597,7 @@ def rebuild_section_databases(storage_path, keys=None, sources=None,
     keys = list(keys) if keys else _all_keys()
     unknown = [k for k in keys if k not in RAG_SOURCE_BY_KEY]
     if unknown:
-        print(Fore.RED + f"[Rebuild] Not rebuildable attribute(s): {', '.join(unknown)}")
+        print(Fore.RED + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:[Rebuild] Not rebuildable attribute(s): {', '.join(unknown)}")
     keys = [k for k in keys if k in RAG_SOURCE_BY_KEY]
     total = len(keys) + len(unknown)
 
@@ -619,7 +620,7 @@ def rebuild_section_databases(storage_path, keys=None, sources=None,
             plan, unresolved = _build_plan(storage_path, sources, match_filename,
                                            should_cancel, source=src_name)
         except CommonRebuildError as e:
-            print(Fore.RED + f"[Rebuild] {e}")
+            print(Fore.RED + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:[Rebuild] {e}")
             return list(keys) + unknown
 
         if unresolved:
@@ -627,7 +628,7 @@ def rebuild_section_databases(storage_path, keys=None, sources=None,
             # attributes only, leaving the common DB ragged. Refuse instead.
             log_path = _log_unresolved(storage_path, f"membership ({src_name})",
                                        unresolved, log_path=run_log)
-            print(Fore.RED + f"[Rebuild] {len(unresolved)} member(s) could not be "
+            print(Fore.RED + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:[Rebuild] {len(unresolved)} member(s) could not be "
                              f"resolved to a source document -- listed in {log_path}. "
                              f"Nothing was rebuilt.")
             return list(keys) + unknown
@@ -649,7 +650,7 @@ def rebuild_section_databases(storage_path, keys=None, sources=None,
         plan = plans.get(_analysis_source_of(key)) or []
         if not plan:
             failures.append(key)
-            print(Fore.YELLOW + f"[Rebuild] '{key}' skipped: this space has no "
+            print(Fore.YELLOW + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:[Rebuild] '{key}' skipped: this space has no "
                                 f"{_analysis_source_of(key)} data recorded.")
             continue
         report(i, f"Rebuilding '{key}' ({i + 1}/{len(keys)})...")
@@ -663,7 +664,7 @@ def rebuild_section_databases(storage_path, keys=None, sources=None,
                 break
         except Exception as e:
             failures.append(key)
-            print(Fore.RED + f"[Rebuild] '{key}' failed: {e}")
+            print(Fore.RED + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:[Rebuild] '{key}' failed: {e}")
 
     report(total, "Done.")
     return failures

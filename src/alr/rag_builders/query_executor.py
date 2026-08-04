@@ -15,6 +15,7 @@ from alr.common.file_handlers import move_matching_pdfs,copy_file,copy_matching_
 from alr.common.excel_utils import aggregate_query_excel_data
 from alr.rag_builders.vector_db_updater import search_similar
 from alr.rag_builders.master_excel_db_builder import _append_skiplog, _skip_row
+from datetime import datetime as dt      # Alias avoids conflicts
 # Initialize colorama (autoreset ensures colors don't bleed into the next line)
 init(autoreset=True)
 

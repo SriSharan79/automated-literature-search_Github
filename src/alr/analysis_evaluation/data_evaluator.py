@@ -14,7 +14,7 @@ from alr.rag_builders.master_excel_db_builder import (
     FLUSH_EVERY, _append_skiplog, _fetch_metadata, _load_abstract_json,
     _load_recorded_abstracts, _skip_row,
 )
-
+from datetime import datetime as dt      # Alias avoids conflicts
 # Documents an evaluation pass could not evaluate. One failure never stops the
 # pass: the document is skipped and recorded here, beside the overview.
 EVAL_SKIPPED_LOG = "Evaluation_not_added.xlsx"
@@ -135,7 +135,7 @@ def _is_duplicate_in_sheet(file_path, sheet_name, target_uuid):
         if df is not None and not df.empty and "UUID" in df.columns:
             return target_uuid in df["UUID"].astype(str).values
     except Exception as e:
-        print(Fore.YELLOW + f"⚠️ Sheet '{sheet_name}' read error: {e}")
+        print(Fore.YELLOW + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:⚠️ Sheet '{sheet_name}' read error: {e}")
     return False
 
 
@@ -172,7 +172,7 @@ def _write_section_sheet_flat(file_path, sheet_name, data_entry):
         _apply_flat_entry(book, sheet_name, data_entry)
         excel_session.release(book, owned)
     except Exception as e:
-        print(Fore.RED + f"❌ Failed to write to section sheet '{sheet_name}': {e}")
+        print(Fore.RED + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:❌ Failed to write to section sheet '{sheet_name}': {e}")
 
 
 def _update_master_overview(storage_dir, sheet_name, uuid, title, filename, text_content, true_count, false_count, full_section_entry, overview_path=None):
@@ -231,7 +231,7 @@ def _update_master_overview(storage_dir, sheet_name, uuid, title, filename, text
         excel_session.release(book, owned)
 
     except Exception as e:
-        print(Fore.RED + f"❌ Failed to update single Master Overview file: {e}")
+        print(Fore.RED + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:❌ Failed to update single Master Overview file: {e}")
 
 
 # =====================================================================
@@ -373,7 +373,7 @@ def _save_list_section(UUID, key, content_list, ex_path, title, file_name, abs_t
         _write_section_sheet_flat(Path(ex_path), key, entry)
         aggregate_bullets = "\n ".join(bullet_lines)
         _update_master_overview(storage_path, key, UUID, title, file_name, aggregate_bullets, true_count, false_count, entry, overview_path=overview_path)
-        print(Fore.GREEN + f"✅ Evaluated flat list '{key}' ({len(content_list)} items) for UUID: {UUID}")
+        print(Fore.GREEN + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:✅ Evaluated flat list '{key}' ({len(content_list)} items) for UUID: {UUID}")
 
     return true_count, false_count
 
@@ -408,7 +408,7 @@ def _save_single_section(UUID, key, content_value, ex_path, title, file_name, ab
         _write_section_sheet_flat(Path(ex_path), key, entry)
         # Save overview text and append sectional layout data onto a unique sheet inside Master_Overview.xlsx
         _update_master_overview(storage_path, key, UUID, title, file_name, content_str, true_count, false_count, entry, overview_path=overview_path)
-        print(Fore.GREEN + f"✅ Evaluated single_section '{key}' for UUID: {UUID}")
+        print(Fore.GREEN + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:✅ Evaluated single_section '{key}' for UUID: {UUID}")
 
     return true_count, false_count
 
@@ -496,7 +496,7 @@ def _load_intro_json(MF, uuid):
         with open(path, "r", encoding="utf-8") as f:
             return _json.load(f)
     except (OSError, _json.JSONDecodeError) as e:
-        print(Fore.YELLOW + f"⚠️ Could not read intro JSON for {uuid}: {e}")
+        print(Fore.YELLOW + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:⚠️ Could not read intro JSON for {uuid}: {e}")
         return None
 
 
@@ -521,7 +521,7 @@ def _load_rescon_json(MF, uuid):
         with open(path, "r", encoding="utf-8") as f:
             return _json.load(f)
     except (OSError, _json.JSONDecodeError) as e:
-        print(Fore.YELLOW + f"⚠️ Could not read Results & Conclusion JSON for {uuid}: {e}")
+        print(Fore.YELLOW + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:⚠️ Could not read Results & Conclusion JSON for {uuid}: {e}")
         return None
 
 
@@ -576,7 +576,7 @@ def evaluate_document(storage_path, uuid, db_path=None, push_sql=True, mode="gen
     if mode == "copy":
         prior = _existing_evaluation(uuid, db_path, target=target)
         if prior is not None:
-            print(Fore.YELLOW + f"⏭️ Reusing existing {target} evaluation for {uuid} (copy mode).")
+            print(Fore.YELLOW + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:⏭️ Reusing existing {target} evaluation for {uuid} (copy mode).")
             return prior
 
     MF = storage_path if isinstance(storage_path, DataAnalyzeManager) else DataAnalyzeManager(storage_path)
@@ -617,7 +617,7 @@ def evaluate_document(storage_path, uuid, db_path=None, push_sql=True, mode="gen
         try:
             _push_eval_to_sql(uuid, stats, db_path, target=target)
         except Exception as e:
-            print(Fore.YELLOW + f"⚠️ Could not push {target} evaluation to SQL for {uuid}: {e}")
+            print(Fore.YELLOW + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:⚠️ Could not push {target} evaluation to SQL for {uuid}: {e}")
     return stats
 
 
@@ -693,7 +693,7 @@ def evaluate_space(storage_path, db_path=None, progress_callback=None, should_ca
                                   target=target, per_metric=metric_book)
                 count += 1
             except Exception as e:
-                print(Fore.YELLOW + f"⚠️ {target.title()} evaluation failed for {uuid}: {e} "
+                print(Fore.YELLOW + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:⚠️ {target.title()} evaluation failed for {uuid}: {e} "
                                     f"— skipped, continuing with the next document.")
                 not_added.append(_skip_row(f"evaluate-{target}", e, uuid=uuid))
             # Checkpoint so a crash or a cancel keeps the work done so far.
@@ -706,16 +706,16 @@ def evaluate_space(storage_path, db_path=None, progress_callback=None, should_ca
                     try:
                         book.flush()
                     except Exception as e:  # noqa: BLE001 - never stop the pass on a checkpoint
-                        print(Fore.RED + f"❌ Could not checkpoint {book.path}: {e}")
+                        print(Fore.RED + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:❌ Could not checkpoint {book.path}: {e}")
                 metric_book.flush()
             if progress_callback:
                 progress_callback(i, total)
 
-    print(Fore.GREEN + f"✅ Evaluated {count} document(s) ({target}); results synced to SQL.")
+    print(Fore.GREEN + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:✅ Evaluated {count} document(s) ({target}); results synced to SQL.")
     if not_added:
         log_path = _append_skiplog(Path(overview_path).parent / EVAL_SKIPPED_LOG, not_added)
         print(Fore.YELLOW + Style.BRIGHT
-              + f"⚠️ {len(not_added)} document(s) were NOT evaluated"
+              + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:⚠️ {len(not_added)} document(s) were NOT evaluated"
               + (f" — see {log_path}" if log_path else "") + Style.RESET_ALL)
     return count
 

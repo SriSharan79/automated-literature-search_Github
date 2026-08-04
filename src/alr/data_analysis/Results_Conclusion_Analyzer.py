@@ -5,6 +5,7 @@ from alr.common.json_utils import get_key_from_file, store_to_json_with_text, pr
 from alr.common.llm_utils import llm_call
 from alr.data_analysis.section_resolver import resolve_section_text, top_up_missing_attributes
 from alr.common.excel_utils import read_excel_cached, write_excel_cached
+from datetime import datetime as dt      # Alias avoids conflicts
 
 import re
 import json
@@ -209,7 +210,7 @@ def get_results_conclusion_text(MF):
         rescon_text = llm_call(User_prompt, Results_Conclusion_identification_SP, llm_service)
 
         if rescon_text and 'ERROR_NO_RESULTS_CONCLUSION_FOUND' not in str(rescon_text):
-            print(Fore.BLUE + f"\nIdentified Results & Conclusion Text:{rescon_text}")
+            print(Fore.BLUE + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:\nIdentified Results & Conclusion Text:{rescon_text}")
             analyzed_sections = ["LLM identified content"]
             return rescon_text, analyzed_sections
 
@@ -242,7 +243,7 @@ def analyze_results_conclusion(ID, MF):
     rescon_text, analyzed_sections = get_results_conclusion_text(MF)
 
     if rescon_text:
-        print(Fore.CYAN + f"\nSections analyzed for Results & Conclusion: {', '.join(analyzed_sections)}" + Style.RESET_ALL)
+        print(Fore.CYAN + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:\nSections analyzed for Results & Conclusion: {', '.join(analyzed_sections)}" + Style.RESET_ALL)
         start_time = time.time()
         User_prompt = f"Results and Conclusion text:\n {rescon_text}"
         llm_service = MF.llm_service

@@ -16,6 +16,7 @@ import json
 import pandas as pd
 from datetime import datetime
 import traceback
+from datetime import datetime as dt      # Alias avoids conflicts
 
 
 def check_and_log_data(json_file_path, excel_file_path, ID, time_taken):
@@ -144,7 +145,7 @@ def get_abstract_text(MF):
                 abstract_text = ''
 
             if abstract_text:
-                print(Fore.BLUE + f"\nIdentifid Abstract Text:{abstract_text}")
+                print(Fore.BLUE + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:\nIdentifid Abstract Text:{abstract_text}")
 
     # Nothing matched by heading or by the first chunks: ask the LLM which
     # headings carry the abstract, then fall back to a positional chunk window.
@@ -162,7 +163,7 @@ def analyze_abstract(ID,MF):
     abstract_text=get_abstract_text(MF)
 
     if abstract_text:
-        # print(Fore.YELLOW + f"\n --- Abstarct Sending to LLM ({len(abstract_text)} chars) ---\n {abstract_text}" + Style.RESET_ALL)
+        # print(Fore.YELLOW + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:\n --- Abstarct Sending to LLM ({len(abstract_text)} chars) ---\n {abstract_text}" + Style.RESET_ALL)
         start_time = time.time()
         User_prompt=f"Abstract text:\n {abstract_text}"
         llm_service=MF.llm_service
@@ -178,7 +179,7 @@ def analyze_abstract(ID,MF):
         top_up_missing_attributes(MF, "abstract")
 
         print(Fore.MAGENTA + "\nIdentifid Abstract Text:")
-        print(Fore.LIGHTYELLOW_EX + f"  {abstract_text}")
+        print(Fore.LIGHTYELLOW_EX + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:  {abstract_text}")
         pretty_print_json_from_file(MF.abstract_json_path)
         check_and_log_data(MF.abstract_json_path,MF.AD_Abstract_log_path,ID,time_taken)
         return 'P'

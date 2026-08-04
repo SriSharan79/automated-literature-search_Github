@@ -5,6 +5,7 @@ import sys
 
 from colorama import Fore, Style
 from alr.common.llm_utils import llm_call
+from datetime import datetime as dt      # Alias avoids conflicts
 
 from alr.data_analysis.Data_analysis_system_prompts import Sys_Prompt_Title_Analyzer
 from PyPDF2 import PdfReader

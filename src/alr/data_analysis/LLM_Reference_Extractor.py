@@ -8,6 +8,7 @@ from alr.common.file_manager import DataAnalyzeManager
 from alr.data_analysis.Refrences_log_utils import log_Ref_data_extracted, save_references_to_json
 import re
 from colorama import Fore,Style
+from datetime import datetime as dt      # Alias avoids conflicts
 
 from pathlib import Path
 import os
@@ -46,7 +47,7 @@ def validate_input_data(chunks_list, output_path):
     if len(chunks_list) == 0:
         print(Fore.RED + "!!! DIAGNOSTIC: 'chunks' is EMPTY." + Style.RESET_ALL)
     else:
-        print(Fore.GREEN + f"--- DIAGNOSTIC: 'chunks' VALID ({len(chunks_list)} blocks). ---" + Style.RESET_ALL)
+        print(Fore.GREEN + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:--- DIAGNOSTIC: 'chunks' VALID ({len(chunks_list)} blocks). ---" + Style.RESET_ALL)
 
     if len(chunks_list) == 0:
         os.makedirs(os.path.dirname(output_path), exist_ok=True)
@@ -113,7 +114,7 @@ def get_smart_split_index(text, preferred_delim="\n-", fallback_delim="\n"):
     split_idx = text.find(fallback_delim, search_start, search_end)
 
     if split_idx != -1:
-        # print(Fore.CYAN + f"DEBUG: '{preferred_delim}' not viable. Splitting at fallback '{fallback_delim}'." + Style.RESET_ALL)
+        # print(Fore.CYAN + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:DEBUG: '{preferred_delim}' not viable. Splitting at fallback '{fallback_delim}'." + Style.RESET_ALL)
         return _clamp_valid(split_idx)
 
     # --- CASE 3: No delimiters found at all, force a midpoint split ---
@@ -123,12 +124,12 @@ def get_smart_split_index(text, preferred_delim="\n-", fallback_delim="\n"):
 
 def perform_core_llm_extraction(raw_text, output_path,llm_service):
     """Base Case: Standard LLM Logic for text <= 800 chars."""
-    # print(Fore.YELLOW + f"\n --- Sending to Pre-Check LLM ({len(raw_text)} chars) ---\n {raw_text}" + Style.RESET_ALL)
+    # print(Fore.YELLOW + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:\n --- Sending to Pre-Check LLM ({len(raw_text)} chars) ---\n {raw_text}" + Style.RESET_ALL)
 
     pre_check = llm_call(f"Raw text:\n {raw_text}", PRE_CHECK_SYSTEM_PROMPT,llm_service)
 
     if "None" in str(pre_check):
-        # print(Fore.RED + f"DEBUG: LLM Pre-check REJECTED. Response: {pre_check}" + Style.RESET_ALL)
+        # print(Fore.RED + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:DEBUG: LLM Pre-check REJECTED. Response: {pre_check}" + Style.RESET_ALL)
         return False
 
     # print(Fore.GREEN + "DEBUG: LLM Pre-check PASSED. Proceeding to extraction..." + Style.RESET_ALL)
@@ -136,7 +137,7 @@ def perform_core_llm_extraction(raw_text, output_path,llm_service):
 
     if res_data and "None" not in str(res_data):
         save_references_to_json(res_data, output_path)
-        print(Fore.GREEN + f"SUCCESS: References saved to {output_path}" + Style.RESET_ALL)
+        print(Fore.GREEN + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:SUCCESS: References saved to {output_path}" + Style.RESET_ALL)
         return True
 
     print(Fore.RED + "DEBUG: Final Extraction LLM returned None or Empty." + Style.RESET_ALL)
@@ -152,7 +153,7 @@ def handle_llm_extraction(raw_text, output_path,llm_service):
 
         # SAFETY: absolutely guarantee a valid, non-boundary split
         if split_idx <= 0 or split_idx >= len(raw_text):
-            # print(Fore.RED + f"DEBUG: Invalid split_idx={split_idx}. Forcing safe midpoint split." + Style.RESET_ALL)
+            # print(Fore.RED + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:DEBUG: Invalid split_idx={split_idx}. Forcing safe midpoint split." + Style.RESET_ALL)
             split_idx = len(raw_text) // 2
             if split_idx <= 0:
                 split_idx = 1
@@ -164,7 +165,7 @@ def handle_llm_extraction(raw_text, output_path,llm_service):
 
         # Extra safety (should never trigger now, but keeps recursion safe)
         if not part1 or not part2:
-            # print(Fore.RED + f"DEBUG: Empty split detected (part1={len(part1)}, part2={len(part2)}). Forcing safe midpoint split." + Style.RESET_ALL)
+            # print(Fore.RED + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:DEBUG: Empty split detected (part1={len(part1)}, part2={len(part2)}). Forcing safe midpoint split." + Style.RESET_ALL)
             split_idx = len(raw_text) // 2
             if split_idx <= 0:
                 split_idx = 1
@@ -173,7 +174,7 @@ def handle_llm_extraction(raw_text, output_path,llm_service):
             part1 = raw_text[:split_idx]
             part2 = raw_text[split_idx:]
 
-        # print(Fore.BLUE + f"DEBUG: Split into Part 1 ({len(part1)} chars) and Part 2 ({len(part2)} chars)." + Style.RESET_ALL)
+        # print(Fore.BLUE + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:DEBUG: Split into Part 1 ({len(part1)} chars) and Part 2 ({len(part2)} chars)." + Style.RESET_ALL)
 
         # Recursively process both parts
         res1 = handle_llm_extraction(part1, output_path,llm_service)
@@ -194,15 +195,15 @@ def process_references_from_chunks(chunks, output_path,llm_service):
 
     trailing_storage = ""
     references_extracted = False
-    print(Fore.CYAN + f"DEBUG: Starting processing for {len(chunks_list)} chunks..." + Style.RESET_ALL)
+    print(Fore.CYAN + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:DEBUG: Starting processing for {len(chunks_list)} chunks..." + Style.RESET_ALL)
 
     for i, chunk in enumerate(chunks_list):
         heading = extract_chunk_heading(chunk).strip()
         if heading:
-            print(Fore.MAGENTA + f"DEBUG: Chunk {i} Heading found: '{heading}'" + Style.RESET_ALL)
+            print(Fore.MAGENTA + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:DEBUG: Chunk {i} Heading found: '{heading}'" + Style.RESET_ALL)
 
         if is_reference_heading(heading):
-            print(Fore.CYAN + f"MATCH: Found Reference Heading: {heading}" + Style.RESET_ALL)
+            print(Fore.CYAN + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:MATCH: Found Reference Heading: {heading}" + Style.RESET_ALL)
             
             raw_text = chunk.text
             if trailing_storage:
@@ -212,7 +213,7 @@ def process_references_from_chunks(chunks, output_path,llm_service):
 
             # Logic for fragmented chunks
             if has_dash_in_last_n(raw_text) or len(raw_text) <= 200:
-                print(Fore.YELLOW + f"DEBUG: Skipping chunk {i} (Length: {len(raw_text)}) - storing." + Style.RESET_ALL)
+                print(Fore.YELLOW + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:DEBUG: Skipping chunk {i} (Length: {len(raw_text)}) - storing." + Style.RESET_ALL)
                 dash_idx = raw_text.rfind('-')
                 trailing_storage = raw_text[:dash_idx] if dash_idx != -1 else raw_text
                 continue
@@ -239,7 +240,7 @@ def process_references_from_chunks_from_Sec_JSON(chunks, output_path,llm_service
 
     trailing_storage = ""
     references_extracted = False
-    print(Fore.CYAN + f"DEBUG: Starting processing for {len(chunks_list)} chunks..." + Style.RESET_ALL)
+    print(Fore.CYAN + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:DEBUG: Starting processing for {len(chunks_list)} chunks..." + Style.RESET_ALL)
 
     for i, chunk in enumerate(chunks_list):
         raw_text = chunk
@@ -250,7 +251,7 @@ def process_references_from_chunks_from_Sec_JSON(chunks, output_path,llm_service
 
         # Logic for fragmented chunks
         if has_dash_in_last_n(raw_text) or len(raw_text) <= 200:
-            print(Fore.YELLOW + f"DEBUG: Skipping chunk {i} (Length: {len(raw_text)}) - storing." + Style.RESET_ALL)
+            print(Fore.YELLOW + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:DEBUG: Skipping chunk {i} (Length: {len(raw_text)}) - storing." + Style.RESET_ALL)
             dash_idx = raw_text.rfind('-')
             trailing_storage = raw_text[:dash_idx] if dash_idx != -1 else raw_text
             continue
@@ -288,7 +289,7 @@ def docling_process_references_file(file_path, ID, Main_Folder):
         log_Ref_data_extracted(Main_Folder.refrences_excel_log_path, Main_Folder.ref_json_path, pdf_name, ID,time="test time")
 
     except Exception as e:
-        print(Fore.RED + f"Process Error: {e}" + Style.RESET_ALL)
+        print(Fore.RED + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:Process Error: {e}" + Style.RESET_ALL)
         import traceback
         traceback.print_exc()
 

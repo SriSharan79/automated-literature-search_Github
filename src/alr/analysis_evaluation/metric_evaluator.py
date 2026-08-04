@@ -46,6 +46,7 @@ import re
 from pathlib import Path
 
 from colorama import Fore
+from datetime import datetime as dt      # Alias avoids conflicts
 
 from alr.common.file_handlers import safe_path
 from alr.common.file_manager import DataAnalyzeManager, Vec_DB_Manager
@@ -118,7 +119,7 @@ def _ensure_punkt() -> bool:
                 word_tokenize("probe sentence")
                 _punkt_ready = True
             except Exception as e:
-                print(Fore.YELLOW + f"⚠️ BLEU disabled (nltk punkt unavailable): {e}")
+                print(Fore.YELLOW + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:⚠️ BLEU disabled (nltk punkt unavailable): {e}")
                 _punkt_ready = False
     return _punkt_ready
 
@@ -131,19 +132,19 @@ def _lexical_metrics(reference, candidate) -> dict:
     try:
         out["jaccard"] = round(lom.calculate_jaccard_similarity(reference, candidate), 4)
     except Exception as e:
-        print(Fore.YELLOW + f"⚠️ Jaccard failed: {e}")
+        print(Fore.YELLOW + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:⚠️ Jaccard failed: {e}")
     try:
         rouge = lom.calculate_rouge_scores(reference, candidate)
         out["rouge1"] = round(rouge.get("ROUGE-1", 0.0), 4)
         out["rouge2"] = round(rouge.get("ROUGE-2", 0.0), 4)
         out["rougeL"] = round(rouge.get("ROUGE-L", 0.0), 4)
     except Exception as e:
-        print(Fore.YELLOW + f"⚠️ ROUGE failed: {e}")
+        print(Fore.YELLOW + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:⚠️ ROUGE failed: {e}")
     if _ensure_punkt():
         try:
             out["bleu"] = round(lom.calculate_bleu_score(reference, candidate), 4)
         except Exception as e:
-            print(Fore.YELLOW + f"⚠️ BLEU failed: {e}")
+            print(Fore.YELLOW + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:⚠️ BLEU failed: {e}")
     return out
 
 
@@ -157,7 +158,7 @@ def _distance_metrics(reference, candidate) -> dict:
         out["similarity_ratio"] = round(res["character_level"]["similarity_ratio"], 4)
         out["word_error_rate"] = round(res["word_level"]["word_error_rate"], 4)
     except Exception as e:
-        print(Fore.YELLOW + f"⚠️ Distance metrics failed: {e}")
+        print(Fore.YELLOW + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:⚠️ Distance metrics failed: {e}")
     return out
 
 
@@ -253,7 +254,7 @@ class _CosineContext:
                     index = load_index_file(bin_path)
                     if index is None:
                         # Vector DB missing -> create it from the text DB, then use it.
-                        print(Fore.CYAN + f"🆕 Building vector index for '{section_key}'…")
+                        print(Fore.CYAN + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:🆕 Building vector index for '{section_key}'…")
                         embeds = vectorize_strings([str(c) for c in contents])
                         index = create_faiss_index_cosine(embeds)
                         save_index_file(index, bin_path)
@@ -263,14 +264,14 @@ class _CosineContext:
                             # Never rebuild/overwrite the foreign index here -
                             # the RAG query side may still depend on it.
                             print(Fore.YELLOW
-                                  + f"⚠️ '{section_key}': {conflict}; embedding items "
+                                  + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:⚠️ '{section_key}': {conflict}; embedding items "
                                   + "directly with the current backend instead of "
                                   + "reusing the index." )
                             index = None
                     if index is not None and getattr(index, "ntotal", 0):
                         result = (index, [str(c) for c in contents])
             except Exception as e:
-                print(Fore.YELLOW + f"⚠️ Vector index unavailable for '{section_key}': {e}")
+                print(Fore.YELLOW + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:⚠️ Vector index unavailable for '{section_key}': {e}")
         self._cache[section_key] = result
         return result
 
@@ -295,7 +296,7 @@ class _CosineContext:
             item_vec = self.item_vector(section_key, item_text)
             return [round(float(v), 4) for v in np.dot(sent_mat, item_vec)]
         except Exception as e:
-            print(Fore.YELLOW + f"⚠️ Cosine failed for '{section_key}': {e}")
+            print(Fore.YELLOW + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:⚠️ Cosine failed for '{section_key}': {e}")
             return [None] * len(sent_mat)
 
 
@@ -414,7 +415,7 @@ def _write_section_rows(file_path, sheet_name, uuid, rows) -> None:
             for s in sheet_order:
                 all_sheets[s].to_excel(writer, sheet_name=s, index=False)
     except Exception as e:
-        print(Fore.RED + f"❌ Failed to write section rows to '{sheet_name}': {e}")
+        print(Fore.RED + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:❌ Failed to write section rows to '{sheet_name}': {e}")
 
 
 def _sentence_detail_path(details_dir, uuid, sql_label, max_length=250):
@@ -454,7 +455,7 @@ def _write_sentence_detail_json(details_dir, uuid, sql_label, payload) -> None:
         with open(path, "w", encoding="utf-8") as f:
             json.dump(payload, f, ensure_ascii=False, indent=2)
     except Exception as e:
-        print(Fore.YELLOW + f"⚠️ Could not write sentence-metric details for {uuid}: {e}")
+        print(Fore.YELLOW + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:⚠️ Could not write sentence-metric details for {uuid}: {e}")
 
 
 def _push_metrics_to_sql(uuid, averages, sql_label, db_path=None) -> bool:
@@ -682,7 +683,7 @@ def _reuse_prior_metrics(cfg, kinds, uuid, db_path=None, per_metric=None) -> boo
     try:
         _push_metrics_to_sql(uuid, {**averages, **extras}, cfg["sql_label"], db_path)
     except Exception as e:
-        print(Fore.YELLOW + f"⚠️ Could not push reused metrics to SQL for {uuid}: {e}")
+        print(Fore.YELLOW + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:⚠️ Could not push reused metrics to SQL for {uuid}: {e}")
     return True
 
 
@@ -799,7 +800,7 @@ def evaluate_space_metrics(storage_path, kinds, target="abstract", db_path=None,
                 # one-row-per-item format instead of being recomputed.
                 if _reuse_prior_metrics(cfg, kinds, uuid, db_path,
                                         per_metric=metric_book):
-                    print(Fore.YELLOW + f"⏭️ Reused previous {target} metrics for {uuid} "
+                    print(Fore.YELLOW + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:⏭️ Reused previous {target} metrics for {uuid} "
                                         "(copy mode, kept in the new per-item format).")
                     count += 1
                     if progress_callback:
@@ -809,7 +810,7 @@ def evaluate_space_metrics(storage_path, kinds, target="abstract", db_path=None,
                 # column -> keep the old skip behaviour (nothing to convert).
                 prior = _existing_metrics(uuid, metric_cols, cfg["sql_label"], db_path)
                 if prior is not None:
-                    print(Fore.YELLOW + f"⏭️ Reusing existing {target} metrics for {uuid} (copy mode).")
+                    print(Fore.YELLOW + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:⏭️ Reusing existing {target} metrics for {uuid} (copy mode).")
                     count += 1
                     if progress_callback:
                         progress_callback(i, total)
@@ -819,12 +820,12 @@ def evaluate_space_metrics(storage_path, kinds, target="abstract", db_path=None,
             title, file_name = _fetch_metadata(MF, uuid)
             json_data = cfg["loader"](MF, uuid)
             if not json_data:
-                print(Fore.YELLOW + f"⏭️ No {target} analysis JSON for {uuid}; "
+                print(Fore.YELLOW + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:⏭️ No {target} analysis JSON for {uuid}; "
                       "no metric detail written (run the analysis for this target first).")
                 continue
             reference = str(json_data.get(cfg["text_key"], "") or "")
             if not reference.strip():
-                print(Fore.YELLOW + f"⏭️ Empty reference text ('{cfg['text_key']}') for {uuid}; "
+                print(Fore.YELLOW + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:⏭️ Empty reference text ('{cfg['text_key']}') for {uuid}; "
                       f"skipping {target} metrics (no JSON written).")
                 continue
 
@@ -842,7 +843,7 @@ def evaluate_space_metrics(storage_path, kinds, target="abstract", db_path=None,
                     # the SAME backend, so one label covers the document.
                     cosine_model = cosine_ctx.current_model()
                 except Exception as e:
-                    print(Fore.YELLOW + f"⚠️ Reference sentence embedding failed for {uuid}: {e}")
+                    print(Fore.YELLOW + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:⚠️ Reference sentence embedding failed for {uuid}: {e}")
 
             # Per-metric running sums of the BEST values, for the
             # document-level averages.
@@ -932,13 +933,13 @@ def evaluate_space_metrics(storage_path, kinds, target="abstract", db_path=None,
             try:
                 _push_metrics_to_sql(uuid, {**averages, **extras}, cfg["sql_label"], db_path)
             except Exception as e:
-                print(Fore.YELLOW + f"⚠️ Could not push metrics to SQL for {uuid}: {e}")
+                print(Fore.YELLOW + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:⚠️ Could not push metrics to SQL for {uuid}: {e}")
 
             count += 1
-            print(Fore.GREEN + f"✅ Metrics ({', '.join(sorted(kinds))}) recorded for {uuid} ({target}).")
+            print(Fore.GREEN + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:✅ Metrics ({', '.join(sorted(kinds))}) recorded for {uuid} ({target}).")
         except Exception as e:
             import traceback
-            print(Fore.YELLOW + f"⚠️ Metric evaluation failed for {uuid}: {e}")
+            print(Fore.YELLOW + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:⚠️ Metric evaluation failed for {uuid}: {e}")
             traceback.print_exc()
         # Checkpoint the per-metric buffer between documents, so a crash or a
         # cancel keeps every document already fanned out — time-spaced, since a
@@ -949,8 +950,8 @@ def evaluate_space_metrics(storage_path, kinds, target="abstract", db_path=None,
             progress_callback(i, total)
 
     written = [str(cfg["workbooks"][k]) for k in sorted(kinds)] + [str(cfg["workbooks"]["overview"])]
-    print(Fore.GREEN + f"✅ Metric evaluation finished: {count} document(s) ({target}).")
+    print(Fore.GREEN + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:✅ Metric evaluation finished: {count} document(s) ({target}).")
     for path in written:
-        print(Fore.GREEN + f"   📄 {path}")
+        print(Fore.GREEN + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:   📄 {path}")
     metric_book.close()
     return count
