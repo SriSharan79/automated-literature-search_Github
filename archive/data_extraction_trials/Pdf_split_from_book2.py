@@ -1,7 +1,6 @@
 
-from COMMON.File_Manager import DataAnalyzeManager, Vec_DB_Manager
-from LLM_Config import BLABLADOR_BASE_URL, check_api_key
-from COMMON.Excel_Utils import*
+from alr.common.LLM_Config import BLABLADOR_BASE_URL, check_api_key
+from alr.common.excel_utils import*
 from PyPDF2 import PdfReader
 from docling.document_converter import DocumentConverter
 import pdfplumber
@@ -34,7 +33,6 @@ import os
 import unicodedata
 from collections import Counter
 import xml.etree.ElementTree as ET
-from COMMON.Excel_Utils import extract_column
 
 
 system_prompt = """
