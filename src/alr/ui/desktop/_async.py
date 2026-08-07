@@ -25,6 +25,7 @@ import tkinter as tk
 from tkinter import ttk, messagebox
 
 from alr.common import crash_logger
+from datetime import datetime as dt 
 
 
 class ProgressDialog:
@@ -243,7 +244,7 @@ def run_threaded(host, work, title, result_word="processed", on_success=None,
                 from alr.common.artifact_cleanup import prune_touched_folders
                 prune_touched_folders()
             except Exception as e:  # noqa: BLE001 - cleanup must never fail a pass
-                print(f"[Cleanup] Skipped/failed: {e}")
+                print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:[Cleanup] Skipped/failed: {e}")
 
         if not failed:
             q.put(("done", result))
@@ -290,7 +291,7 @@ def run_threaded(host, work, title, result_word="processed", on_success=None,
                     try:
                         holder["result"] = handler(host)
                     except Exception as e:  # noqa: BLE001 - never strand the worker
-                        print(f"[Dialog] {e}")
+                        print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:[Dialog] {e}")
                         holder["result"] = None
                     finally:
                         done.set()

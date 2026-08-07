@@ -8,6 +8,7 @@ from typing import List,Dict,Any, Optional
 from colorama import Fore, Style, init
 import pandas as pd
 from datetime import datetime
+from datetime import datetime as dt
 import time
 from itertools import chain, combinations,product
 from alr.common.llm_utils import blabla_ask_llm
@@ -128,15 +129,15 @@ def Classify_excel_data(
         df = pd.read_excel(file_path)
 
     except FileNotFoundError:
-        print(f"Error: File not found at path: {file_path}")
+        print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:Error: File not found at path: {file_path}")
         return None
     except Exception as e:
-        print(f"An error occurred while reading the Excel file: {e}")
+        print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:An error occurred while reading the Excel file: {e}")
         traceback.print_exc()       
         return None
 
     if column_name not in df.columns:
-        print(f"Error: Column '{column_name}' not found in the Excel file.")
+        print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:Error: Column '{column_name}' not found in the Excel file.")
         return None
 
     # 2. Define the function to find and list keywords in a single cell's text
@@ -166,7 +167,7 @@ def Classify_excel_data(
     output_file_path = file_path.replace(".xlsx", "_Classified.xlsx")
     df.to_excel(output_file_path, index=False)
     
-    print(f"\n✅ Success! New file saved to: {output_file_path}")
-    print(f"Column '{output_column_name}' has been added next to '{column_name}'.")
+    print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:\n✅ Success! New file saved to: {output_file_path}")
+    print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:Column '{output_column_name}' has been added next to '{column_name}'.")
     
     return df

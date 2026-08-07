@@ -3,6 +3,7 @@ import hashlib
 import os
 import shutil
 from pathlib import Path
+from datetime import datetime as dt 
 from colorama import Fore, Style, init
 
 # Initialize colorama
@@ -22,7 +23,7 @@ def move_matching_pdfs(filenames_to_find, search_root, destination_folder):
     # Ensure filenames end with .pdf for the search if they don't already
     target_files = {f if f.lower().endswith('.pdf') else f"{f}.pdf" for f in filenames_to_find}
 
-    print(f"Searching recursively for {len(target_files)} unique PDF files...")
+    print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:Searching recursively for {len(target_files)} unique PDF files...")
 
     # rglob("*") searches recursively
     for file_path in search_root.rglob("*.pdf"):
@@ -35,11 +36,11 @@ def move_matching_pdfs(filenames_to_find, search_root, destination_folder):
                 # Move the file to the destination folder
                 shutil.move(str(file_path), str(destination_folder / file_path.name))
                 moved_count += 1
-                print(f"Moved: {file_path.name}")
+                print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:Moved: {file_path.name}")
             except Exception as e:
-                print(f"Error moving {file_path.name}: {e}")
+                print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:Error moving {file_path.name}: {e}")
 
-    print(f"PDF relocation complete. Total moved: {moved_count}")
+    print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:PDF relocation complete. Total moved: {moved_count}")
 
 
 # def copy_file(source_path, destination_folder):
@@ -49,9 +50,9 @@ def move_matching_pdfs(filenames_to_find, search_root, destination_folder):
 #     try:
 #         # Use copy2 to preserve metadata (timestamps, etc.)
 #         new_path = shutil.copy2(source_path, destination_folder)
-#         print(f"File copied successfully to: {new_path}")
+#         print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:File copied successfully to: {new_path}")
 #     except Exception as e:
-#         print(f"Error copying file: {e}")
+#         print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:Error copying file: {e}")
 
 
 def safe_path(file_path, max_length=250):
@@ -88,7 +89,7 @@ def safe_path(file_path, max_length=250):
         keep = allowed - 1 - len(digest)      # room for "_" + hash
         name = f"{stem[:keep]}_{digest}"
     new_path = directory / f"{name}{ext}"
-    print(f"{Fore.YELLOW}Path too long ({len(str(path_obj))} chars) — writing to: {new_path}")
+    print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:{Fore.YELLOW}Path too long ({len(str(path_obj))} chars) — writing to: {new_path}")
     return new_path
 
 
@@ -142,7 +143,7 @@ def copy_file(src, dest_dir):
     try:
         shutil.copy2(str(src), str(dest_dir))
     except Exception as e:
-        print(f"Failed to copy {src}: {e}")
+        print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:Failed to copy {src}: {e}")
 
 
 

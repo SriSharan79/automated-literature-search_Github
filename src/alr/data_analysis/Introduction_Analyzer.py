@@ -70,7 +70,7 @@ def check_and_log_data(json_file_path, excel_file_path, ID, time_taken):
         if not os.path.exists(excel_file_path):
             df = pd.DataFrame([row_data])
             write_excel_cached(df, excel_file_path)
-            # print(f"Data successfully logged to {excel_file_path}")
+            # print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:Data successfully logged to {excel_file_path}")
             return
 
         # Load existing data
@@ -109,15 +109,15 @@ def check_and_log_data(json_file_path, excel_file_path, ID, time_taken):
 
         # Save back to excel
         write_excel_cached(df, excel_file_path)
-        print(f"Data successfully logged to {excel_file_path}")
+        print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:Data successfully logged to {excel_file_path}")
 
     except json.JSONDecodeError as e:
-        print(f"Invalid JSON input: {e}")
+        print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:Invalid JSON input: {e}")
     except FileNotFoundError:
-        print(f"File not found: {json_file_path}")
+        print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:File not found: {json_file_path}")
         traceback.print_exc()
     except Exception as e:
-        print(f"An error occurred: {e}")
+        print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:An error occurred: {e}")
         traceback.print_exc()
 
 

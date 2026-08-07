@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import re
 from datetime import datetime
+from datetime import datetime as dt 
 from pathlib import Path
 
 import pandas as pd
@@ -66,7 +67,7 @@ def _load_scan_log(scan_log_path):
                         continue
                     scanned[str(fname)] = r.to_dict()
         except Exception as e:
-            print(f"⚠️ Could not read dedup scan log ({e}); rescanning all files.")
+            print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:⚠️ Could not read dedup scan log ({e}); rescanning all files.")
     return scanned
 
 
@@ -79,9 +80,9 @@ def _save_scan_log(scan_log_path, scanned_map, new_rows):
         merged[str(row["filename"])] = row
     try:
         pd.DataFrame(list(merged.values())).to_excel(scan_log_path, index=False)
-        print(f"🧾 Dedup scan log updated: {len(new_rows)} new entr(ies); {len(merged)} tracked in total.")
+        print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:🧾 Dedup scan log updated: {len(new_rows)} new entr(ies); {len(merged)} tracked in total.")
     except Exception as e:
-        print(f"⚠️ Could not write dedup scan log: {e}")
+        print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:⚠️ Could not write dedup scan log: {e}")
 
 
 def _components_complete(status_map, components) -> bool:
@@ -160,7 +161,7 @@ def find_new_and_duplicate_pdfs(
                     known_titles[_normalize_title(title)] = str(title)
                     title_status[_normalize_title(title)] = status
         except Exception as e:
-            print(f"⚠️ Could not read registry for dedup ({e}); treating all files as new.")
+            print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:⚠️ Could not read registry for dedup ({e}); treating all files as new.")
 
     def _resolve_prior_duplicate(prior):
         """
@@ -229,7 +230,7 @@ def find_new_and_duplicate_pdfs(
                 reasons["already analyzed (same filename)"] += 1
             else:
                 to_process.append(pdf)
-                print(f"↻ Re-processing {pdf.name}: adding missing requested component(s).")
+                print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:↻ Re-processing {pdf.name}: adding missing requested component(s).")
             if progress_callback:
                 progress_callback(i, total)
             continue
@@ -249,10 +250,10 @@ def find_new_and_duplicate_pdfs(
                                 "reason": f"prior scan: duplicate, {why}"})
                 reasons[why] += 1
                 if why.startswith("analyzed but incomplete"):
-                    print(f"⏭️ Already scanned (duplicate) — skipping {pdf.name}; "
+                    print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:⏭️ Already scanned (duplicate) — skipping {pdf.name}; "
                           f"its original is {why[len('analyzed but '):]}")
                 else:
-                    print(f"⏭️ Already scanned (duplicate) — skipping {pdf.name}.")
+                    print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:⏭️ Already scanned (duplicate) — skipping {pdf.name}.")
             elif decision == "duplicate":
                 # The verdict no longer holds up: process the file rather than
                 # trusting a decision whose evidence has gone.
@@ -260,13 +261,13 @@ def find_new_and_duplicate_pdfs(
                 requeued.append(pdf.name)
                 if _is_usable_title(prior_title):
                     batch_titles[_normalize_title(prior_title)] = pdf.name
-                print(f"↻ Re-checking {pdf.name}: previously called a duplicate, but {why}.")
+                print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:↻ Re-checking {pdf.name}: previously called a duplicate, but {why}.")
             else:
                 # Previously seen as new but not yet analyzed -> process it.
                 to_process.append(pdf)
                 if _is_usable_title(prior_title):
                     batch_titles[_normalize_title(prior_title)] = pdf.name
-                print(f"⏭️ Already scanned (new) — queueing {pdf.name} for processing.")
+                print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:⏭️ Already scanned (new) — queueing {pdf.name} for processing.")
             if progress_callback:
                 progress_callback(i, total)
             continue
@@ -274,7 +275,7 @@ def find_new_and_duplicate_pdfs(
         try:
             title = get_title_in_the_file(pdf, llm_service)
         except Exception as e:
-            print(f"⚠️ Title extraction failed for {pdf.name} ({e}); will process it.")
+            print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:⚠️ Title extraction failed for {pdf.name} ({e}); will process it.")
             title = None
 
         norm = _normalize_title(title)
@@ -298,7 +299,7 @@ def find_new_and_duplicate_pdfs(
                             "reason": f"title matches a document in the {source_label} ({score:.0f}%)"})
             reasons[f"duplicate title ({source_label})"] += 1
             _record(pdf, title, "duplicate", source_label, matched_value, score)
-            print(f"⏩ Skipping duplicate: {pdf.name} (title ~ '{matched_value}' in {source_label}, {score:.0f}%)")
+            print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:⏩ Skipping duplicate: {pdf.name} (title ~ '{matched_value}' in {source_label}, {score:.0f}%)")
         else:
             to_process.append(pdf)
             if _is_usable_title(title):
@@ -313,25 +314,25 @@ def find_new_and_duplicate_pdfs(
 
     # Say WHY the folder shrank to this many files. Without it a run that takes
     # 8 of 819 PDFs looks broken, and the reason is buried in 800 console lines.
-    print(f"\n📋 Duplicate scan: {len(to_process)} of {total} PDF(s) will be processed, "
+    print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:\n📋 Duplicate scan: {len(to_process)} of {total} PDF(s) will be processed, "
           f"{len(skipped)} skipped.")
     for reason, n in reasons.most_common():
-        print(f"      {n:>5}  {reason}")
+        print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:      {n:>5}  {reason}")
     if requeued:
-        print(f"      {len(requeued):>5}  re-queued: an earlier 'duplicate' verdict no longer "
+        print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:      {len(requeued):>5}  re-queued: an earlier 'duplicate' verdict no longer "
               f"resolves to an analyzed document")
     incomplete = sum(n for r, n in reasons.items() if r.startswith("analyzed but incomplete"))
     if incomplete:
-        print(f"   ⚠️  {incomplete} skipped file(s) duplicate a document that is analyzed but is "
+        print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:   ⚠️  {incomplete} skipped file(s) duplicate a document that is analyzed but is "
               f"missing a requested component; top those up from their own registry entries "
               f"(re-running the copy here would create a second entry for the same document).")
 
     if skipped:
         try:
             pd.DataFrame(skipped).to_excel(manager.duplicate_log_excel, index=False)
-            print(f"📝 Logged {len(skipped)} skipped duplicate(s) to {manager.duplicate_log_excel}")
+            print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:📝 Logged {len(skipped)} skipped duplicate(s) to {manager.duplicate_log_excel}")
         except Exception as e:
-            print(f"⚠️ Could not write duplicate log: {e}")
+            print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:⚠️ Could not write duplicate log: {e}")
 
     return to_process, skipped
 
@@ -370,7 +371,7 @@ def batch_process_folder(
         to_process = sorted(Path(source_path).rglob("*.pdf"))
         skipped = []
 
-    print(f"\n📦 Batch: {len(to_process)} file(s) to process, {len(skipped)} skipped as duplicates.")
+    print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:\n📦 Batch: {len(to_process)} file(s) to process, {len(skipped)} skipped as duplicates.")
 
     # Load the Docling model pipeline once and reuse it for every PDF in the batch
     # (single-file callers keep the isolated subprocess-with-timeout path instead).
@@ -380,7 +381,7 @@ def batch_process_folder(
             from alr.data_analysis.Table_image_extractor import get_shared_doc_converter
             doc_converter = get_shared_doc_converter()
         except Exception as e:
-            print(f"⚠️ Shared Docling converter unavailable; falling back to per-file extraction: {e}")
+            print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:⚠️ Shared Docling converter unavailable; falling back to per-file extraction: {e}")
 
     processed = 0
     for pdf in to_process:
@@ -396,6 +397,6 @@ def batch_process_folder(
         from alr.common.artifact_cleanup import prune_empty_artifacts
         prune_empty_artifacts(manager.folder, should_cancel=should_cancel)
     except Exception as e:
-        print(f"⚠️ Cleanup skipped: {e}")
+        print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:⚠️ Cleanup skipped: {e}")
 
     return {"processed": processed, "skipped": skipped, "to_process": len(to_process)}

@@ -3,6 +3,7 @@ from huggingface_hub import snapshot_download
 from langchain_huggingface.llms import HuggingFacePipeline
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from langchain_core.prompts import PromptTemplate
+from datetime import datetime as dt
 
 # Specify the model repository ID
 model_repo_id = "mistralai/Ministral-3-14B-Instruct-2512"
@@ -33,7 +34,7 @@ tokenizer.save_pretrained(tokenizer_path)
 model = AutoModelForCausalLM.from_pretrained(model_repo_id,token =HuggingFace_Token)
 model.save_pretrained(model_path)
 
-print(f"Model and tokenizer saved locally in {local_model_path}")
+print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:Model and tokenizer saved locally in {local_model_path}")
 
 # pipe = pipeline("text-generation"
 #                 , model=model,

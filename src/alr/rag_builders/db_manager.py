@@ -158,7 +158,7 @@ def _excel_content_strings(excel_path):
 def _rebuild_section_index(VDB_path, strings):
     """Force-rebuild one section's FAISS index from the given strings."""
     embeds = vectorize_strings(strings)
-    print(f"   • Embeddings computed: {len(embeds)}")
+    print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:   • Embeddings computed: {len(embeds)}")
     index_in = create_faiss_index_cosine(embeds)
     save_index_file(index_in, VDB_path)
     return index_in.ntotal
@@ -224,7 +224,7 @@ def _sync_one_section_VDB(VDB, key, VDB_path, ex_path, rebuild, rebuild_text_db=
     index = load_index_file(VDB_path)
     if index:
         vec_count = getattr(index, "ntotal", 0) or 0
-        print(f"   • Existing vectors in index: {vec_count} | Excel rows: {str_count}")
+        print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:   • Existing vectors in index: {vec_count} | Excel rows: {str_count}")
 
         if str_count == vec_count:
             print(Fore.YELLOW + "   ⏭️  No sync needed (Excel rows == vectors)." + Style.RESET_ALL)
@@ -249,7 +249,7 @@ def _sync_one_section_VDB(VDB, key, VDB_path, ex_path, rebuild, rebuild_text_db=
                     rebuild_text_db(key)
                     strings = _excel_content_strings(ex_path)
                     str_count = len(strings)
-                    print(f"   • Excel rows after the text-DB rebuild: {str_count}")
+                    print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:   • Excel rows after the text-DB rebuild: {str_count}")
                 except Exception as e:  # noqa: BLE001 - fall back to index-only
                     print(Fore.RED + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:   ❌ Could not rebuild the Excel of '{key}' ({e}); "
                                      f"realigning the index to the Excel as it stands.")

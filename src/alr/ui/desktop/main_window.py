@@ -264,7 +264,7 @@ class AutomatedLiteratureUI(tk.Tk):
         sys.stdout = self.terminal_output
         sys.stderr = self.terminal_output
 
-        print(f"Welcome, {self.username}! Application Initialized.")
+        print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:Welcome, {self.username}! Application Initialized.")
 
     def _create_widgets(self):
         # Consistent look across platforms; clam also renders the ttk
@@ -758,7 +758,7 @@ class AutomatedLiteratureUI(tk.Tk):
                 return
             state = _json.loads(path.read_text(encoding="utf-8"))
         except Exception as e:  # noqa: BLE001 - never block startup on this
-            print(f"[Session] Could not load saved state: {e}")
+            print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:[Session] Could not load saved state: {e}")
             return
         if not isinstance(state, dict):
             return
@@ -777,7 +777,7 @@ class AutomatedLiteratureUI(tk.Tk):
                 else:  # plain entry (handles disabled + textvariable-backed)
                     self._set_entry_text(obj, "" if value is None else str(value))
             except Exception as e:  # noqa: BLE001 - one bad field must not abort the rest
-                print(f"[Session] Skipped restoring '{name}': {e}")
+                print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:[Session] Skipped restoring '{name}': {e}")
 
         # Re-sync widgets whose enabled/mirrored state depends on toggles just
         # restored (active-space consumers + the analyze custom-path entry).
@@ -818,7 +818,7 @@ class AutomatedLiteratureUI(tk.Tk):
             self._session_state_path().write_text(
                 _json.dumps(state, indent=2, default=str), encoding="utf-8")
         except Exception as e:  # noqa: BLE001 - closing must not fail on this
-            print(f"[Session] Could not save state: {e}")
+            print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:[Session] Could not save state: {e}")
 
     def _on_close(self):
         self._save_session_state()
@@ -1069,7 +1069,7 @@ class AutomatedLiteratureUI(tk.Tk):
         def on_success(derived_scope):
             self.scope_entry.delete(0, tk.END)
             self.scope_entry.insert(0, derived_scope or "")
-            print(f"Scope Derived: {derived_scope}")
+            print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:Scope Derived: {derived_scope}")
 
         self._run_threaded(work, "Derive Scope", on_success=on_success)
 
@@ -1269,7 +1269,7 @@ class AutomatedLiteratureUI(tk.Tk):
             self.kw_origin.setdefault(kw.lower(), "manual")
             checked_count += int(checked)
         self._sync_select_all(self.kw_tree)
-        print(f"[Keywords] Imported {len(unique)} unique keyword(s) from "
+        print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:[Keywords] Imported {len(unique)} unique keyword(s) from "
               f"{Path(path).name}; {checked_count} pre-checked from the last selection.")
 
     def _import_phrases_action(self):
@@ -1305,7 +1305,7 @@ class AutomatedLiteratureUI(tk.Tk):
         # the RA/RQ entries if needed.
         if self.CM is not None:
             self.btn_scholarly.configure(state="normal")
-        print(f"[Phrases] Imported {added} phrase(s) from {Path(path).name} "
+        print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:[Phrases] Imported {added} phrase(s) from {Path(path).name} "
               f"(rank column: {rank_col} when present).")
 
     # ---- Keyword suggestion + phrase generation --------------------------
@@ -1344,7 +1344,7 @@ class AutomatedLiteratureUI(tk.Tk):
                     self.kw_origin.setdefault(kw.lower(), "llm")
                     added += 1
             self._sync_select_all(self.kw_tree)
-            print(f"[Keywords] {added} LLM suggestion(s) added to the table. "
+            print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:[Keywords] {added} LLM suggestion(s) added to the table. "
                   f"Untick anything you don't want before processing.")
 
         self._run_threaded(work, "Suggest Keywords", on_success=on_success)
@@ -1416,7 +1416,7 @@ class AutomatedLiteratureUI(tk.Tk):
 
             count = self.CM.Search_phrase_count or 0
             if count:
-                print(f"\nSuccessfully logged structural pipeline setups. Ready to rank/export across {count} expressions.")
+                print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:\nSuccessfully logged structural pipeline setups. Ready to rank/export across {count} expressions.")
             else:
                 print("\nNo search phrases were produced - see the errors above for the step that failed.")
             return count
@@ -1474,7 +1474,7 @@ class AutomatedLiteratureUI(tk.Tk):
             self.phrase_tree.insert("", "end", values=(mark, "-", phrase))
         self._sync_select_all(self.phrase_tree)
 
-        print(f"[Phrases] Table ranked by {rank_col}; top {min(num_phrases, len(ranked))} "
+        print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:[Phrases] Table ranked by {rank_col}; top {min(num_phrases, len(ranked))} "
               f"of {len(ranked)} generated phrase(s) pre-checked.")
 
     def _execute_search_strategy(self, choice_mode):
@@ -1524,7 +1524,7 @@ class AutomatedLiteratureUI(tk.Tk):
             # cleanup may have pruned publications_lists/ and search_phrase_lists/.
             self.CM.ensure_folders()
             if choice_mode == "s":
-                print(f"\nRunning {backend_label}-first publication search matching ranking setup: {rank_col}")
+                print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:\nRunning {backend_label}-first publication search matching ranking setup: {rank_col}")
                 progress(text=f"Searching {backend_label} across {len(sorted_phrases)} phrase(s)…")
                 run_scholarly(
                     sorted_phrases, self.CM, 15, backend=backend,
@@ -1541,7 +1541,7 @@ class AutomatedLiteratureUI(tk.Tk):
                 print("Collection Operations Sequence Completed.")
                 return pub_count
             else:
-                print(f"\nExtracting top numerical items context vectors targets to location mapping index matching file: {sp_sorted_path}")
+                print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:\nExtracting top numerical items context vectors targets to location mapping index matching file: {sp_sorted_path}")
                 progress(text="Saving the ranked phrases to Excel…")
                 get_values_from_sorted_numbers_and_save(phrase_excel_file, rank_col, 'Phrase', num_phrases, sp_sorted_path)
                 print("Collection Operations Sequence Completed.")
@@ -1553,7 +1553,7 @@ class AutomatedLiteratureUI(tk.Tk):
                                on_cancelled=self._on_publications_collected)
         else:
             self._run_threaded(work, "Save Ranking to Excel", "processed",
-                               on_success=lambda n: print(f"[Collection] Save Ranking to Excel finished ({n} phrase(s))."))
+                               on_success=lambda n: print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:[Collection] Save Ranking to Excel finished ({n} phrase(s))."))
 
     def _on_publications_collected(self, pub_count):
         """
@@ -1825,7 +1825,7 @@ class AutomatedLiteratureUI(tk.Tk):
                 try:
                     sync_storage_to_sql(MF)
                 except Exception as e:
-                    print(f"[Database Sync] Skipped/failed: {e}")
+                    print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:[Database Sync] Skipped/failed: {e}")
             return outcome
 
         def summary(outcome, cancelled=False):
@@ -1860,7 +1860,7 @@ class AutomatedLiteratureUI(tk.Tk):
             return
 
         result = analyse_pdf_input_path(input_target, recursive=True)
-        print(f"\n[Validation Log Check] Processing input detected structure template parameters: {result.kind}")
+        print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:\n[Validation Log Check] Processing input detected structure template parameters: {result.kind}")
 
         if result.kind not in ("pdf_file", "folder"):
             messagebox.showerror("Invalid input", "That path isn't a PDF file or a folder. Choose a .pdf file or a folder that contains PDFs.")
@@ -1892,7 +1892,7 @@ class AutomatedLiteratureUI(tk.Tk):
         do_vector_db = self.comp_vars["vector_db"].get()
         classify_label = ", ".join(
             k for k, on in (("title", do_classify_title), ("abstract", do_classify_abstract)) if on)
-        print(f"[Selection] Components: sections (required)"
+        print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:[Selection] Components: sections (required)"
               + "".join(f", {c}" for c in ("abstract", "intro", "results", "references") if c in components)
               + (", doi/metadata" if do_doi else "")
               + (f", classification ({classify_label})" if do_classify else "")
@@ -1954,7 +1954,7 @@ class AutomatedLiteratureUI(tk.Tk):
                 try:
                     return store.find_document(filename, source_folder=str(MF.folder))
                 except Exception as e:
-                    print(f"[DB lookup] {filename}: {e}")
+                    print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:[DB lookup] {filename}: {e}")
                 return None
 
             print("[Processing Strategy Active] Directing targets into analysis execution channels...")
@@ -1974,7 +1974,7 @@ class AutomatedLiteratureUI(tk.Tk):
                         result.input_path, MF, llm_service=service, components=components,
                         should_cancel=should_cancel, progress_callback=cb)
                     if skipped:
-                        print(f"[Dedup] Skipped {len(skipped)} duplicate(s); logged to {MF.duplicate_log_excel}")
+                        print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:[Dedup] Skipped {len(skipped)} duplicate(s); logged to {MF.duplicate_log_excel}")
                 else:
                     to_process = sorted(Path(result.input_path).rglob("*.pdf"))
 
@@ -2016,7 +2016,7 @@ class AutomatedLiteratureUI(tk.Tk):
                                 doc_converter=doc_converter, eval_mode=eval_mode,
                                 should_cancel=should_cancel)
                         except Exception as e:
-                            print(f"❌ {pdf.name} could not be analyzed ({type(e).__name__}: {e}) — "
+                            print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:❌ {pdf.name} could not be analyzed ({type(e).__name__}: {e}) — "
                                   f"skipped, continuing with the next file.")
                             not_added.append(skip_row("analyze", e, space=MF.folder, filename=pdf.name))
                             counts["skipped"] += 1
@@ -2026,14 +2026,14 @@ class AutomatedLiteratureUI(tk.Tk):
                             # Cancel now lands between components, not only between
                             # documents; whatever finished is on disk and the next
                             # run resumes from there.
-                            print(f"🛑 Cancelled while processing {pdf.name}.")
+                            print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:🛑 Cancelled while processing {pdf.name}.")
                             break
 
                         if outcome == 'F':
                             # The processor already recorded the reason in the space's
                             # failure log; count it and move on rather than enriching
                             # a document that has no analysis.
-                            print(f"⚠️ {pdf.name} did not complete analysis; see {MF.excel_failed}.")
+                            print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:⚠️ {pdf.name} did not complete analysis; see {MF.excel_failed}.")
                             counts["failed"] += 1
                             continue
 
@@ -2041,9 +2041,9 @@ class AutomatedLiteratureUI(tk.Tk):
                         phase(f"[{i}/{total}] Updating database: {pdf.name}", done=i, total=total)
                         try:
                             if not sync_one_document(MF, pdf.name):
-                                print(f"[Database Sync] No registry row yet for {pdf.name}.")
+                                print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:[Database Sync] No registry row yet for {pdf.name}.")
                         except Exception as e:
-                            print(f"[Database Sync] {pdf.name}: {e}")
+                            print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:[Database Sync] {pdf.name}: {e}")
 
                         doc = lookup_doc(pdf.name)
 
@@ -2058,7 +2058,7 @@ class AutomatedLiteratureUI(tk.Tk):
                                 if do_classify_abstract:
                                     classify_document(MF, doc, kind="abstract", service=service, mode=class_mode)
                             except Exception as e:
-                                print(f"[Classification] {pdf.name}: {e}")
+                                print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:[Classification] {pdf.name}: {e}")
 
                         processed += 1
                         counts["analyzed"] = processed
@@ -2075,7 +2075,7 @@ class AutomatedLiteratureUI(tk.Tk):
                 if not_added:
                     counts["log"] = append_skiplog(Path(MF.folder) / ANALYSIS_SKIPPED_LOG, not_added)
                     if counts["log"]:
-                        print(f"[Analysis] {len(not_added)} document(s) skipped; logged to {counts['log']}")
+                        print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:[Analysis] {len(not_added)} document(s) skipped; logged to {counts['log']}")
 
             print("Analysis Execution Chain Log Sequence Finished.")
 
@@ -2095,29 +2095,29 @@ class AutomatedLiteratureUI(tk.Tk):
                                           should_cancel=should_cancel,
                                           progress_callback=phased("DOI / metadata"))
                 except Exception as e:
-                    print(f"[DOI Enrichment] Skipped/failed: {e}")
+                    print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:[DOI Enrichment] Skipped/failed: {e}")
 
             # --- Finalization: refresh SQL, then work out what is still missing and
             # let the user decide, per stage, whether to reuse data an earlier dated
             # file already holds, run the stage fresh, or skip it. ---
             try:
                 synced = sync_storage_to_sql(MF, progress_callback=phased("Database sync"))
-                print(f"[Database Sync] {synced} document(s) written to the review database.")
+                print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:[Database Sync] {synced} document(s) written to the review database.")
             except Exception as e:
-                print(f"[Database Sync] Skipped/failed: {e}")
+                print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:[Database Sync] Skipped/failed: {e}")
 
             next_phase("Checking the database for missing data…")
             try:
                 from alr.common.analysis_precheck import compute_space_gaps
                 gaps = compute_space_gaps(MF)
             except Exception as e:
-                print(f"[Completeness Check] Skipped/failed: {e}")
+                print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:[Completeness Check] Skipped/failed: {e}")
                 gaps = {}
 
             decisions = {}
             if gaps and not should_cancel():
                 for stage, info in gaps.items():
-                    print(f"[Completeness Check] {info['label']}: {len(info['missing'])} missing"
+                    print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:[Completeness Check] {info['label']}: {len(info['missing'])} missing"
                           f" ({len(info['reusable'])} reusable from previous files).")
                 # Modal on the main thread; the worker blocks until the user answers.
                 decisions = ask(lambda app: app._finalization_gap_dialog(gaps)) or {}
@@ -2140,7 +2140,7 @@ class AutomatedLiteratureUI(tk.Tk):
                     evaluate_space(MF, should_cancel=should_cancel, mode=mode, target=target,
                                    progress_callback=phased(label))
                 except Exception as e:
-                    print(f"[{label}] Skipped/failed: {e}")
+                    print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:[{label}] Skipped/failed: {e}")
 
             if mode_for("doi") and not should_cancel():
                 # Reuse pulls metadata already sitting in the download logs; fresh
@@ -2156,7 +2156,7 @@ class AutomatedLiteratureUI(tk.Tk):
                         enrich_from_download_logs(ALR_main_folder, should_cancel=should_cancel,
                                                   progress_callback=phased("Download-log enrichment"))
                 except Exception as e:
-                    print(f"[DOI Enrichment] Skipped/failed: {e}")
+                    print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:[DOI Enrichment] Skipped/failed: {e}")
 
             for stage, kind, fn_name in (("title_class", "title", "classify_space"),
                                          ("abstract_class", "abstract", "classify_abstract_space")):
@@ -2169,7 +2169,7 @@ class AutomatedLiteratureUI(tk.Tk):
                         MF, should_cancel=should_cancel, service=service, mode=mode,
                         progress_callback=phased(f"Classifying {kind}s"))
                 except Exception as e:
-                    print(f"[Classification] {kind}: Skipped/failed: {e}")
+                    print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:[Classification] {kind}: Skipped/failed: {e}")
 
             # Extraction gaps: "reuse" means the analysis JSON is already on disk and
             # only SQL was behind — the closing sync below picks it up. "fresh" has to
@@ -2189,7 +2189,7 @@ class AutomatedLiteratureUI(tk.Tk):
                         process_pdf_mode_file(str(pdf), str(MF.folder), components=fresh_components,
                                               doc_converter=doc_converter, eval_mode=eval_mode)
                     except Exception as e:
-                        print(f"[Re-extraction] {Path(pdf).name}: {e}")
+                        print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:[Re-extraction] {Path(pdf).name}: {e}")
                 if not to_process:
                     print("[Re-extraction] No source PDFs in this run to re-extract from.")
                 # The re-extraction restarts the extraction worker; stop it again
@@ -2202,7 +2202,7 @@ class AutomatedLiteratureUI(tk.Tk):
                 try:
                     sync_storage_to_sql(MF)
                 except Exception as e:
-                    print(f"[Database Sync] Skipped/failed: {e}")
+                    print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:[Database Sync] Skipped/failed: {e}")
 
             # Build the RAG databases when requested (heavy; last). Text DB and
             # vector DB are separate opt-ins; both syncs are incremental (see
@@ -2214,7 +2214,7 @@ class AutomatedLiteratureUI(tk.Tk):
                     build_rag_databases(str(MF.folder), do_text=do_text_db, do_vector=do_vector_db,
                                         progress_callback=phased(f"Building {' + '.join(parts)}"))
                 except Exception as e:
-                    print(f"[RAG DB] Skipped/failed: {e}")
+                    print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:[RAG DB] Skipped/failed: {e}")
 
             # Empty files/folders the managers pre-created are pruned by
             # _run_threaded once this pass returns, like every other pass.
@@ -2611,7 +2611,7 @@ class AutomatedLiteratureUI(tk.Tk):
             if path.exists():
                 cfg = _json.loads(path.read_text(encoding="utf-8"))
         except Exception as e:
-            print(f"[Common DB] Could not load saved configuration: {e}")
+            print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:[Common DB] Could not load saved configuration: {e}")
         common_path = cfg.get("common_path") or str(Path(ALR_main_folder) / "00_Common_DB")
         self.common_db_entry.delete(0, "end")
         self.common_db_entry.insert(0, common_path)
@@ -2636,7 +2636,7 @@ class AutomatedLiteratureUI(tk.Tk):
             self._common_db_config_path().write_text(
                 _json.dumps(cfg, indent=2), encoding="utf-8")
         except Exception as e:
-            print(f"[Common DB] Could not save configuration: {e}")
+            print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:[Common DB] Could not save configuration: {e}")
 
     # --- Common DB source-list handlers ---
 
@@ -2810,9 +2810,9 @@ class AutomatedLiteratureUI(tk.Tk):
                 "copies.\n\nRe-embedding costs embedding calls."):
             return
 
-        print(f"[Rebuild] Rebuilding {len(keys)} attribute(s) in: {clean_path}")
+        print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:[Rebuild] Rebuilding {len(keys)} attribute(s) in: {clean_path}")
         if query_common:
-            print(f"[Rebuild] Sources: {', '.join(sources)}")
+            print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:[Rebuild] Sources: {', '.join(sources)}")
 
         def work(progress, should_cancel):
             from alr.rag_builders.section_rebuilder import rebuild_section_databases
@@ -2821,7 +2821,7 @@ class AutomatedLiteratureUI(tk.Tk):
                 match_filename=match_filename, should_cancel=should_cancel,
                 progress_callback=lambda d, t, txt: progress(done=d, total=t, text=txt))
             if failures:
-                print(f"[Rebuild] {len(failures)} attribute(s) failed: {', '.join(failures)}")
+                print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:[Rebuild] {len(failures)} attribute(s) failed: {', '.join(failures)}")
             return len(keys) - len(failures)
 
         def on_success(n):
@@ -2884,10 +2884,10 @@ class AutomatedLiteratureUI(tk.Tk):
             return
 
         target_label = "Common DB" if query_common else "storage space"
-        print(f"[Query Pipeline Dispatch] Querying the {target_label} at: {storage_choice}")
-        print(f"[Query Pipeline Dispatch] Running query text profiling execution match targeting expression: '{query_text}' (top-k={top_k})")
-        print(f"[Query Scope] Sections: {', '.join(query_sections)}")
-        print(f"[Query Report] Attributes included: {', '.join(enrich_keys)}")
+        print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:[Query Pipeline Dispatch] Querying the {target_label} at: {storage_choice}")
+        print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:[Query Pipeline Dispatch] Running query text profiling execution match targeting expression: '{query_text}' (top-k={top_k})")
+        print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:[Query Scope] Sections: {', '.join(query_sections)}")
+        print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:[Query Report] Attributes included: {', '.join(enrich_keys)}")
 
         # File harvesting is the user's checkbox choice (off by default: the
         # overview is enriched from the space's JSONs without copying files).
@@ -2919,7 +2919,7 @@ class AutomatedLiteratureUI(tk.Tk):
             skipped = generate_query_report([query_text], storage_choice, **kwargs) or []
             if skipped:
                 from alr.rag_builders.query_executor import QUERY_SKIPPED_LOG
-                print(f"[Query] {len(skipped)} attribute(s) could not be searched "
+                print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:[Query] {len(skipped)} attribute(s) could not be searched "
                       f"(no index, index/Excel mismatch or a read error) — listed in "
                       f"{QUERY_SKIPPED_LOG} in the query results folder.")
             print("Query Generation Suite Logging Executed successfully.")
@@ -3219,7 +3219,7 @@ class AutomatedLiteratureUI(tk.Tk):
                                           "(Abstract / Introduction / Results & Conclusion).")
             return
         eval_mode = self.eval_mode_var.get()
-        print(f"[Evaluation] types: "
+        print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:[Evaluation] types: "
               + ", ".join((["substring"] if do_substring else []) + sorted(metric_kinds))
               + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]: | target(s): {', '.join(targets)}"
               + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]: | existing results: {'reuse (only new docs)' if eval_mode == 'copy' else 'rewrite all'}")
@@ -3232,7 +3232,7 @@ class AutomatedLiteratureUI(tk.Tk):
             try:
                 sync_storage_to_sql(DataAnalyzeManager(clean_path))
             except Exception as e:
-                print(f"[Database Sync] Skipped/failed: {e}")
+                print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:[Database Sync] Skipped/failed: {e}")
 
             n = 0
             target_labels = {"abstract": "abstract", "intro": "introduction",
@@ -3302,7 +3302,7 @@ class AutomatedLiteratureUI(tk.Tk):
             return
         source = self.custom_source_var.get()
         clean_path = clean_folder_path(folder)
-        print(f"[Custom classification] topic: {topic} | tags: {', '.join(tags)} "
+        print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:[Custom classification] topic: {topic} | tags: {', '.join(tags)} "
               f"| source: {source} | SQL column: {col}")
 
         def work(progress, should_cancel):
@@ -3336,7 +3336,7 @@ class AutomatedLiteratureUI(tk.Tk):
                 MF, input_path=input_target, should_cancel=should_cancel,
                 progress_callback=lambda d, t, name: progress(
                     done=d, total=t, text=f"[{d}/{t}] DOI / metadata: {name}"))
-            print(f"[Evaluate] DOI/metadata enrichment updated {n} document(s).")
+            print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:[Evaluate] DOI/metadata enrichment updated {n} document(s).")
             return n
 
         self._run_threaded(work, "DOI / Metadata Extraction", "updated")
@@ -3411,12 +3411,12 @@ class AutomatedLiteratureUI(tk.Tk):
                 from alr.common.file_manager import ALR_main_folder
                 root = clean_path or ALR_main_folder
                 progress(text=f"Enriching metadata from download logs under: {root}…")
-                print(f"[Evaluate] Enriching metadata from download logs under: {root}")
+                print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:[Evaluate] Enriching metadata from download logs under: {root}")
                 n = enrich_from_download_logs(
                     root, should_cancel=should_cancel,
                     progress_callback=lambda d, t: progress(
                         done=d, total=t, text=f"Enriching from download logs {d}/{t}…"))
-                print(f"[Evaluate] Download-log enrichment updated {n} document(s).")
+                print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:[Evaluate] Download-log enrichment updated {n} document(s).")
                 return n
 
             if mode == "abstract":
@@ -3435,9 +3435,9 @@ class AutomatedLiteratureUI(tk.Tk):
                 progress(text="Syncing the new analysis into the review database…")
                 try:
                     n = sync_storage_to_sql(DataAnalyzeManager(clean_path))
-                    print(f"[Evaluate] Abstract analysis pass finished; {n} document(s) synced.")
+                    print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:[Evaluate] Abstract analysis pass finished; {n} document(s) synced.")
                 except Exception as e:
-                    print(f"[Database Sync] Skipped/failed: {e}")
+                    print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:[Database Sync] Skipped/failed: {e}")
                 return 0
 
             if mode == "references":
@@ -3451,9 +3451,9 @@ class AutomatedLiteratureUI(tk.Tk):
                 progress(text="Syncing the extracted references into the review database…")
                 try:
                     n = sync_storage_to_sql(DataAnalyzeManager(clean_path))
-                    print(f"[Evaluate] Reference extraction pass finished; {n} document(s) synced.")
+                    print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:[Evaluate] Reference extraction pass finished; {n} document(s) synced.")
                 except Exception as e:
-                    print(f"[Database Sync] Skipped/failed: {e}")
+                    print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:[Database Sync] Skipped/failed: {e}")
                 return 0
 
             if mode == "evaluate":
@@ -3479,7 +3479,7 @@ class AutomatedLiteratureUI(tk.Tk):
                 n = classify_space(
                     clean_path, should_cancel=should_cancel, overwrite=overwrite, service=classify_service,
                     progress_callback=lambda d, t: progress(done=d, total=t, text=f"Classifying titles {d}/{t}…"))
-                print(f"[Evaluate] Title classification updated {n} document(s).")
+                print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:[Evaluate] Title classification updated {n} document(s).")
                 return n
 
             if mode == "classify_abstract":
@@ -3492,7 +3492,7 @@ class AutomatedLiteratureUI(tk.Tk):
                 n = classify_abstract_space(
                     clean_path, should_cancel=should_cancel, overwrite=overwrite, service=classify_service,
                     progress_callback=lambda d, t: progress(done=d, total=t, text=f"Classifying abstracts {d}/{t}…"))
-                print(f"[Evaluate] Abstract classification updated {n} document(s).")
+                print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:[Evaluate] Abstract classification updated {n} document(s).")
                 return n
 
             if mode == "master_excel":
@@ -3504,10 +3504,10 @@ class AutomatedLiteratureUI(tk.Tk):
                     should_cancel=should_cancel,
                     progress_callback=lambda d, t: progress(
                         done=d, total=t, text=f"Master Excel: document {d}/{t}…"))
-                print(f"[Evaluate] Master Excel workbook ({written} document(s)): {master_path}")
+                print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:[Evaluate] Master Excel workbook ({written} document(s)): {master_path}")
                 if not_added:
                     from alr.rag_builders.master_excel_db_builder import MASTER_EXCEL_SKIPPED_LOG
-                    print(f"[Evaluate] {len(not_added)} document(s) could not be added to the "
+                    print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:[Evaluate] {len(not_added)} document(s) could not be added to the "
                           f"master workbook — listed in {MASTER_EXCEL_SKIPPED_LOG} "
                           f"next to it: {Path(master_path).parent}")
                 return written
@@ -3532,9 +3532,9 @@ class AutomatedLiteratureUI(tk.Tk):
         def work(progress, should_cancel):
             from alr.analysis_evaluation.publication_classification.title_classifier import classify_title
             progress(text=f"Classifying title: {title!r}…")
-            print(f"[Classify] Classifying title: {title!r} (service={service})")
+            print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:[Classify] Classifying title: {title!r} (service={service})")
             result = classify_title(title, service=service) or {}
-            print(f"[Classify] Result: {result}")
+            print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:[Classify] Result: {result}")
             return result
 
         def on_success(result):
@@ -3576,7 +3576,7 @@ class AutomatedLiteratureUI(tk.Tk):
                 progress_callback=lambda d, t, title_txt: progress(
                     done=d, total=t, text=f"[{d}/{t}] Scoring: {title_txt}"))
             if out:
-                print(f"[Question Scoring] Workbook written: {out}")
+                print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:[Question Scoring] Workbook written: {out}")
             else:
                 print("[Question Scoring] No workbook was produced.")
             return out

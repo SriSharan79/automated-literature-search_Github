@@ -776,7 +776,7 @@ def evaluate_space_metrics(storage_path, kinds, target="abstract", db_path=None,
     VDB = Vec_DB_Manager(MF.folder)
     cfg = _target_config(MF, VDB, target)
     if not cfg["recorded"]:
-        print(f"No recorded {target} analyses found; nothing to evaluate.")
+        print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:No recorded {target} analyses found; nothing to evaluate.")
         return 0
 
     cosine_ctx = _CosineContext(VDB, cfg["section_keys"]) if "cosine" in kinds else None

@@ -6,6 +6,7 @@ import os
 import pandas as pd
 import json
 from datetime import datetime
+from datetime import datetime as dt 
 import traceback
 
 def check_complex_reference_sequence(json_file_path):
@@ -98,7 +99,7 @@ def count_entry_types(json_file_path):
         res["summary"]["Others"] = total - pub_count
 
     except Exception as e:
-        print(f"Counting logic failed: {e}")
+        print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:Counting logic failed: {e}")
         traceback.print_exc()
         # We don't return 'e' as a string anymore; we return the safe 'res' dict
         
@@ -116,7 +117,7 @@ def repair_truncated_json(raw_text):
     try:
         return json.loads(text)
     except json.JSONDecodeError as e:
-        print(f"Parse failed: {e}")
+        print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:Parse failed: {e}")
 
     # Find potential start of array
     start_idx = text.find('[')
@@ -145,7 +146,7 @@ def repair_truncated_json(raw_text):
 
     try:
         result = json.loads(repaired)
-        print(f"Repaired to {len(result)} objects")
+        print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:Repaired to {len(result)} objects")
         return result
     except json.JSONDecodeError as e:
         raise ValueError(f"Repair failed: {e}")
@@ -199,22 +200,22 @@ def save_references_to_json(ai_response_text, file_path):
         with open(file_path, 'w', encoding='utf-8') as f:
             json.dump(final_data, f, indent=4, ensure_ascii=False)
         
-        print(f"Successfully updated: {file_path}")
+        print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:Successfully updated: {file_path}")
 
     except json.JSONDecodeError as e:
-        print(f"Failed to parse AI response as JSON: {e}")
-        print(f"Raw attempted string: {cleaned_response[:100]}...")
+        print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:Failed to parse AI response as JSON: {e}")
+        print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:Raw attempted string: {cleaned_response[:100]}...")
         traceback.print_exc()
     except Exception as e:
         traceback.print_exc()
-        print(f"An unexpected error occurred: {e}")
+        print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:An unexpected error occurred: {e}")
 
 def log_Ref_data_extracted(excel_log_path, JSON_path, pdf_name, ID, Time_taken="NA"):
     # 1. Run your existing analysis functions
     missing_nums, out_of_sync = check_complex_reference_sequence(JSON_path)
     #  Check if JSON is valid before proceeding
     if not os.path.exists(JSON_path) or os.path.getsize(JSON_path) == 0:
-        print(f"Skipping log: {JSON_path} is not ready.")
+        print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:Skipping log: {JSON_path} is not ready.")
         return
 
     results = count_entry_types(JSON_path)
@@ -270,15 +271,15 @@ def log_Ref_data_extracted(excel_log_path, JSON_path, pdf_name, ID, Time_taken="
                 break
         
         if changed:
-            print(f"Updates found for {pdf_name}. Updating row...")
+            print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:Updates found for {pdf_name}. Updating row...")
             for col, value in new_entry.items():
                 df.at[existing_idx, col] = value
         else:
-            print(f"No changes detected for {pdf_name}. Skipping update.")
+            print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:No changes detected for {pdf_name}. Skipping update.")
             return # Exit function without saving
     else:
         # If new file, append to the dataframe
-        print(f"Adding new entry for {pdf_name}...")
+        print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:Adding new entry for {pdf_name}...")
         df = pd.concat([df, pd.DataFrame([new_entry])], ignore_index=True)
 
     # 6. Save with the correct column order

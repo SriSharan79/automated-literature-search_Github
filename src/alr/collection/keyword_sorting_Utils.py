@@ -5,6 +5,7 @@ import time
 import itertools
 from itertools import chain, combinations,product
 from colorama import Fore,Style
+from datetime import datetime as dt
 
 def get_all_non_empty_subsets(input_list):
     """
@@ -38,10 +39,10 @@ def get_subsets_with_min_size(input_list, min_size):
     if not (1 <= min_size <= n):
         # If min_size is too small or too large, adjust it or return an empty list
         if min_size > n:
-            print(f"Warning: Minimum size ({min_size}) is greater than the list size ({n}). Returning empty list.")
+            print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:Warning: Minimum size ({min_size}) is greater than the list size ({n}). Returning empty list.")
             return []
         elif min_size < 1:
-            print(f"Warning: Minimum size must be at least 1. Using min_size=1.")
+            print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:Warning: Minimum size must be at least 1. Using min_size=1.")
             min_size = 1
 
     # Using itertools.combinations to generate all combinations
@@ -104,7 +105,7 @@ def get_subsets_of_size(input_list, num):
         list: A list of all subsets of the given size.
     """
     if num < 1 or num > len(input_list):
-        print(f"Error: num should be between 1 and {len(input_list)}.")
+        print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:Error: num should be between 1 and {len(input_list)}.")
         return []
     
     # Generate all combinations of the list with the given size 'num'

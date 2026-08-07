@@ -94,36 +94,36 @@ def get_actual_text_content(doc_item, doc):
 def handle_text_label(actual_text_content, text_in_chunk, last_text_item_index, processed_document_texts, previous_Heading, chunk_heading):
     if text_in_chunk != "":
         text_in_chunk += actual_text_content
-        # print(f"    >>> Added new 'text' item to list at index . <<<")
+        # print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:    >>> Added new 'text' item to list at index . <<<")
     elif last_text_item_index != -1 and text_in_chunk == "" and previous_Heading == chunk_heading:
         text_in_chunk = processed_document_texts[last_text_item_index]
         text_in_chunk = text_in_chunk.replace(chunk_heading + "\n", "")
         text_in_chunk += " " + actual_text_content
         processed_document_texts.pop(last_text_item_index)
-        # print(f"    >>> Concatenated 'list_item' to previous 'text' item at index {last_text_item_index} . <<<")
+        # print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:    >>> Concatenated 'list_item' to previous 'text' item at index {last_text_item_index} . <<<")
     elif text_in_chunk == "" and previous_Heading != chunk_heading:
         text_in_chunk += " " + actual_text_content
-        # print(f"    >>> Concatenated 'list_item' to in new text 'text_in_chunk' . <<<")
+        # print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:    >>> Concatenated 'list_item' to in new text 'text_in_chunk' . <<<")
     else:
-        # print(f"    Skipping 'list_item' as no preceding 'text' item was found to concatenate to.")
+        # print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:    Skipping 'list_item' as no preceding 'text' item was found to concatenate to.")
         return text_in_chunk
     return text_in_chunk
 
 def handle_list_item_label(actual_text_content, text_in_chunk, last_text_item_index, processed_document_texts, previous_Heading, chunk_heading):
     if text_in_chunk != "":
         text_in_chunk += "\n- " + actual_text_content
-        # print(f"    >>> Concatenated 'list_item' to previous 'text_in_chunk' . <<<")
+        # print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:    >>> Concatenated 'list_item' to previous 'text_in_chunk' . <<<")
     elif last_text_item_index != -1 and text_in_chunk == "" and previous_Heading == chunk_heading:
         text_in_chunk = processed_document_texts[last_text_item_index]
         text_in_chunk = text_in_chunk.replace(chunk_heading + "\n", "")
         text_in_chunk += "\n- " + actual_text_content
         processed_document_texts.pop(last_text_item_index)
-        # print(f"    >>> Concatenated 'list_item' to previous 'text' item at index {last_text_item_index} . <<<")
+        # print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:    >>> Concatenated 'list_item' to previous 'text' item at index {last_text_item_index} . <<<")
     elif text_in_chunk == "" and previous_Heading != chunk_heading:
         text_in_chunk += "\n- " + actual_text_content
-        # print(f"    >>> Concatenated 'list_item' to in new text 'text_in_chunk' . <<<")
+        # print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:    >>> Concatenated 'list_item' to in new text 'text_in_chunk' . <<<")
     else:
-        # print(f"    Skipping 'list_item' as no preceding 'text' item was found to concatenate to.")
+        # print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:    Skipping 'list_item' as no preceding 'text' item was found to concatenate to.")
         return text_in_chunk
     return text_in_chunk
 
@@ -282,7 +282,7 @@ def merge_content_by_refined_headings(processed_document_texts, refined_headings
             # This is an invalid heading (e.g., 'PAGE 5' or 'n/a').
             # Append its content to the last valid entry if one exists.
             if updated_texts:
-                # print(f"Merging content from invalid heading '{current_heading}' (Case-Insensitive Match Failed)\n \n compared texts: \n {current_heading_lower} in {refined_lower}")
+                # print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:Merging content from invalid heading '{current_heading}' (Case-Insensitive Match Failed)\n \n compared texts: \n {current_heading_lower} in {refined_lower}")
                 # Append only the content (skip the invalid heading line)
                 updated_texts[-1] += "\n" + content
             else:
@@ -324,7 +324,7 @@ def merge_content_by_refined_headings_Chunks(Sections_Raw_Chunk_text,refined_hea
         else:
             # INVALID HEADING logic: Merge these chunks into the previous valid section
             if refined_json_output:
-                # print(f"Merging content from invalid heading '{current_heading}' into '{refined_json_output[-1]['Section Heading']}'")
+                # print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:Merging content from invalid heading '{current_heading}' into '{refined_json_output[-1]['Section Heading']}'")
                 
                 # Get the last valid section's chunk list
                 last_chunks_list = refined_json_output[-1]["Chunks"]

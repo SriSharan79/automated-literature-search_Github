@@ -127,15 +127,15 @@ def check_and_log_data(json_file_path, excel_file_path, ID, time_taken, analyzed
 
         # Save back to excel
         write_excel_cached(df, excel_file_path)
-        print(f"Data successfully logged to {excel_file_path}")
+        print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:Data successfully logged to {excel_file_path}")
 
     except json.JSONDecodeError as e:
-        print(f"Invalid JSON input: {e}")
+        print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:Invalid JSON input: {e}")
     except FileNotFoundError:
-        print(f"File not found: {json_file_path}")
+        print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:File not found: {json_file_path}")
         traceback.print_exc()
     except Exception as e:
-        print(f"An error occurred: {e}")
+        print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:An error occurred: {e}")
         traceback.print_exc()
 
 
@@ -151,7 +151,7 @@ def get_results_conclusion_sections(MF):
         with open(MF.raw_sec_json_path, 'r', encoding='utf-8') as f:
             data = json.load(f)
     except (FileNotFoundError, json.JSONDecodeError) as e:
-        print(f"Error: {e}")
+        print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:Error: {e}")
         return matched
 
     def walk(obj):
@@ -233,7 +233,7 @@ def _record_analyzed_sections(json_file_path, analyzed_sections):
         with open(json_file_path, 'w') as f:
             json.dump(data, f, indent=2)
     except Exception as e:
-        print(f"Could not record analyzed sections: {e}")
+        print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:Could not record analyzed sections: {e}")
 
 
 def analyze_results_conclusion(ID, MF):

@@ -7,6 +7,7 @@ from typing import List,Dict,Any
 from colorama import Fore, Style, init
 import pandas as pd
 from datetime import datetime
+from datetime import datetime as dt
 
 COLUMNS_Keyphrase=COLUMNS = [
     'Time', 
@@ -72,8 +73,8 @@ def merge_lists(initial_list, new_list):
         # Check if the current item should not be added due to similarity or duplication
         for existing_item in merged_list:
             if item == existing_item or is_similar(item, existing_item):
-                print(f"{Fore.WHITE}Existing: {existing_item}")
-                print(f"{Fore.RED}Skipping duplicate/near-duplicate: {item}")
+                print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:{Fore.WHITE}Existing: {existing_item}")
+                print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:{Fore.RED}Skipping duplicate/near-duplicate: {item}")
                 is_duplicate = True
                 break
 
@@ -91,15 +92,15 @@ def Log_keyPhrases(Key_Phrases,EXCEL_FILE_PATH):
     
     if os.path.exists(EXCEL_FILE_PATH):
         # Read the existing data
-        print(f"Loading existing data from {EXCEL_FILE_PATH}...")
+        print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:Loading existing data from {EXCEL_FILE_PATH}...")
         try:
             existing_df = pd.read_excel(EXCEL_FILE_PATH, engine='openpyxl')
         except Exception as e:
-            print(f"Error reading Excel file: {e}. Starting with an empty DataFrame.")
+            print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:Error reading Excel file: {e}. Starting with an empty DataFrame.")
             existing_df = pd.DataFrame(columns=COLUMNS)
     else:
         # Initialize a new DataFrame if the file doesn't exist
-        print(f"File not found. Creating new data structure at {EXCEL_FILE_PATH}...")
+        print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:File not found. Creating new data structure at {EXCEL_FILE_PATH}...")
         existing_df = pd.DataFrame(columns=COLUMNS)
 
     
@@ -119,13 +120,13 @@ def Log_keyPhrases(Key_Phrases,EXCEL_FILE_PATH):
                 found = True
                 
                                
-                print(f"UPDATED: '{Phrase_name}'")
+                print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:UPDATED: '{Phrase_name}'")
                 break
         
         # If not found, add the new publication as a new record
         if not found:
             existing_records.append(new_pub)
-            print(f"ADDED NEW: '{Phrase_name}'")
+            print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:ADDED NEW: '{Phrase_name}'")
 
     # Convert the updated list of records back to a DataFrame
     final_df = pd.DataFrame(existing_records, columns=COLUMNS)
@@ -133,9 +134,9 @@ def Log_keyPhrases(Key_Phrases,EXCEL_FILE_PATH):
     # Save the final DataFrame to the Excel file
     try:
         final_df.to_excel(EXCEL_FILE_PATH, index=False, engine='openpyxl')
-        print(f"\nSuccessfully saved/updated data to {EXCEL_FILE_PATH}")
+        print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:\nSuccessfully saved/updated data to {EXCEL_FILE_PATH}")
     except Exception as e:
-        print(f"\nFATAL ERROR: Could not write to Excel file. Check permissions or if the file is open. Error: {e}")
+        print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:\nFATAL ERROR: Could not write to Excel file. Check permissions or if the file is open. Error: {e}")
 
 # # Example usage
 # initial_list = [

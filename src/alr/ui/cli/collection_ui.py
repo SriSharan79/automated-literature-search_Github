@@ -6,6 +6,7 @@ from alr.common.general_utils import Proccess_string_to_list, generate_unique_id
 from alr.common.excel_utils import extract_column, get_values_from_sorted_numbers, get_values_from_sorted_numbers_and_save
 from alr.collection.search_phrase_generator_utils import run_scholarly
 from alr.collection.collection_system_prompts import KEYWORD_GENERATOR_PROMPT, SCOPE_DERIVATOR_PROMPT
+from datetime import datetime as dt 
 
 import os
 
@@ -39,7 +40,7 @@ def get_llm_defined_scope(RA,RQ,service):
 
     Scope=llm_call(Keywords_scope_derivator_UP,SCOPE_DERIVATOR_PROMPT,service)
 
-    print(f"\n Scope derived: {Scope}")
+    print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:\n Scope derived: {Scope}")
 
     return Scope
 

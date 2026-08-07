@@ -5,6 +5,7 @@ import threading
 import time
 from contextlib import contextmanager
 from pathlib import Path
+from datetime import datetime as dt 
 
 # ---------------------------------------------------------------------------
 # Cached workbook reads
@@ -145,7 +146,7 @@ def _flush_locked(paths=None):
             _DIRTY.pop(key, None)
             written.append(path)
         except Exception as e:  # noqa: BLE001 - keep it dirty and try again later
-            print(f"⚠️ Could not write {path}: {e}")
+            print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:⚠️ Could not write {path}: {e}")
     return written
 
 
@@ -309,14 +310,14 @@ def extract_column(file_path: str, column_name: str) -> list:
             data_list = df[column_name].astype(str).replace('nan', '').tolist()
             return data_list
         else:
-            print(f"Error: '{column_name}' not found in the sheet.")
+            print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:Error: '{column_name}' not found in the sheet.")
             return []
 
     except FileNotFoundError:
-        print(f"Error: File not found at path: {file_path}")
+        print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:Error: File not found at path: {file_path}")
         return []
     except Exception as e:
-        print(f"An unexpected error occurred: {e}")
+        print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:An unexpected error occurred: {e}")
         return []
 
 def get_corresponding_value(excel_file_path, column_1, value_1, column_2):
@@ -327,16 +328,16 @@ def get_corresponding_value(excel_file_path, column_1, value_1, column_2):
         
         # Check if the columns exist in the DataFrame
         if column_1 not in df.columns or column_2 not in df.columns:
-            # print(f"Columns '{column_1}' or '{column_2}' not found in the Excel file.")
-            print(f"No existing information of '{column_1}: {value_1}' or '{column_2}'.")
+            # print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:Columns '{column_1}' or '{column_2}' not found in the Excel file.")
+            print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:No existing information of '{column_1}: {value_1}' or '{column_2}'.")
             return None
         
         # Find the row where column_1 matches the given value_1
         matching_row = df[df[column_1] == value_1]
         
         if matching_row.empty:
-            # print(f"No matching row found for value '{value_1}' in column '{column_1}'.")
-            print(f" '{value_1}' - is being Processed for the 1st time")
+            # print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:No matching row found for value '{value_1}' in column '{column_1}'.")
+            print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]: '{value_1}' - is being Processed for the 1st time")
             return None
         
         # Retrieve the corresponding value from column_2
@@ -344,7 +345,7 @@ def get_corresponding_value(excel_file_path, column_1, value_1, column_2):
         return corresponding_value
     
     except Exception as e:
-        print(f"An error occurred: {e}")
+        print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:An error occurred: {e}")
         return None
 
 def update_corresponding_value(excel_file_path, column_1, value_1, column_2, new_value):
@@ -355,16 +356,16 @@ def update_corresponding_value(excel_file_path, column_1, value_1, column_2, new
         
         # Check if the columns exist in the DataFrame
         if column_1 not in df.columns or column_2 not in df.columns:
-            # print(f"Columns '{column_1}' or '{column_2}' not found in the Excel file.")
-            print(f"No existing information of '{column_1}: {value_1}' or '{column_2}'.")
+            # print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:Columns '{column_1}' or '{column_2}' not found in the Excel file.")
+            print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:No existing information of '{column_1}: {value_1}' or '{column_2}'.")
             return False
         
         # Find the row where column_1 matches the given value_1
         matching_row_index = df[df[column_1] == value_1].index
         
         if matching_row_index.empty:
-            # print(f"No matching row found for value '{value_1}' in column '{column_1}'.")
-            print(f" '{value_1}' - is being Processed for the 1st time")
+            # print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:No matching row found for value '{value_1}' in column '{column_1}'.")
+            print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]: '{value_1}' - is being Processed for the 1st time")
             return False
         
         # Update the corresponding value in column_2. An all-empty column is
@@ -378,13 +379,13 @@ def update_corresponding_value(excel_file_path, column_1, value_1, column_2, new
         # Save the updated DataFrame back to the Excel file
         write_excel_cached(df, excel_file_path)
         
-        # print(f"Successfully updated the value in '{column_2}' to '{new_value}' for row where '{column_1}' is '{value_1}'.")
+        # print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:Successfully updated the value in '{column_2}' to '{new_value}' for row where '{column_1}' is '{value_1}'.")
         
-        print(f"updated info'{column_2}': '{new_value}'.")
+        print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:updated info'{column_2}': '{new_value}'.")
         return True
     
     except Exception as e:
-        print(f"An error occurred: {e}")
+        print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:An error occurred: {e}")
         return False
 
 def get_values_from_sorted_numbers(excel_file_path, num_column, value_column, n):
@@ -435,7 +436,7 @@ def get_values_from_sorted_numbers_and_save(excel_file_path, num_column, value_c
     # Save only the first 'n' rows to the given output file path
     first_n_rows.to_excel(output_file_path, index=False)
 
-    print(f"search phrases saved in {output_file_path}")
+    print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:search phrases saved in {output_file_path}")
 
     return result_values
 
@@ -465,7 +466,7 @@ def add_column_sum(excel_file_path, col1, col2, col3):
 
     # Check if the column names exist
     if col1 not in df.columns or col2 not in df.columns:
-        print(f"Error:'{col1}' and/or '{col2}' not found in {excel_file_path}.")
+        print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:Error:'{col1}' and/or '{col2}' not found in {excel_file_path}.")
         return
 
     # Perform the sum of col1 and col2 and store it in col3
@@ -474,7 +475,7 @@ def add_column_sum(excel_file_path, col1, col2, col3):
     # Save the modified DataFrame back to Excel with the same file name
     df.to_excel(excel_file_path, index=False)
 
-    # print(f"Column {col3} has been updated with the sum of {col1} and {col2}. File saved as {excel_file_path}")
+    # print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:Column {col3} has been updated with the sum of {col1} and {col2}. File saved as {excel_file_path}")
 
 
 
@@ -535,7 +536,7 @@ def aggregate_query_excel_data(folder_path, column_name, output_file):
                 cols = [column_name] + [c for c in metadata_cols if c in df.columns]
                 all_data.append(df[cols])
         except Exception as e:
-            print(f"Error reading {file.name}: {e}")
+            print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:Error reading {file.name}: {e}")
 
     if all_data:
         combined = pd.concat(all_data, ignore_index=True)
@@ -545,7 +546,7 @@ def aggregate_query_excel_data(folder_path, column_name, output_file):
         # Sort descending
         counts.sort_values(by='Occurrences', ascending=False, inplace=True)
         counts.to_excel(output_file, index=False)
-        print(f"Report saved at: {output_file}")   
+        print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:Report saved at: {output_file}")   
 
 # def aggregate_querry_excel_data(VDB, column_name, output_file):
 #     all_data = []
@@ -568,7 +569,7 @@ def aggregate_query_excel_data(folder_path, column_name, output_file):
 #                         cols_to_extract = [column_name] + [c for c in metadata_columns if c in df.columns]
 #                         all_data.append(df[cols_to_extract])
 #                 except Exception as e:
-#                     print(f"Could not read {filename}: {e}")
+#                     print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:Could not read {filename}: {e}")
 
 #     if all_data:
 #         combined_df = pd.concat(all_data, ignore_index=True)
@@ -582,7 +583,7 @@ def aggregate_query_excel_data(folder_path, column_name, output_file):
         
 #         # Save the sorted Excel report
 #         counts.to_excel(output_file, index=False)
-#         print(f"Success! Report saved and sorted at {output_file}")
+#         print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:Success! Report saved and sorted at {output_file}")
 
 #         # 2. Extract unique filenames and move corresponding PDFs
 #         unique_filenames = counts['Filename'].unique().tolist()

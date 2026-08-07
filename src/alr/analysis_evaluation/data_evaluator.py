@@ -701,7 +701,7 @@ def evaluate_space(storage_path, db_path=None, progress_callback=None, should_ca
             # but not so often that rewriting the (growing) workbooks costs
             # more than the evaluation itself; see excel_utils.Checkpointer.
             if checkpointer.due(i):
-                print(f"💾 Checkpointing evaluation workbooks at document {i}/{total}…")
+                print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:💾 Checkpointing evaluation workbooks at document {i}/{total}…")
                 for book in books:
                     try:
                         book.flush()

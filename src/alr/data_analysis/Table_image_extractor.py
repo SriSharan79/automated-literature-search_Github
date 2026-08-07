@@ -12,6 +12,7 @@ from typing import Dict, List, Tuple,Optional
 import fitz
 # import imagehash
 import pandas as pd
+from datetime import datetime as dt 
 from tqdm import tqdm
 
 # Docling is heavy to import; its symbols are imported lazily inside the
@@ -50,7 +51,7 @@ def build_doc_converter(enable_ocr: bool = True, image_resolution_scale: float =
         pipeline_options.accelerator_options = AcceleratorOptions(device=AcceleratorDevice.AUTO)
         device = decide_device(AcceleratorDevice.AUTO.value)
         logger.info(f"Docling accelerator device: {device}")
-        print(f"ℹ Info: Docling running on device: {device}")
+        print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:ℹ Info: Docling running on device: {device}")
     except Exception as e:  # older docling without accelerator options
         logger.warning(f"Could not configure accelerator device (using docling defaults): {e}")
 
@@ -161,7 +162,7 @@ class DoclingExtractor:
             Image entries include a 'hash' field for cross-chunk deduplication.
         """
         logger.info(f"[Docling] Starting extraction from {self.input_path}")
-        print(f"\n[Docling] Converting PDF chunk: {self.input_path.name} ...", flush=True)
+        print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:\n[Docling] Converting PDF chunk: {self.input_path.name} ...", flush=True)
 
         doc = self.doc_converter.convert(self.input_path)
 

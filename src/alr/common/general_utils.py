@@ -8,6 +8,7 @@ import os
 import hashlib
 import datetime
 
+from datetime import datetime as dt 
 def generate_unique_id(filename, existing_ids):
     """
     Generate hash-based ID, append suffix if collision detected.
@@ -102,7 +103,7 @@ def print_two_column_table(items, Header, col_width=40):
             format_cell(right_idx, right[i]) if i < len(right) else " " * col_width
         )
 
-        print(f"| {left_cell} | {right_cell} |")
+        print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:| {left_cell} | {right_cell} |")
 
     print(horizontal)
 
@@ -145,14 +146,14 @@ def is_similar(str1, str2, threshold=0.8):
 #     str1 = str(str1).strip().lower() if not (pd.isna(str1) or isinstance(str1, (float, type(None)))) else ''
 #     str2 = str(str2).strip().lower() if not (pd.isna(str2) or isinstance(str2, (float, type(None)))) else ''
     
-#     print(f"Comparing: '{str1}' with '{str2}'")  # Debugging line
+#     print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:Comparing: '{str1}' with '{str2}'")  # Debugging line
 #     if not str1 or not str2:
 #         print("One of the strings is empty. Returning False.")  # Debugging line
 #         return False
     
 #     # Use SequenceMatcher to compare word occurrence
 #     ratio = difflib.SequenceMatcher(None, str1.split(), str2.split()).ratio()
-#     print(f"Similarity ratio: {ratio}")  # Debugging line
+#     print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:Similarity ratio: {ratio}")  # Debugging line
     
 #     return ratio >= threshold
 
@@ -199,8 +200,8 @@ def merge_lists(initial_list, new_list):
         # Check if the current item should not be added due to similarity or duplication
         for existing_item in merged_list:
             if item == existing_item or is_similar(item, existing_item):
-                # print(f"{Fore.WHITE}Existing: {existing_item}")
-                # print(f"{Fore.RED}Skipping duplicate/near-duplicate: {item}")
+                # print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:{Fore.WHITE}Existing: {existing_item}")
+                # print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:{Fore.RED}Skipping duplicate/near-duplicate: {item}")
                 is_duplicate = True
                 break
 
@@ -312,7 +313,7 @@ def clean_response_json_text(text):
 #     separator_string = separator * terminal_width
     
 #     # Print the result
-#     print(f"\n{separator_string} \n"+f"{input_string}".center(terminal_width) +f"\n{separator_string}\n")
+#     print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:\n{separator_string} \n"+f"{input_string}".center(terminal_width) +f"\n{separator_string}\n")
 
 
 

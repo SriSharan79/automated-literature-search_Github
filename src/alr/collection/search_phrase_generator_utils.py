@@ -15,6 +15,7 @@ import re
 import string
 import pandas as pd
 from pathlib import Path
+from datetime import datetime as dt 
 import numpy as np
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
@@ -39,13 +40,13 @@ def generation_of_Key_phrases_with_scope(formatted_user_prompt, phrase_excel_fil
     Key_Phrases = []
     try:
         # Debugging: Print the formatted_user_prompt before passing it to LLM
-        # print(f"Formatted User Prompt: {formatted_user_prompt}")
+        # print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:Formatted User Prompt: {formatted_user_prompt}")
         
         # Call to LLM (mocked for now)
         response_from_llm = llm_call(formatted_user_prompt, Serach_phrase_System_Prompt,llm)
 
         # Debugging: Print the LLM response type and content
-        # print(f"Response from LLM (type: {type(response_from_llm)}): {response_from_llm}")
+        # print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:Response from LLM (type: {type(response_from_llm)}): {response_from_llm}")
 
         # Decide how to extract the text based on the type/structure of the response
         if isinstance(response_from_llm, str):
@@ -76,7 +77,7 @@ def generation_of_Key_phrases_with_scope(formatted_user_prompt, phrase_excel_fil
             raise TypeError(f"Unsupported LLM response type: {type(response_from_llm)}")
 
         # Debugging: Print the cleaned response
-        # print(f"Cleaned LLM response: {llm_response_only}")
+        # print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:Cleaned LLM response: {llm_response_only}")
 
         # Clean up any special tokens that the tokenizer might add to the response
         llm_response_only = llm_response_only.replace("<|eot_id|>", "").strip()
@@ -89,7 +90,7 @@ def generation_of_Key_phrases_with_scope(formatted_user_prompt, phrase_excel_fil
             raw_llm_response_text = llm_response_only
 
         # Debugging: Print raw LLM response text
-        # print(f"Raw LLM response text: {raw_llm_response_text}")
+        # print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:Raw LLM response text: {raw_llm_response_text}")
 
         def remove_string_from_list(strings, target):
             return [string for string in strings if string != target]
@@ -103,7 +104,7 @@ def generation_of_Key_phrases_with_scope(formatted_user_prompt, phrase_excel_fil
         cleaned_phrases = [phrase.strip('"') for phrase in phrases]
 
         # Debugging: Print cleaned phrases
-        # print(f"Cleaned phrases: {cleaned_phrases}")
+        # print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:Cleaned phrases: {cleaned_phrases}")
 
         log_time = datetime.now().strftime("%Y-%m-%d:%H-%M")
 
@@ -121,9 +122,9 @@ def generation_of_Key_phrases_with_scope(formatted_user_prompt, phrase_excel_fil
     except Exception as e:
         # A bad or failed LLM answer for ONE subset must not abort the whole
         # run, so this subset is skipped and the caller's loop moves on.
-        print(f"Error in generation_of_Key_phrases_with_scope: {str(e)}")
-        print(f"Formatted User Prompt: {formatted_user_prompt}")
-        print(f"Master Excel File Path: {phrase_excel_file}")
+        print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:Error in generation_of_Key_phrases_with_scope: {str(e)}")
+        print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:Formatted User Prompt: {formatted_user_prompt}")
+        print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:Master Excel File Path: {phrase_excel_file}")
         return []
 
     # Deliberately OUTSIDE the try above: failing to write the workbook is a
@@ -151,8 +152,8 @@ def Keywords_Processing_with_scope(CM, should_cancel=None, progress_callback=Non
     log_excel_file= Path(CM.search_phrase_log_path)
 
     try:
-        # print(f"\nScope: {scope}\n")
-        # print(f"\nKeywords: {Keywords}\n")
+        # print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:\nScope: {scope}\n")
+        # print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:\nKeywords: {Keywords}\n")
 
         all_subsets=None
 
@@ -163,11 +164,11 @@ def Keywords_Processing_with_scope(CM, should_cancel=None, progress_callback=Non
             all_subsets = get_subsets_with_min_size(Keywords, 2)
 
         # Debugging: Print the generated subsets
-        print(f"number of subsets:{ len(all_subsets)}")
+        print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:number of subsets:{ len(all_subsets)}")
 
         for i,subset in enumerate(all_subsets):
             if should_cancel is not None and should_cancel():
-                print(f"\nCancelled after {i} of {len(all_subsets)} keyword subsets - "
+                print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:\nCancelled after {i} of {len(all_subsets)} keyword subsets - "
                       "no further LLM calls; ranking the phrases collected so far.")
                 break
             if progress_callback is not None:
@@ -176,13 +177,13 @@ def Keywords_Processing_with_scope(CM, should_cancel=None, progress_callback=Non
             Serach_phrase_User_prompt = f"\n The scope of the research is: {scope}\n The keywords provided are: {subset_list}"
 
             # Debugging: Print the generated prompt
-            print(f"{i}th Generated Search Prompt: {Serach_phrase_User_prompt}")
+            print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:{i}th Generated Search Prompt: {Serach_phrase_User_prompt}")
 
             New_phrases = generation_of_Key_phrases_with_scope(Serach_phrase_User_prompt, phrase_excel_file, subset,Keywords,llm)
             Key_Phrases = merge_lists(Key_Phrases, New_phrases)
 
         # Debugging: Print the final key phrases
-        # print(f"Final Key Phrases: {Key_Phrases}")
+        # print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:Final Key Phrases: {Key_Phrases}")
         # `or []` guards a workbook that exists but has no 'Phrase' column yet.
         total_phrases= extract_column(phrase_excel_file,'Phrase') or []
         CM.update_Search_phrase_list(total_phrases)
@@ -194,12 +195,12 @@ def Keywords_Processing_with_scope(CM, should_cancel=None, progress_callback=Non
         rank_to_available_data(CM)
         log_generated_list_file(phrase_excel_file,len(total_phrases),log_excel_file,CM)
 
-        print(f"\n Final Key Phrases are updated:\n stored in {phrase_excel_file}\n logged in {log_excel_file}")
+        print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:\n Final Key Phrases are updated:\n stored in {phrase_excel_file}\n logged in {log_excel_file}")
 
         return CM
 
     except Exception as e:
-        print(f"Error in Keywords_Processing_with_scope: {str(e)}")        
+        print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:Error in Keywords_Processing_with_scope: {str(e)}")        
         traceback.print_exc()
         # Do NOT return [] here. The caller assigns this back onto its manager
         # (self.CM = Keywords_Processing_with_scope(self.CM)), so a failure
@@ -290,7 +291,7 @@ def rank_search_phrases(scope, column_name, excel_file, score_column_name='Simil
     df_excel[rank_column_name] = original_ranks
     df_excel.to_excel(excel_file, index=False)
     
-    # print(f"✅ Scores & Ranks written. Rank 1 = highest score!")
+    # print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:✅ Scores & Ranks written. Rank 1 = highest score!")
     
     # Output ranked DataFrame
     df_ranked = pd.DataFrame({
@@ -333,7 +334,7 @@ def run_scholarly(Input_Phrases,CM, Num_Search_Results, progress_callback=None, 
             Phrase, Num_Search_Results, keywords_list, backend=backend)
 
         if not publication_results:
-            print(f"\nNo results found for phrase: '{Phrase}'. Continuing with the next phrase.")
+            print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:\nNo results found for phrase: '{Phrase}'. Continuing with the next phrase.")
             continue
 
         # If publications are found, update the Excel file

@@ -1,6 +1,7 @@
 import os
 from .file_manager import ALR_main_folder
 import json
+from datetime import datetime as dt 
 # Model repo id 
 # model_repo_id = "openai/gpt-oss-20b"
 # model_repo_id = "meta-llama/Llama-3.2-3B-Instruct"
@@ -81,7 +82,7 @@ def set_api_key(API_Key_type, api_key):
         with open(API_keys_config, 'w') as file:
             json.dump(config_data, file, indent=4)
     except OSError as e:
-        print(f"Warning: could not persist API key to {API_keys_config}: {e}")
+        print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:Warning: could not persist API key to {API_keys_config}: {e}")
     return api_key
 
 
@@ -98,7 +99,7 @@ def delete_api_key(API_Key_type):
             with open(API_keys_config, 'w') as file:
                 json.dump(config_data, file, indent=4)
         except OSError as e:
-            print(f"Warning: could not update {API_keys_config}: {e}")
+            print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:Warning: could not update {API_keys_config}: {e}")
 
 
 def get_api_key(API_Key_type):
@@ -110,7 +111,7 @@ def get_api_key(API_Key_type):
     if existing:
         return existing
 
-    print(f"{API_Key_type} API Key not found.")
+    print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:{API_Key_type} API Key not found.")
     api_key = input(f"Please enter your {API_Key_type} API Key: ")
     return set_api_key(API_Key_type, api_key)
 

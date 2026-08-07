@@ -15,7 +15,7 @@ OR the abstract), plus readable ``Matched Keywords (Title)`` /
 """
 from datetime import datetime
 from pathlib import Path
-
+from datetime import datetime as dt 
 import pandas as pd
 
 TITLE_COLUMN = "Publication Name"
@@ -53,7 +53,7 @@ def classify_publications_list(CM, tags, service=None,
     CM.ensure_folders()
     pub_path = Path(CM.publications_list_excel)
     if not pub_path.exists():
-        print(f"Publication classification: no publications workbook at {pub_path}.")
+        print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:Publication classification: no publications workbook at {pub_path}.")
         return 0, None
 
     df = pd.read_excel(pub_path)
@@ -108,6 +108,6 @@ def classify_publications_list(CM, tags, service=None,
     out_path = safe_path(CM.classified_publications_folder / f"{current_date}_{base}")
     pd.DataFrame(rows).to_excel(out_path, index=False)
 
-    print(f"Classified {len(rows)} publication(s) against {len(tags)} keyword tag(s) "
+    print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:Classified {len(rows)} publication(s) against {len(tags)} keyword tag(s) "
           f"-> {out_path}")
     return len(rows), str(out_path)

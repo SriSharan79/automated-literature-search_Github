@@ -5,6 +5,7 @@ from datetime import datetime
 import json
 import os
 from colorama import Fore, Style
+from datetime import datetime as dt 
 
 def print_json_file(file_path):
     """
@@ -13,7 +14,7 @@ def print_json_file(file_path):
     """
     # Check if the file actually exists first
     if not os.path.exists(file_path):
-        print(f"Error: The file at '{file_path}' does not exist.")
+        print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:Error: The file at '{file_path}' does not exist.")
         return
 
     try:
@@ -23,9 +24,9 @@ def print_json_file(file_path):
             print(Fore.LIGHTYELLOW_EX + json.dumps(data, indent=4))
             
     except json.JSONDecodeError:
-        print(f"Error: '{file_path}' is not a valid JSON file.")
+        print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:Error: '{file_path}' is not a valid JSON file.")
     except Exception as e:
-        print(f"An unexpected error occurred: {e}")
+        print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:An unexpected error occurred: {e}")
 
 def store_to_json(input_data, file_path,time_taken):
     try:
@@ -44,12 +45,12 @@ def store_to_json(input_data, file_path,time_taken):
         with open(file_path, 'w') as json_file:
             json.dump(data, json_file, indent=2)  # Use 'indent=2' for pretty printing
         
-        # print(f"Data successfully written to {file_path}")
+        # print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:Data successfully written to {file_path}")
     
     except json.JSONDecodeError as e:
-        print(f"Invalid JSON input: {e}")
+        print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:Invalid JSON input: {e}")
     except Exception as e:
-        print(f"An error occurred: {e}")
+        print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:An error occurred: {e}")
 
 def store_to_json_with_text(input_data, file_path,time_taken, text,type):
     try:
@@ -69,12 +70,12 @@ def store_to_json_with_text(input_data, file_path,time_taken, text,type):
         with open(file_path, 'w') as json_file:
             json.dump(data, json_file, indent=2)  # Use 'indent=2' for pretty printing
         
-        # print(f"Data successfully written to {file_path}")
+        # print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:Data successfully written to {file_path}")
     
     except json.JSONDecodeError as e:
-        print(f"Invalid JSON input: {e}")
+        print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:Invalid JSON input: {e}")
     except Exception as e:
-        print(f"An error occurred: {e}")
+        print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:An error occurred: {e}")
 
 def pretty_print_json_from_file(file_path):
     # Load JSON data from the file
@@ -205,10 +206,10 @@ def get_key_from_file(file_path, target_key):
         return search(data, target_key)
 
     except FileNotFoundError:
-        print(f"Error: The file at {file_path} was not found.")
+        print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:Error: The file at {file_path} was not found.")
         return []
     except json.JSONDecodeError:
-        print(f"Error: Failed to decode JSON from {file_path}.")
+        print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:Error: Failed to decode JSON from {file_path}.")
         return []
 
 
@@ -250,7 +251,7 @@ def get_value_by_pair(file_path, anchor_key, anchor_value, target_key):
         return search(data)
 
     except (FileNotFoundError, json.JSONDecodeError) as e:
-        print(f"Error: {e}")
+        print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:Error: {e}")
         return None
 
 def get_chunks_from_references(file_path):
@@ -262,11 +263,11 @@ def get_chunks_from_references(file_path):
     :return: List of texts from the "Chunks" of the reference section or None if not found
     """
     try:
-        # print(f"Opening file: {file_path}")
+        # print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:Opening file: {file_path}")
         # Open the JSON file and load the data
         with open(file_path, 'r', encoding='utf-8') as f:
             data = json.load(f)
-            # print(f"Successfully loaded JSON. Total sections: {len(data)}")
+            # print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:Successfully loaded JSON. Total sections: {len(data)}")
 
         # List of possible reference headings
         reference_headings = ["references", "bibliography", "reference", "works cited", "cited works", "citations"]
@@ -274,14 +275,14 @@ def get_chunks_from_references(file_path):
         # Search for any of the reference sections
         for section in data:
             section_name = section.get("Section Name", "")
-            # print(f"Checking section: {section_name}")
+            # print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:Checking section: {section_name}")
 
             # Check if the section matches any of the reference headings
             if any(is_similar(section_name, heading,0.5) for heading in reference_headings) and "Chunks" in section:
-                # print(f"Found reference section: {section_name} with Chunks!")
+                # print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:Found reference section: {section_name} with Chunks!")
                 # Extract the texts from each chunk
                 texts = [chunk[1] for chunk in section["Chunks"] if isinstance(chunk, list) and len(chunk) > 1]
-                # print(f"Extracted {len(texts)} chunks")
+                # print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:Extracted {len(texts)} chunks")
                 return texts
 
         # Return None if no reference section or "Chunks" is found
@@ -289,5 +290,5 @@ def get_chunks_from_references(file_path):
         return None
 
     except (FileNotFoundError, json.JSONDecodeError) as e:
-        print(f"Error: {e}")
+        print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:Error: {e}")
         return None

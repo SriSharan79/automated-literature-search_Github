@@ -122,7 +122,7 @@ The JSON must follow this exact structure, covering all specified dimensions:
     
 #     # Dynamically select best model
 #     model = "15 - Apertus-8B-Instruct-2509 - A new swiss model from September 2025"
-#     print(f"🤖 Using model: {model}")
+#     print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:🤖 Using model: {model}")
 
 #     print(Fore.GREEN + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]: Prompt : \n {prompt}"+ Style.RESET_ALL)
     
@@ -164,7 +164,7 @@ The JSON must follow this exact structure, covering all specified dimensions:
 #         return content 
         
 #     except (KeyError, IndexError, ValueError) as exc:
-#         print(f"❌ Blablador failed. Full response: {result}")
+#         print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:❌ Blablador failed. Full response: {result}")
 #         raise ValueError(f"Unexpected response format from Blablador: {exc}") from exc
 
 def classify_title(title, service=None):
@@ -191,7 +191,7 @@ def classify_title(title, service=None):
         # Parse the string response into a dictionary
         return json.loads(response)
     except Exception as e:
-        print(f"Error processing title '{title}': {e}")
+        print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:Error processing title '{title}': {e}")
         return {topic: False for topic in [
             "Systems Engineering", "Safety Engineering", "Model based system Engineering",
             "Model based safety assessments", "Requirements Engineering", "Risk Assessment",
@@ -295,7 +295,7 @@ def classify_custom(text, tags, topic="the given taxonomy", service=None, source
         normalised = {_tag_key(k): v for k, v in result.items()}
         return {t: _coerce_classifier_bool(normalised.get(_tag_key(t))) for t in tags}
     except Exception as e:
-        print(f"Error in custom classification: {e}")
+        print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:Error in custom classification: {e}")
         return {t: False for t in tags}
 
 
@@ -324,7 +324,7 @@ def classify_abstract(abstract_text, service=None):
         
         return json.loads(response)
     except Exception as e:
-        print(f"Error processing abstract: {e}")
+        print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:Error processing abstract: {e}")
         return {topic: False for topic in TAXONOMY_TOPICS}
 
 
@@ -335,7 +335,7 @@ if __name__ == "__main__":
     classified_rows = []
 
     for index, row in df.iterrows():
-        print(f"Processing row {index + 1}/{len(df)}: {row['Publication Name'][:50]}...")
+        print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:Processing row {index + 1}/{len(df)}: {row['Publication Name'][:50]}...")
         
         # Get classification
         classification = classify_title(row['Publication Name'])
@@ -352,4 +352,4 @@ if __name__ == "__main__":
         # Small sleep to be kind to the API rate limits
         time.sleep(0.1)
 
-    print(f"✅ Finished! All data saved to {source_file}")
+    print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:✅ Finished! All data saved to {source_file}")

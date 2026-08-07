@@ -267,7 +267,7 @@ def vectorize_strings(
                           + Style.RESET_ALL)
                 if attempt < max_retries:
                     wait = retry_wait * attempt  # 10s, 20s, ... linear backoff
-                    print(f"   \u23f3 Waiting {wait:.0f}s before retrying...")
+                    print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:   \u23f3 Waiting {wait:.0f}s before retrying...")
                     time.sleep(wait)
             if result is None:
                 raise RuntimeError(
@@ -321,7 +321,7 @@ def save_index_file(index, file_path, method: str = None, service: str = None, m
     faiss.write_index(index, file_path)
     # Record how this index was built so queries can be validated against it.
     write_index_metadata(file_path, method, service, model, index.d)
-    print(f"FAISS index saved to: {file_path} (vectors stored: {index.ntotal})")
+    print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:FAISS index saved to: {file_path} (vectors stored: {index.ntotal})")
 
 
 def load_index_file(file_path):
@@ -372,7 +372,7 @@ def add_new_strings_to_index(
 
     except RuntimeError:
         # If index file doesn't exist or is corrupted, create a new index
-        print(f"Index file not found or invalid. Creating a new index at {index_file}.")
+        print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:Index file not found or invalid. Creating a new index at {index_file}.")
         d = new_vecs.shape[1]  # Dimensionality of the embedding vectors actually returned
         index = faiss.IndexFlatIP(d)  # Inner product on normalised vectors == cosine similarity
 
@@ -383,7 +383,7 @@ def add_new_strings_to_index(
     faiss.write_index(index, index_file)
     # Record/refresh the embedding-backend metadata for this index.
     write_index_metadata(index_file, method, service, model, index.d)
-    print(f"Added {len(new_strings)} vectors and saved updated index: {index_file}")
+    print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:Added {len(new_strings)} vectors and saved updated index: {index_file}")
 
 
 def search_similar(
@@ -424,4 +424,4 @@ if __name__ == "__main__":
     scores, ids = search_similar(VDB.Research_Areas_DB_bin, "search phrase", top_k=3)
     print("Top matches:")
     for s, i in zip(scores, ids):
-        print(f"idx={i}  cosine={s:.4f}  text={strings[i] if i < len(strings) else '(newly added item)'}")
+        print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:idx={i}  cosine={s:.4f}  text={strings[i] if i < len(strings) else '(newly added item)'}")

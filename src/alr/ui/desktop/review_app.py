@@ -19,6 +19,7 @@ import os
 import tkinter as tk
 from pathlib import Path
 from tkinter import ttk, filedialog, messagebox
+from datetime import datetime as dt 
 
 from alr.common import crash_logger
 # Shared UI plumbing (progress dialog, threaded runner, scrollable tabs) lives in
@@ -451,7 +452,7 @@ class ReviewApp:
                 state = json.loads(path.read_text(encoding="utf-8"))
                 return str(state.get("search_root_var") or "")
         except Exception as e:  # noqa: BLE001 - a bad cache must not block the tool
-            print(f"[Review] Could not read the saved search root: {e}")
+            print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:[Review] Could not read the saved search root: {e}")
         return ""
 
     def _apply_search_root(self):
@@ -471,7 +472,7 @@ class ReviewApp:
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_text(json.dumps(state, indent=2, default=str), encoding="utf-8")
         except Exception as e:  # noqa: BLE001 - remembering is best-effort
-            print(f"[Review] Could not save the search root: {e}")
+            print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:[Review] Could not save the search root: {e}")
 
     def _browse_search_root(self):
         folder = filedialog.askdirectory(title="Select the analysis-JSON search root")

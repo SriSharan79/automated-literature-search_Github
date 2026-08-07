@@ -6,6 +6,7 @@ from alr.data_analysis.Folder_Data_Analyzer import process_abstract
 import PyPDF2
 from pathlib import Path
 
+from datetime import datetime as dt 
 # path_pairs = [
 #     (
 #         "/remotedata/U/DLR+kata_du/ALR DATA/AI_RM/AI_REQ_Pdfs/Text_Readable",
@@ -32,7 +33,7 @@ from pathlib import Path
 # for (source_path,storage_path) in path_pairs:
 #     source_root = Path(source_path)
 #     for file_path in source_root.rglob("*.pdf"):        
-#         print(f"\n🔍 Checking: {file_path.name}")
+#         print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:\n🔍 Checking: {file_path.name}")
 #         process_pdf_mode_file(file_path, storage_path,'a')
 
 
@@ -42,7 +43,7 @@ storage_path='/remotedata/U/DLR+kata_du/ALR DATA/MBSE_MBSA_Specific_literature/A
 source_root = Path(source_path)
 
 for file_path in source_root.rglob("*.pdf"):        
-    print(f"\n🔍 Checking: {file_path.name}")
+    print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:\n🔍 Checking: {file_path.name}")
     process_pdf_mode_file(file_path, storage_path,'a')
 
 

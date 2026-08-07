@@ -15,6 +15,7 @@ import requests
 import json
 import os
 import time
+from datetime import datetime as dt 
 import unicodedata
 from collections import Counter
 import xml.etree.ElementTree as ET
@@ -93,7 +94,7 @@ class MetadataLogic:
             
     #         doc.close()
     #     except Exception as e:
-    #         print(f"Error reading PDF {file_path}: {e}")
+    #         print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:Error reading PDF {file_path}: {e}")
     #         return "", False, 0, False
             
     #     return self._clean_text(text), is_landscape, num_pages, has_comments
@@ -135,7 +136,7 @@ class MetadataLogic:
             
             doc.close()
         except Exception as e:
-            print(f"Error reading PDF {file_path}: {e}")
+            print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:Error reading PDF {file_path}: {e}")
             return "", False, 0, False
     
         full_text = "\n".join(text_parts)
@@ -154,7 +155,7 @@ class MetadataLogic:
 
         for doi in matches:
             doi = doi.rstrip('.,;)]')
-            print(f"   -> DOI gefunden: {doi}")
+            print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:   -> DOI gefunden: {doi}")
             try:
                 url = f"https://api.crossref.org/works/{doi}"
                 r = requests.get(url, headers=headers, timeout=5)
@@ -204,7 +205,7 @@ class MetadataLogic:
                         "url": pub_url # Added URL field
                     }
             except Exception as e:
-                print(f"   -> DOI Error: {e}")
+                print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:   -> DOI Error: {e}")
                 continue
         return None
 
@@ -215,7 +216,7 @@ class MetadataLogic:
         
         if match:
             aid = match.group(1)
-            print(f"   -> arXiv ID gefunden: {aid}")
+            print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:   -> arXiv ID gefunden: {aid}")
             
             # Respect rate limits
             time.sleep(3)
@@ -227,7 +228,7 @@ class MetadataLogic:
                 r = requests.get(url, headers=headers, timeout=5)
                 
                 if r.status_code == 429:
-                    print(f"   -> Rate limit hit for {aid}. Saving to retry list.")
+                    print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:   -> Rate limit hit for {aid}. Saving to retry list.")
                     self.failed_arxiv_requests.append((filename, aid))
                     return None
 
@@ -275,7 +276,7 @@ class MetadataLogic:
                             "url": f"https://arxiv.org/abs/{aid}"
                         }
             except Exception as e:
-                print(f"   -> arXiv Error: {e}")
+                print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:   -> arXiv Error: {e}")
                 
         return None
 
@@ -335,7 +336,7 @@ class MetadataLogic:
                         }
                         
         except Exception as e:
-            print(f"   -> Batch Recovery Error: {e}")
+            print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:   -> Batch Recovery Error: {e}")
 
         return results_map
 
@@ -344,7 +345,7 @@ class MetadataLogic:
         try:
             text, is_landscape, num_pages, has_comments = self.extract_pdf_info(file_path)
         except Exception as e:
-            print(f"   -> PDF Read Error: {e}")
+            print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:   -> PDF Read Error: {e}")
             text = ""
 
         # 2. Attempt Metadata Retrieval
@@ -431,9 +432,9 @@ class MetadataLogic:
             if progress_callback:
                 progress_callback(i, len(pdf_files), filename)
             if filename in skip_filenames:
-                print(f"--- Skipping (DOI already present): {filename} ---")
+                print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:--- Skipping (DOI already present): {filename} ---")
                 continue
-            print(f"--- Processing: {filename} ---")
+            print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:--- Processing: {filename} ---")
 
             try:
                 # Note: You should pass file_path to fetch_metadata_by_arxiv
@@ -448,11 +449,11 @@ class MetadataLogic:
                 self._save_to_excel(all_metadata, output_excel)
 
             except Exception as e:
-                print(f"Error processing {filename}: {e}")
+                print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:Error processing {filename}: {e}")
 
         # --- PHASE 2: Batch Processing 429 Failures ---
         if self.failed_arxiv_requests:
-            print(f"\n--- Retrying {len(self.failed_arxiv_requests)} failed arXiv requests in batch ---")
+            print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:\n--- Retrying {len(self.failed_arxiv_requests)} failed arXiv requests in batch ---")
             # We wait a bit more just to be safe before the retry
             time.sleep(5) 
             
@@ -463,7 +464,7 @@ class MetadataLogic:
                 fname = data["File_Name"]
                 if fname in batch_results:
                     new_data = batch_results[fname]
-                    print(f"   -> Successfully recovered metadata for: {fname}")
+                    print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:   -> Successfully recovered metadata for: {fname}")
                     
                     # Map retrieved batch data back to your Excel structure
                     data.update({
@@ -480,7 +481,7 @@ class MetadataLogic:
             # Final save after recovery
             self._save_to_excel(all_metadata, output_excel)
 
-        print(f"\nProcessing complete! Data saved to {output_excel}")
+        print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:\nProcessing complete! Data saved to {output_excel}")
 
     def process_directory_to_excel(self, root_folder, output_excel, should_cancel=None, skip_filenames=None):
         """
@@ -666,7 +667,7 @@ def enrich_space_with_doi(manager, db_path=None, should_cancel=None, input_path=
         if fields:
             store.update_document(uuid, fields)
             updated += 1
-    print(f"DOI enrichment updated {updated} document(s).")
+    print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:DOI enrichment updated {updated} document(s).")
     return updated
 
 

@@ -203,7 +203,7 @@ def search_openalex(search_query: str, Num_Results: int, Total_keywords: List[st
     Search the OpenAlex API and return rows in the same shape as the Scholar
     scraper (the publications-Excel COLUMNS), plus 'Source': 'OpenAlex'.
     """
-    print(f"Searching OpenAlex for: '{search_query}'")
+    print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:Searching OpenAlex for: '{search_query}'")
     per_page = max(1, min(int(Num_Results), 200))
     data = _openalex_get({"search": search_query, "per-page": per_page})
 
@@ -237,9 +237,9 @@ def search_openalex(search_query: str, Num_Results: int, Total_keywords: List[st
                 'Authors': authors,
                 'Source': 'OpenAlex',
             })
-            print(f"  Extracted result {len(publications_data)}: {title}...")
+            print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:  Extracted result {len(publications_data)}: {title}...")
         except Exception as e:
-            print(f"  Error processing OpenAlex work: {e}")
+            print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:  Error processing OpenAlex work: {e}")
             traceback.print_exc()
 
     return publications_data
@@ -269,7 +269,7 @@ def scrape_scholar_data(search_query, Num_Results, Total_keywords):
         print(Fore.RED + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:❌ scholarly is not installed ({e}); Scholar backend unavailable." + Style.RESET_ALL)
         return []
 
-    print(f"Searching Google Scholar for: '{search_query}'")
+    print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:Searching Google Scholar for: '{search_query}'")
 
     publications_data = []  # Stores the raw scraped data
 
@@ -281,7 +281,7 @@ def scrape_scholar_data(search_query, Num_Results, Total_keywords):
         for i, pub in enumerate(search_results):
             SCHOLAR_LIMITER.acquire()
             if i >= MAX_RESULTS:
-                print(f"\nStopped after processing {MAX_RESULTS} results.")
+                print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:\nStopped after processing {MAX_RESULTS} results.")
                 break
 
             try:
@@ -310,10 +310,10 @@ def scrape_scholar_data(search_query, Num_Results, Total_keywords):
                     'Authors': authors,
                     'Source': 'Google Scholar',
                 })
-                print(f"  Extracted result {i+1}: {title}...")
+                print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:  Extracted result {i+1}: {title}...")
 
             except Exception as e:
-                print(f"  Error processing publication: {e}")
+                print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:  Error processing publication: {e}")
                 traceback.print_exc()
 
     except MaxTriesExceededException as e:

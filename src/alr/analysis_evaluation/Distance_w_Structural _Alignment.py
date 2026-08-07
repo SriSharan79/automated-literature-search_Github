@@ -1,5 +1,6 @@
 import Levenshtein
 import jiwer
+from datetime import datetime as dt
 
 def calculate_edit_distance_metrics(text1, text2):
     """
@@ -36,18 +37,18 @@ if __name__ == "__main__":
 
 
     print("--- Text Comparison ---")
-    print(f"Reference: '{reference_text}'")
-    print(f"Candidate: '{candidate_text}'\n")
+    print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:Reference: '{reference_text}'")
+    print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:Candidate: '{candidate_text}'\n")
 
     metrics = calculate_edit_distance_metrics(reference_text, candidate_text)
 
     print("1. Character-Level Metrics (Levenshtein):")
-    print(f"   - Raw Edit Distance: {metrics['character_level']['levenshtein_distance']} edits")
-    print(f"   - Similarity Ratio:  {metrics['character_level']['similarity_ratio']:.4f} (normalized)")
+    print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:   - Raw Edit Distance: {metrics['character_level']['levenshtein_distance']} edits")
+    print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:   - Similarity Ratio:  {metrics['character_level']['similarity_ratio']:.4f} (normalized)")
     
     print("\n2. Word-Level Metrics (WER):")
     # WER can be > 1.0 if the candidate has significantly more words than the reference
-    print(f"   - Word Error Rate (WER): {metrics['word_level']['word_error_rate']:.4f}")
-    print(f"   - Edit Breakdown -> Substitutions: {metrics['word_level']['substitutions']}, "
+    print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:   - Word Error Rate (WER): {metrics['word_level']['word_error_rate']:.4f}")
+    print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:   - Edit Breakdown -> Substitutions: {metrics['word_level']['substitutions']}, "
           f"Insertions: {metrics['word_level']['insertions']}, "
           f"Deletions: {metrics['word_level']['deletions']}")

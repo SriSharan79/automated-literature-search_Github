@@ -905,7 +905,7 @@ def process_pdf_file(file, storage_path=""):
                 if MF.AD_Abstract_log_path and Path(MF.AD_Abstract_log_path).exists():
                     abstract_processed = get_corresponding_value(MF.AD_Abstract_log_path, "UUID", UUID, "file_path")
                     logger.info(f"✅ Abstract data available at: {abstract_processed}")
-                    print(f"✅ Abstract data available at: {abstract_processed}")
+                    print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:✅ Abstract data available at: {abstract_processed}")
             
             # STEP 3: References
             ref_res = process_pdf_references(file, storage_path)
@@ -913,7 +913,7 @@ def process_pdf_file(file, storage_path=""):
                 if MF.refrences_excel_log_path and Path(MF.refrences_excel_log_path).exists():
                     ref_processed = get_corresponding_value(MF.refrences_excel_log_path, "UUID", UUID, "filename")
                     logger.info(f"✅ Reference data logged for: {ref_processed}")
-                    print(f"✅ Reference data logged for: {ref_processed}")
+                    print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:✅ Reference data logged for: {ref_processed}")
 
             # Final Time Update
             elapsed = time.time() - start_time
@@ -924,7 +924,7 @@ def process_pdf_file(file, storage_path=""):
             # --- DETACH INDIVIDUAL FILE LOGGER ---
             if f_handler:
                 logger.info(f"--- Finished dedicated file log for UUID: {UUID} ---")
-                print(f"--- Finished dedicated file log for UUID: {UUID} ---")
+                print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:--- Finished dedicated file log for UUID: {UUID} ---")
                 close_pdf_file_logger(f_handler)
     else:
         logger.error(f"❌ Initial PDF sectioning failed for {file_path.name}")
@@ -985,7 +985,7 @@ def process_pdf_mode_file(file, storage_path="", mode=None, components=None, doc
 
     new_failed = []
     logger.info(f"\n🚀 Processing: {file_path.name} ")
-    print(f"\n🚀 Processing: {file_path.name} ")
+    print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:\n🚀 Processing: {file_path.name} ")
     num_pages = _get_page_count(file_path)
     if num_pages is not None:
         logger.info(f"📄 {file_path.name} has {num_pages} page(s).")

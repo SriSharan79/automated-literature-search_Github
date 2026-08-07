@@ -15,6 +15,7 @@ exact ``File_Name`` -> ``filename`` join.
 
 from __future__ import annotations
 
+from datetime import datetime as dt 
 import re
 from pathlib import Path
 
@@ -54,7 +55,7 @@ def _collect_log_rows(logs):
         try:
             df = pd.read_excel(log_path)
         except Exception as e:
-            print(f"⚠️ Could not read download log {log_path}: {e}")
+            print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:⚠️ Could not read download log {log_path}: {e}")
             continue
 
         pub_col = _find_col(df.columns, "Publication Name", "Title")
@@ -95,9 +96,9 @@ def enrich_from_download_logs(root, db_path=None, threshold: int = 88,
 
     logs = find_download_logs(root)
     if not logs:
-        print(f"No *_download_log.xlsx files found under {root}.")
+        print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:No *_download_log.xlsx files found under {root}.")
         return 0
-    print(f"🔎 Scanning {len(logs)} download-log file(s) for metadata matches...")
+    print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:🔎 Scanning {len(logs)} download-log file(s) for metadata matches...")
 
     log_rows = _collect_log_rows(logs)
     if not log_rows:
@@ -137,10 +138,10 @@ def enrich_from_download_logs(root, db_path=None, threshold: int = 88,
             if fields:
                 store.update_document(doc["uuid"], fields)
                 updated += 1
-                print(f"  ✅ {doc.get('filename')} <- {match_row['source']} ({', '.join(fields)})")
+                print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:  ✅ {doc.get('filename')} <- {match_row['source']} ({', '.join(fields)})")
 
         if progress_callback:
             progress_callback(idx, total)
 
-    print(f"Download-log enrichment updated {updated} document(s).")
+    print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:Download-log enrichment updated {updated} document(s).")
     return updated

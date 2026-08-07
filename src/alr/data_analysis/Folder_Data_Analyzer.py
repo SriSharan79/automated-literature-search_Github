@@ -46,17 +46,17 @@ def process_abstract(MF, progress_callback=None):
         print("✅ All abstracts are already up to date.")
         return
 
-    print(f"🧠 Analyzing {len(to_be_processed)} new abstracts...")
+    print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:🧠 Analyzing {len(to_be_processed)} new abstracts...")
     for i, item_id in enumerate(to_be_processed, 1):
         try:
             # Pass MF if the function needs paths to save the abstract
             file_name= get_corresponding_value(MF.excel_success, "UUID", item_id, "filename")
             if progress_callback:
                 progress_callback(i, len(to_be_processed), file_name)
-            print(f"🧠 Analyzing abstract of {file_name}")
+            print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:🧠 Analyzing abstract of {file_name}")
             analyze_abstract(item_id, MF)
         except Exception as e:
-            print(f"❌ Failed to analyze abstract for {item_id}: {e}")
+            print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:❌ Failed to analyze abstract for {item_id}: {e}")
             traceback.print_exc()
 
 def process_references(MF, progress_callback=None):
@@ -81,7 +81,7 @@ def process_references(MF, progress_callback=None):
         print("✅ All references are already up to date.")
         return
 
-    print(f"🧠 Analyzing {len(to_be_processed)} new references...")
+    print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:🧠 Analyzing {len(to_be_processed)} new references...")
     for i, item_id in enumerate(to_be_processed, 1):
         try:
             if progress_callback:
@@ -119,7 +119,7 @@ def process_references(MF, progress_callback=None):
 
 
         except Exception as e:
-            print(f"❌ Failed to analyze references for {item_id}: {e}")
+            print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:❌ Failed to analyze references for {item_id}: {e}")
             traceback.print_exc()
             
 
@@ -137,18 +137,18 @@ def process_folder(source_path, storage_path, n=25):
             from alr.data_analysis.Table_image_extractor import get_shared_doc_converter
             doc_converter = get_shared_doc_converter()
         except Exception as e:
-            print(f"⚠️ Shared Docling converter unavailable; falling back to per-file extraction: {e}")
+            print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:⚠️ Shared Docling converter unavailable; falling back to per-file extraction: {e}")
 
     # rglob("*.pdf") finds all PDFs in all subfolders
     for file_path in pdf_files:
-        print(f"\n🔍 Checking: {file_path.name}")
+        print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:\n🔍 Checking: {file_path.name}")
         # Check the number of pages in the PDF
         with open(file_path, "rb") as file:
             reader = PyPDF2.PdfReader(file)
             num_pages = len(reader.pages)
         # Skip the file if it has more than 'n' pages
         if num_pages > n:
-            print(f"⏭️ Skipping {file_path.name} because it has {num_pages} pages (more than {n}).")
+            print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:⏭️ Skipping {file_path.name} because it has {num_pages} pages (more than {n}).")
             continue
 
         # Process the PDF if it's within the page limit
@@ -160,9 +160,9 @@ def process_folder(source_path, storage_path, n=25):
     try:
         from alr.common.sql_store import sync_storage_to_sql
         synced = sync_storage_to_sql(storage_path)
-        print(f"🗃️ {synced} document(s) synced into the review database.")
+        print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:🗃️ {synced} document(s) synced into the review database.")
     except Exception as e:  # noqa: BLE001 - a sync failure must not fail the run
-        print(f"⚠️ Could not sync into the review database: {e}")
+        print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:⚠️ Could not sync into the review database: {e}")
 
     print("\n🎉 Synchronization and Processing Complete.")
 

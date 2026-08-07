@@ -340,7 +340,7 @@ def select_model_interactive(service: str) -> str:
             print(Fore.CYAN + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:\nAvailable {service} models:" + Style.RESET_ALL)
             for i, m in enumerate(models, 1):
                 marker = "  (current)" if m == current else ""
-                print(f"  {i}. {m}{marker}")
+                print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:  {i}. {m}{marker}")
         choice = input(f"Select a {service} model [1-{len(models)}], 'r' to "
                        f"refresh the list, or Enter to keep '{current}': ").strip()
         if choice == "":
@@ -715,7 +715,7 @@ def load_embedding_model_and_tokenizer(local_dir: str = None):
 
     print_with_separator("DebugLog", '/')
     try:
-        print(f"\nLoading embedding tokenizer from local path: {local_dir}")
+        print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:\nLoading embedding tokenizer from local path: {local_dir}")
         tokenizer = AutoTokenizer.from_pretrained(
             local_dir,
             padding_side="left",
@@ -723,7 +723,7 @@ def load_embedding_model_and_tokenizer(local_dir: str = None):
             trust_remote_code=True,
         )
 
-        print(f"Loading embedding model from local path: {local_dir}")
+        print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:Loading embedding model from local path: {local_dir}")
         use_cuda = torch.cuda.is_available()
         dtype = torch.float16 if use_cuda else torch.float32
         device_map = "auto" if use_cuda else "cpu"
@@ -822,7 +822,7 @@ def vectorize_strings_local(input_strings: list, max_length: int = 512, batch_si
             chunk = input_strings[_chunk_start:_chunk_start + step]
             vectors.extend(_embed_in_halves(list(chunk), _encode, "local embedding"))
             _done = min(_chunk_start + step, total)
-            print(f"   \U0001f9ee Local embedding: {_done}/{total} strings vectorized...",
+            print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:   \U0001f9ee Local embedding: {_done}/{total} strings vectorized...",
                   flush=True)
     finally:
         activity_monitor.end()
@@ -951,7 +951,7 @@ def log_llm_interaction(model, service, messages, response_text,time_taken):
             df_final = df_new
 
         df_final.to_excel(excel_path, index=False)
-        # print(f"Logged interaction to {json_filename} and updated Excel.")
+        # print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:Logged interaction to {json_filename} and updated Excel.")
     except Exception as e:
         print('failed to log LLM Interaction in excel')
 
@@ -1002,7 +1002,7 @@ def Ollama_ask_llm(
 
     except (KeyError, IndexError) as exc:
 
-        print(f"❌ DLR Ollama failed. Full response: {result}")
+        print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:❌ DLR Ollama failed. Full response: {result}")
         content=f"❌ DLR Ollama . Full response: {result}\n Unexpected response format from Blablador: {exc}"
         raise ValueError("Unexpected response format from Ollama") from exc
 
@@ -1053,12 +1053,12 @@ def cache_blablador_models(blablador_key: str = None, cache_file: str = "blablad
             json.dump(cache_data, f, indent=2)
         
         model_ids = [m['id'] for m in raw_resp.get('data', [])]
-        print(f"✅ Cached response to {cache_file} ({len(model_ids)} models)")
+        print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:✅ Cached response to {cache_file} ({len(model_ids)} models)")
         
         return model_ids
         
     except Exception as e:
-        print(f"❌ Cache failed: {e}")
+        print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:❌ Cache failed: {e}")
         return []
 
 
@@ -1071,7 +1071,7 @@ def find_best_blablador_model(blablador_key: str = None) -> str:
     
     if not key:
         model = PREFERRED_BLABLADOR_MODELS[0]
-        print(f"🤖 Using model (no key): {model}")
+        print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:🤖 Using model (no key): {model}")
         return model
     
     headers = {"Authorization": f"Bearer {key}"}
@@ -1088,25 +1088,25 @@ def find_best_blablador_model(blablador_key: str = None) -> str:
             # Priority 1: Preferred models
             for p in PREFERRED_BLABLADOR_MODELS:
                 if p in avail: 
-                    print(f"🤖 Using model (preferred): {p}")
+                    print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:🤖 Using model (preferred): {p}")
                     return p
             
             # Priority 2: Largest/best models
             for m in avail:
                 if "120b" in m.lower() or "gpt-oss" in m.lower():
-                    print(f"🤖 Using model (large): {m}")
+                    print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:🤖 Using model (large): {m}")
                     return m
             
             # Priority 3: First available
             if avail:
                 model = avail[0]
-                print(f"🤖 Using model (first available): {model}")
+                print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:🤖 Using model (first available): {model}")
                 return model
     except Exception:
         pass  # Silent fallback
     
     model = "GPT-OSS-120b"
-    print(f"🤖 Using model (fallback): {model}")
+    print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:🤖 Using model (fallback): {model}")
     return model
 
 
@@ -1126,7 +1126,7 @@ def blabla_ask_llm(
 
     # Resolve the model: explicit arg > session selection > configured default.
     model = model or get_selected_model("BlaBla") or DEFAULT_BLABLADOR_MODEL
-    # print(f"🤖 Using model: {model}")
+    # print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:🤖 Using model: {model}")
     
     messages = [
         {'role': 'system', 'content': sys_prompt},
@@ -1167,7 +1167,7 @@ def blabla_ask_llm(
         
     except (KeyError, IndexError, ValueError) as exc:
         # Print full response for debugging
-        print(f"❌ Blablador failed. Full response: {result}")
+        print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:❌ Blablador failed. Full response: {result}")
         content=f"❌ Blablador failed. Full response: {result}\n Unexpected response format from Blablador: {exc}"
 
         raise ValueError(f"Unexpected response format from Blablador: {exc}") from exc
@@ -1229,7 +1229,7 @@ def chatai_ask_llm(
         if content is None:
             raise ValueError("Empty content received from Chat AI")
     except (KeyError, IndexError, ValueError) as exc:
-        print(f"❌ Chat AI failed. Full response: {result}")
+        print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:❌ Chat AI failed. Full response: {result}")
         raise ValueError(f"Unexpected response format from Chat AI: {exc}") from exc
 
     end_time = time.time()
@@ -1250,10 +1250,10 @@ def hf_pipeline_with_Lamma():
     if local_model_dir:
         print_with_separator("DebugLog",'/')
         try:
-            print(f"\nLoading tokenizer from local path: {local_model_dir}")
+            print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:\nLoading tokenizer from local path: {local_model_dir}")
             tokenizer = AutoTokenizer.from_pretrained(local_model_dir, local_files_only=True)
 
-            print(f"Loading model from local path: {local_model_dir}")
+            print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:Loading model from local path: {local_model_dir}")
             model = AutoModelForCausalLM.from_pretrained(
                 local_model_dir,
                 local_files_only=True,

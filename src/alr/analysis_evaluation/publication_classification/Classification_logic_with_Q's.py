@@ -9,6 +9,7 @@ from colorama import Fore, Style, init
 import pandas as pd
 from typing import Optional, List, Dict, Tuple
 from collections import deque
+from datetime import datetime as dt
 
 from alr.analysis_evaluation.publication_classification.classification_questions import FIELD_AGNOSTIC_CLASSIFICATION_SECTIONS, Sys_prompt_cla
 from alr.common.llm_utils import Local_Model_call
@@ -19,10 +20,10 @@ init(autoreset=True)
 
 
 def Classification_of_Phrase(title, question, max_retries: int = 3) -> bool:
-    print(f"\n🔍 Evaluating:")
-    print(f"   📄 Title: '{title}'")
-    print(f"   ❓ Question: '{question}'")
-    print(f"   {'-'*80}")
+    print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:\n🔍 Evaluating:")
+    print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:   📄 Title: '{title}'")
+    print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:   ❓ Question: '{question}'")
+    print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:   {'-'*80}")
 
     Prompt=f"""
     You will now evaluate one title and one classification question.
@@ -85,7 +86,7 @@ def save_all_sheets(summary_df: pd.DataFrame, sheets_dict: Dict[str, pd.DataFram
                 df.to_excel(writer, sheet_name=safe_sheet_name, index=False)
         return True
     except Exception as e:
-        print(f"❌ Error saving Excel file: {e}")
+        print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:❌ Error saving Excel file: {e}")
         traceback.print_exc()    
         return False
 
@@ -103,27 +104,27 @@ def classify_excel_data_to_sheets(
     Saves the workbook immediately after EVERY single question evaluation.
     """
     try:
-        print(f"\n📂 Reading Excel file: {file_path}")
+        print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:\n📂 Reading Excel file: {file_path}")
         input_df = pd.read_excel(file_path)
-        print(f"✅ Loaded {len(input_df)} rows, {len(input_df.columns)} columns")
+        print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:✅ Loaded {len(input_df)} rows, {len(input_df.columns)} columns")
     except FileNotFoundError:
-        print(f"❌ Error: File not found at path: {file_path}")
+        print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:❌ Error: File not found at path: {file_path}")
         traceback.print_exc()    
         return None
     except Exception as e:
-        print(f"❌ Error reading Excel file: {e}")
+        print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:❌ Error reading Excel file: {e}")
         traceback.print_exc()    
         return None
     
     if column_name not in input_df.columns:
-        print(f"❌ Error: Column '{column_name}' not found in the Excel file.")
+        print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:❌ Error: Column '{column_name}' not found in the Excel file.")
         return None
 
     if output_file_path is None:
         output_file_path = file_path.replace(".xlsx", "Loacal_3.1-8bI_Classification.xlsx")
     
     # --- 1. Initialize Main Summary DataFrame ---
-    print(f"🔧 Initializing Main Summary Sheet Layout...")
+    print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:🔧 Initializing Main Summary Sheet Layout...")
     summary_headers = [column_name] + list(FIELD_AGNOSTIC_CLASSIFICATION_SECTIONS.keys())
     init_summary_data = {col: [None] * len(input_df) for col in summary_headers}
     init_summary_data[column_name] = input_df[column_name].tolist()
@@ -131,7 +132,7 @@ def classify_excel_data_to_sheets(
 
     # --- 2. Initialize Section Breakdown DataFrames using full Question strings as Columns ---
     sheets_data: Dict[str, pd.DataFrame] = {}
-    print(f"🔧 Initializing individual section sheets layout...")
+    print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:🔧 Initializing individual section sheets layout...")
     for section, questions in FIELD_AGNOSTIC_CLASSIFICATION_SECTIONS.items():
         # Column names are now the actual question strings from your configuration list
         headers = [column_name] + list(questions) + ["Result"]
@@ -142,22 +143,22 @@ def classify_excel_data_to_sheets(
     # Pre-save workspace skeleton setup
     save_all_sheets(summary_df, sheets_data, output_file_path)
     
-    print(f"{'='*90}")
-    print(f"Starting Multi-Sheet Process (Live Summary + Question Text Autosave Active)...")
-    print(f"{'='*90}\n")
+    print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:{'='*90}")
+    print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:Starting Multi-Sheet Process (Live Summary + Question Text Autosave Active)...")
+    print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:{'='*90}\n")
     
     total_rows = len(input_df)
     
     for row_idx, title in enumerate(input_df[column_name]):
         if progress_callback:
             progress_callback(row_idx + 1, total_rows, str(title)[:60])
-        print(f"\n🔍 Row {row_idx + 1}/{total_rows}")
-        print(f"   Title: {str(title)[:85]}{'...' if len(str(title)) > 85 else ''}")
-        print(f"   {'-'*85}")
+        print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:\n🔍 Row {row_idx + 1}/{total_rows}")
+        print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:   Title: {str(title)[:85]}{'...' if len(str(title)) > 85 else ''}")
+        print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:   {'-'*85}")
         
         # Fallback handling for blank records
         if pd.isna(title) or str(title).strip() == "":
-            print(f"   ⚠️  Empty title, defaulting all spaces to False/0.0.")
+            print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:   ⚠️  Empty title, defaulting all spaces to False/0.0.")
             for section, questions in FIELD_AGNOSTIC_CLASSIFICATION_SECTIONS.items():
                 summary_df.at[row_idx, section] = 0.0
                 for question in questions:
@@ -170,7 +171,7 @@ def classify_excel_data_to_sheets(
         
         # Process every section for the current paper title row
         for section, questions in FIELD_AGNOSTIC_CLASSIFICATION_SECTIONS.items():
-            print(f"\n   📌 Section Sheet: {section}")
+            print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:\n   📌 Section Sheet: {section}")
             
             row_all_true = True
             true_count = 0
@@ -191,18 +192,18 @@ def classify_excel_data_to_sheets(
                 summary_df.at[row_idx, section] = round(current_score, 1)
                 
                 # Save everything instantly upon collecting any single response item
-                print(f"   💾 [Immediate Save] Updating column for Q{idx+1} and live summary tracking...")
+                print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:   💾 [Immediate Save] Updating column for Q{idx+1} and live summary tracking...")
                 save_all_sheets(summary_df, sheets_data, output_file_path)
                     
             # Complete the row sequence by establishing final logic markers 
             sheets_data[section].at[row_idx, "Result"] = round(current_score, 1)
             save_all_sheets(summary_df, sheets_data, output_file_path)
-            print(f"    ↳ Section Completed. Overall Sheet Result -> {row_all_true} | Score -> {round(current_score, 1)}; {summary_df.at[row_idx, section]}%")
+            print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:    ↳ Section Completed. Overall Sheet Result -> {row_all_true} | Score -> {round(current_score, 1)}; {summary_df.at[row_idx, section]}%")
 
-    print(f"\n{'='*90}")
-    print(f"✅ CLASSIFICATION COMPLETE!")
-    print(f"   Master Summary and Sections compiled to: {output_file_path}")
-    print(f"{'='*90}\n")
+    print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:\n{'='*90}")
+    print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:✅ CLASSIFICATION COMPLETE!")
+    print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:   Master Summary and Sections compiled to: {output_file_path}")
+    print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:{'='*90}\n")
     
     return sheets_data
 

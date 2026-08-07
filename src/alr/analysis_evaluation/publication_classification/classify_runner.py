@@ -10,6 +10,7 @@ title (reusing :func:`title_classifier.classify_title`), writes the managed
 """
 
 from __future__ import annotations
+from datetime import datetime as dt
 
 
 def _load_existing_classification(excel_path):
@@ -208,7 +209,7 @@ def _run_classification(manager, kind, db_path=None, progress_callback=None,
     total = len(docs)
     for i, d in enumerate(docs, 1):
         if should_cancel is not None and should_cancel():
-            print(f"{kind.title()} classification cancelled by user.")
+            print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:{kind.title()} classification cancelled by user.")
             break
         if classify_document(manager, d, kind=kind, db_path=db_path, service=service,
                              mode=mode or "generate", store=store):
@@ -216,7 +217,7 @@ def _run_classification(manager, kind, db_path=None, progress_callback=None,
         if progress_callback:
             progress_callback(i, total)
 
-    print(f"{kind.title()} classification updated {updated} document(s).")
+    print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:{kind.title()} classification updated {updated} document(s).")
     return updated
 
 
@@ -325,7 +326,7 @@ def classify_custom_space(manager, topic, tags, source="title", db_path=None,
         if progress_callback:
             progress_callback(i, total)
 
-    print(f"Custom classification '{topic}' updated {updated} document(s) "
+    print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:Custom classification '{topic}' updated {updated} document(s) "
           f"-> {excel_path} (SQL column: {sql_col}).")
     return updated
 
@@ -377,7 +378,7 @@ def question_score_space(manager, source="registry", download_log=None, output_e
         column_name = "title"
 
     output_excel = str(output_excel or manager.question_classification_excel)
-    print(f"Question-scored classification: '{column_name}' from {file_path} -> {output_excel}")
+    print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:Question-scored classification: '{column_name}' from {file_path} -> {output_excel}")
     q_logic.classify_excel_data_to_sheets(
         file_path=file_path, column_name=column_name, output_file_path=output_excel,
         progress_callback=progress_callback

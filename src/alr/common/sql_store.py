@@ -24,6 +24,7 @@ import os
 import sqlite3
 import threading
 from datetime import datetime
+from datetime import datetime as dt 
 from pathlib import Path
 
 from alr.common.file_manager import ALR_main_folder, DataAnalyzeManager
@@ -238,7 +239,7 @@ def _enable_wal(conn, db_path):
             conn.execute("PRAGMA synchronous = NORMAL")
             _WAL_STATE[key] = True
         except Exception as e:  # noqa: BLE001 - a share that cannot do WAL still works
-            print(f"ℹ️ Review database staying in rollback-journal mode "
+            print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:ℹ️ Review database staying in rollback-journal mode "
                   f"(WAL unavailable here: {e}). Writes wait up to "
                   f"{BUSY_TIMEOUT_SECONDS:.0f}s for a lock.")
             _WAL_STATE[key] = False
@@ -794,7 +795,7 @@ def _locate_missing_analysis_jsons(uuids, manager, search_root) -> dict:
     from alr.common.file_handlers import index_jsons_under_root
     found = index_jsons_under_root(wanted, root)
     if found:
-        print(f"Located {len(found)} analysis JSON(s) missing from the space under {root}.")
+        print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:Located {len(found)} analysis JSON(s) missing from the space under {root}.")
     return found
 
 
@@ -894,14 +895,14 @@ def sync_storage_to_sql(manager_or_folder, db_path=DB_PATH, progress_callback=No
 
     registry = manager.excel_success
     if not os.path.exists(registry):
-        print(f"No processed-file registry found at {registry}; nothing to sync.")
+        print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:No processed-file registry found at {registry}; nothing to sync.")
         return 0
 
     try:
         from alr.common.excel_utils import read_excel_cached
         df = read_excel_cached(registry)
     except Exception as e:
-        print(f"Could not read registry {registry}: {e}")
+        print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:Could not read registry {registry}: {e}")
         return 0
 
     store = AnalyzedDataStore(db_path)
@@ -965,9 +966,9 @@ def _merge_space_metadata_files(store, manager) -> int:
         try:
             updated += store.merge_metadata_workbook(pd.read_excel(path))
         except Exception as e:
-            print(f"Could not merge metadata file {path}: {e}")
+            print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:Could not merge metadata file {path}: {e}")
     if updated:
-        print(f"Merged DOI/publication metadata from {len(files)} workbook(s): "
+        print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:Merged DOI/publication metadata from {len(files)} workbook(s): "
               f"{updated} row update(s).")
     return updated
 
@@ -1006,7 +1007,7 @@ def _merge_space_evaluation_overviews(store, manager) -> int:
             try:
                 ov = pd.read_excel(latest, sheet_name="Overview")
             except Exception as e:
-                print(f"Could not read evaluation overview {latest}: {e}")
+                print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:Could not read evaluation overview {latest}: {e}")
                 continue
             sections = [c[: -len("_True_Count")] for c in ov.columns if c.endswith("_True_Count")]
             for _, row in ov.iterrows():
@@ -1031,7 +1032,7 @@ def _merge_space_evaluation_overviews(store, manager) -> int:
                     (json.dumps(stats), "" if percent is None else str(percent), uuid))
                 updated += cur.rowcount if cur.rowcount > 0 else 0
     if updated:
-        print(f"Merged evaluation summaries from overview workbook(s): {updated} row update(s).")
+        print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:Merged evaluation summaries from overview workbook(s): {updated} row update(s).")
     return updated
 
 
@@ -1103,7 +1104,7 @@ def _merge_space_classification_files(store, manager) -> int:
             try:
                 df = pd.read_excel(path)
             except Exception as e:
-                print(f"Could not read classification file {path}: {e}")
+                print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:Could not read classification file {path}: {e}")
                 continue
             if "filename" not in df.columns:
                 continue
@@ -1126,7 +1127,7 @@ def _merge_space_classification_files(store, manager) -> int:
                     (summary, doc[0]))
                 updated += cur.rowcount if cur.rowcount > 0 else 0
     if updated:
-        print(f"Merged publication classification from workbook(s): {updated} row update(s).")
+        print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:Merged publication classification from workbook(s): {updated} row update(s).")
     return updated
 
 
@@ -1156,7 +1157,7 @@ def sync_one_document(manager_or_folder, filename, db_path=DB_PATH, search_root=
         # Cached while the registry is unchanged: this runs once per document.
         df = read_excel_cached(registry)
     except Exception as e:
-        print(f"Could not read registry {registry}: {e}")
+        print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:Could not read registry {registry}: {e}")
         return False
 
     if "filename" not in df.columns:

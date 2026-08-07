@@ -94,7 +94,7 @@ def extract_pdf_info(file_path):
         
         doc.close()
     except Exception as e:
-        print(f"Error reading PDF {file_path}: {e}")
+        print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:Error reading PDF {file_path}: {e}")
         return "", False, 0, False
 
     full_text = "\n".join(text_parts)
@@ -113,7 +113,7 @@ def fetch_metadata_by_doi( text):
 
     for doi in matches:
         doi = doi.rstrip('.,;)]')
-        print(f"   -> DOI gefunden: {doi}")
+        print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:   -> DOI gefunden: {doi}")
         try:
             url = f"https://api.crossref.org/works/{doi}"
             r = requests.get(url, headers=headers, timeout=5)
@@ -156,7 +156,7 @@ def fetch_metadata_by_doi( text):
                     "abstract": ""
                 }
         except Exception as e:
-            print(f"   -> DOI Error: {e}")
+            print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:   -> DOI Error: {e}")
             continue
     return None
 
@@ -165,7 +165,7 @@ def fetch_metadata_by_arxiv( text):
     match = re.search(arxiv_pattern, text, re.IGNORECASE)
     if match:
         aid = match.group(1)
-        print(f"   -> arXiv ID gefunden: {aid}")
+        print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:   -> arXiv ID gefunden: {aid}")
         try:
             # url = f"http://export.arxiv.org/api/query?id_list={aid}"
             url = f"https://export.arxiv.org/api/query?id_list={aid}"
@@ -194,9 +194,9 @@ def fetch_metadata_by_arxiv( text):
                         "publisher": "arXiv"
                     }
         except requests.exceptions.Timeout:
-            print(f"   -> arXiv Error: The request timed out. arXiv might be slow right now.")
+            print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:   -> arXiv Error: The request timed out. arXiv might be slow right now.")
         except Exception as e:
-            print(f"   -> arXiv Error: {e}")
+            print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:   -> arXiv Error: {e}")
             pass
     return None
 
@@ -261,7 +261,7 @@ def extract_meta_data_from_doi( file_path):
     if base_data["title"] == "Title Not Found":
         print("Warning: Title was not found in metadata.")
 
-    # print(f"Successfully processed: {base_data['title']}")
+    # print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:Successfully processed: {base_data['title']}")
     return base_data
 
 import pdfplumber

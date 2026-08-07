@@ -11,6 +11,7 @@ from typing import List,Dict,Any, Optional
 from colorama import Fore, Style, init
 import pandas as pd
 from datetime import datetime
+from datetime import datetime as dt 
 # Initialize colorama
 init(autoreset=True)
 
@@ -37,14 +38,14 @@ def Log_keyPhrases(Key_Phrases, EXCEL_FILE_PATH):
     """
     
     if os.path.exists(EXCEL_FILE_PATH):
-        print(f"Loading existing data from {EXCEL_FILE_PATH}...")
+        print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:Loading existing data from {EXCEL_FILE_PATH}...")
         try:
             existing_df = pd.read_excel(EXCEL_FILE_PATH, engine='openpyxl')
         except Exception as e:
-            print(f"Error reading Excel file: {e}. Starting with an empty DataFrame.")
+            print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:Error reading Excel file: {e}. Starting with an empty DataFrame.")
             existing_df = pd.DataFrame(columns=COLUMNS_Keyphrase)
     else:
-        print(f"File not found. Creating new data structure at {EXCEL_FILE_PATH}...")
+        print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:File not found. Creating new data structure at {EXCEL_FILE_PATH}...")
         existing_df = pd.DataFrame(columns=COLUMNS_Keyphrase)
 
     # Convert existing DataFrame to a list of dicts for easier indexing/updates
@@ -68,14 +69,14 @@ def Log_keyPhrases(Key_Phrases, EXCEL_FILE_PATH):
                 found = True  
                  # Increment the Occurrence count for the found phrase
                 existing_rec['Occurrence'] += 1            
-                print(f"UPDATED: '{Phrase_name}'")
+                print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:UPDATED: '{Phrase_name}'")
                 break
         
         # If not found, add the new publication as a new record
         if not found:
             new_pub['Occurrence'] = 1
             existing_records.append(new_pub)
-            print(f"ADDED NEW: '{Phrase_name}'")
+            print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:ADDED NEW: '{Phrase_name}'")
 
     # Convert the updated list of records back to a DataFrame
     final_df = pd.DataFrame(existing_records, columns=COLUMNS_Keyphrase)
@@ -84,9 +85,9 @@ def Log_keyPhrases(Key_Phrases, EXCEL_FILE_PATH):
     try:
         _ensure_parent_dir(EXCEL_FILE_PATH)
         final_df.to_excel(EXCEL_FILE_PATH, index=False, engine='openpyxl')
-        print(f"\nSuccessfully saved/updated data to {EXCEL_FILE_PATH}")
+        print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:\nSuccessfully saved/updated data to {EXCEL_FILE_PATH}")
     except Exception as e:
-        print(f"\nFATAL ERROR: Could not write to Excel file. Check permissions or if the file is open. Error: {e}")            
+        print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:\nFATAL ERROR: Could not write to Excel file. Check permissions or if the file is open. Error: {e}")            
         traceback.print_exc()
         # Re-raise: swallowing this left the caller believing the phrase list had
         # been written, so the failure only surfaced later as a confusing
@@ -147,7 +148,7 @@ def log_Keyword_Json(CM):
     
     log_generated_list_file(filename, num_of_keywords, Log_EXCEL_FILE_PATH,CM)
 
-    print(f"Logged successfully at {new_entry['timestamp']}\n")
+    print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:Logged successfully at {new_entry['timestamp']}\n")
     return f"Logged successfully at {new_entry['timestamp']}\n"
 
 
@@ -179,12 +180,12 @@ def log_generated_list_file(filename, Count, EXCEL_FILE_PATH, CM):
             existing_df = pd.read_excel(EXCEL_FILE_PATH, engine='openpyxl')
             # Append new record
             updated_df = pd.concat([existing_df, new_df], ignore_index=True)
-            print(f"Appending data to {EXCEL_FILE_PATH}...")
+            print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:Appending data to {EXCEL_FILE_PATH}...")
         except Exception as e:
-            print(f"Error reading Excel file: {e}. Creating new file.")
+            print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:Error reading Excel file: {e}. Creating new file.")
             updated_df = new_df
     else:
-        print(f"File not found. Creating new Excel file at {EXCEL_FILE_PATH}...")
+        print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:File not found. Creating new Excel file at {EXCEL_FILE_PATH}...")
         updated_df = new_df
 
     # Write back to Excel
@@ -202,15 +203,15 @@ def aggregate_and_update_excel(new_publications,EXCEL_FILE_PATH):
     
     if os.path.exists(EXCEL_FILE_PATH):
         # Read the existing data
-        print(f"Loading existing data from {EXCEL_FILE_PATH}...")
+        print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:Loading existing data from {EXCEL_FILE_PATH}...")
         try:
             existing_df = pd.read_excel(EXCEL_FILE_PATH, engine='openpyxl')
         except Exception as e:
-            print(f"Error reading Excel file: {e}. Starting with an empty DataFrame.")
+            print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:Error reading Excel file: {e}. Starting with an empty DataFrame.")
             existing_df = pd.DataFrame(columns=COLUMNS)
     else:
         # Initialize a new DataFrame if the file doesn't exist
-        print(f"File not found. Creating new data structure at {EXCEL_FILE_PATH}...")
+        print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:File not found. Creating new data structure at {EXCEL_FILE_PATH}...")
         existing_df = pd.DataFrame(columns=COLUMNS)
 
     
@@ -241,13 +242,13 @@ def aggregate_and_update_excel(new_publications,EXCEL_FILE_PATH):
                     # Append the new phrase on a new line
                     existing_records[i]['Search Phrase'] += '\n' + new_phrase
                 
-                print(f"UPDATED: '{pub_name}' (Occurrence: {existing_records[i]['Occurrence']})")
+                print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:UPDATED: '{pub_name}' (Occurrence: {existing_records[i]['Occurrence']})")
                 break
         
         # If not found, add the new publication as a new record
         if not found:
             existing_records.append(new_pub)
-            print(f"ADDED NEW: '{pub_name}'")
+            print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:ADDED NEW: '{pub_name}'")
 
     # Convert the updated list of records back to a DataFrame
     final_df = pd.DataFrame(existing_records, columns=COLUMNS)
@@ -256,9 +257,9 @@ def aggregate_and_update_excel(new_publications,EXCEL_FILE_PATH):
     try:
         _ensure_parent_dir(EXCEL_FILE_PATH)
         final_df.to_excel(EXCEL_FILE_PATH, index=False, engine='openpyxl')
-        print(f"\nSuccessfully saved/updated data to {EXCEL_FILE_PATH}")
+        print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:\nSuccessfully saved/updated data to {EXCEL_FILE_PATH}")
     except Exception as e:
-        print(f"\nFATAL ERROR: Could not write to Excel file. Check permissions or if the file is open. Error: {e}")        
+        print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:\nFATAL ERROR: Could not write to Excel file. Check permissions or if the file is open. Error: {e}")        
         traceback.print_exc()
         # Same reason as in Log_keyPhrases: a swallowed write failure here left
         # the publication search reporting success on data that never landed.

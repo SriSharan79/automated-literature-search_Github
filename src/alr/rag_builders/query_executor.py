@@ -34,42 +34,42 @@ def batch_enrich_reports(base_storage_path):
     storage_root = Path(base_storage_path)
     
     if not storage_root.exists():
-        print(f"{Fore.RED}Error: Storage path {base_storage_path} does not exist.")
+        print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:{Fore.RED}Error: Storage path {base_storage_path} does not exist.")
         return
 
-    print(f"{Fore.CYAN}{Style.BRIGHT}--- Starting Batch Enrichment Scan ---")
-    print(f"{Fore.LIGHTBLACK_EX}Searching in: {storage_root}\n")
+    print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:{Fore.CYAN}{Style.BRIGHT}--- Starting Batch Enrichment Scan ---")
+    print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:{Fore.LIGHTBLACK_EX}Searching in: {storage_root}\n")
 
     # 1. Identify all matching Excel files recursively
     # This looks for any file ending in '_query_Overview_report.xlsx'
     report_files = list(storage_root.rglob("*_query_Overview_report.xlsx"))
 
     if not report_files:
-        print(f"{Fore.YELLOW}No overview reports found.")
+        print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:{Fore.YELLOW}No overview reports found.")
         return
 
-    print(f"{Fore.GREEN}Found {len(report_files)} report(s) to process.")
+    print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:{Fore.GREEN}Found {len(report_files)} report(s) to process.")
 
     for excel_path in report_files:
-        print(f"\n{Fore.BLUE}Processing: {excel_path.name}")
+        print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:\n{Fore.BLUE}Processing: {excel_path.name}")
         
         # 2. Identify the Abstract_Json_files folder
         # Based on your structure: parent_dir / "Abstract_Json_files"
         json_folder = excel_path.parent / "Abstract_Json_files"
         
         if json_folder.exists() and json_folder.is_dir():
-            print(f"{Fore.LIGHTBLACK_EX}Found JSON source: {json_folder}")
+            print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:{Fore.LIGHTBLACK_EX}Found JSON source: {json_folder}")
             
             # 3. Call your enrichment function
             try:
                 enrich_overview_with_abstracts(excel_path, json_folder)
-                print(f"{Fore.GREEN}Successfully enriched {excel_path.name}")
+                print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:{Fore.GREEN}Successfully enriched {excel_path.name}")
             except Exception as e:
-                print(f"{Fore.RED}Failed to enrich {excel_path.name}: {e}")
+                print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:{Fore.RED}Failed to enrich {excel_path.name}: {e}")
         else:
-            print(f"{Fore.RED}Skipping: Abstract_Json_files folder not found at {json_folder}")
+            print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:{Fore.RED}Skipping: Abstract_Json_files folder not found at {json_folder}")
 
-    print(f"\n{Fore.CYAN}{Style.BRIGHT}--- Batch Processing Complete ---")
+    print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:\n{Fore.CYAN}{Style.BRIGHT}--- Batch Processing Complete ---")
 
 def generate_query_report_RA_KC(query_list, Storage_path, top_k: int = 20):
     import faiss
@@ -105,7 +105,7 @@ def generate_query_report_RA_KC(query_list, Storage_path, top_k: int = 20):
                 if i < 0:
                     continue  # FAISS pads with -1 when top_k > indexed vectors
                 matched_text = strings[i] if i < len(strings) else '(newly added item)'
-                print(f"idx={i}  cosine={s:.4f}  text={matched_text}")
+                print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:idx={i}  cosine={s:.4f}  text={matched_text}")
                 
                 # Extract the existing data (UUID, Title, etc.)
                 uuid = get_column_value(_ex, "UUID", i)
@@ -143,12 +143,12 @@ def generate_query_report_RA_KC(query_list, Storage_path, top_k: int = 20):
             with pd.ExcelWriter(file_path, engine="openpyxl", mode="w") as writer:
                 df.to_excel(writer, index=False, sheet_name="Results")
             
-            print(f"Report saved at: {file_path}")
+            print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:Report saved at: {file_path}")
 
         overview_File_path =  Path(VDB.query_storage) /f"{attr}_query_Overview_report.xlsx"
         aggregate_query_excel_data(Path(VDB.query_storage), "Title", overview_File_path)   
 
-        print(f"Report saved at: {VDB.query_storage}")        
+        print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:Report saved at: {VDB.query_storage}")        
 
 
 def generate_query_report(query_list, storage_path, search_root='/remotedata/U/DLR+kata_du/ALR DATA', top_k: int = 50,
@@ -175,14 +175,14 @@ def generate_query_report(query_list, storage_path, search_root='/remotedata/U/D
     work — one per section searched plus the overview aggregation and the
     enrich/harvest step of each query — so a UI can drive a determinate bar.
     """
-    print(f"{Fore.CYAN}{Style.BRIGHT}--- Initializing Report Generation for {len(query_list)} queries ---")
+    print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:{Fore.CYAN}{Style.BRIGHT}--- Initializing Report Generation for {len(query_list)} queries ---")
 
     vdb = Vec_DB_Manager(storage_path)
     mf = DataAnalyzeManager(storage_path)
 
-    print(f"{Fore.YELLOW}Building sections map...")
+    print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:{Fore.YELLOW}Building sections map...")
     sec_map = build_sections_map_full(vdb, only=section_keys)
-    print(f"{Fore.GREEN}Sections map built with {len(sec_map)} attributes.")
+    print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:{Fore.GREEN}Sections map built with {len(sec_map)} attributes.")
 
     # Work units: each section search + the overview step + the harvest step.
     total_units = len(query_list) * (len(sec_map) + 2)
@@ -196,12 +196,12 @@ def generate_query_report(query_list, storage_path, search_root='/remotedata/U/D
 
     not_added = []
     for idx, query in enumerate(query_list, 1):
-        print(f"\n{Back.BLUE}{Fore.WHITE}{Style.BRIGHT} [{idx}/{len(query_list)}] Processing query: '{query}' ")
+        print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:\n{Back.BLUE}{Fore.WHITE}{Style.BRIGHT} [{idx}/{len(query_list)}] Processing query: '{query}' ")
         started_at = datetime.now()
         try:
             vdb.update_query_folder(query)
         except Exception as e:
-            print(f"{Fore.RED}   [!] Could not prepare the query folder for '{query}' "
+            print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:{Fore.RED}   [!] Could not prepare the query folder for '{query}' "
                   f"({type(e).__name__}: {e}) — skipped, continuing with the next query.")
             not_added.append(_skip_row("query", e, title=query))
             continue
@@ -210,12 +210,12 @@ def generate_query_report(query_list, storage_path, search_root='/remotedata/U/D
         #    Attribute_Query_Results sub-folder). One attribute that cannot be
         #    searched (no index, index/Excel mismatch, unreadable file) is
         #    skipped and recorded; the query still produces its report.
-        print(f"{Fore.CYAN} > [Step 1] Generating individual attribute reports...")
+        print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:{Fore.CYAN} > [Step 1] Generating individual attribute reports...")
         for attr, (_ex, _j, bin_path) in sec_map.items():
             try:
                 reason = process_attribute_query(query, attr, _ex, bin_path, vdb, top_k=top_k)
             except Exception as e:
-                print(f"{Fore.RED}   [!] Attribute '{attr}' failed ({type(e).__name__}: {e}) "
+                print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:{Fore.RED}   [!] Attribute '{attr}' failed ({type(e).__name__}: {e}) "
                       f"— skipped, continuing with the next attribute.")
                 reason = f"{type(e).__name__}: {e}"
             if reason:
@@ -226,11 +226,11 @@ def generate_query_report(query_list, storage_path, search_root='/remotedata/U/D
             # 2. Generate the Overview Report from the attribute Excels (which now
             #    live in their own sub-folder, so the overview sits alone in the
             #    query folder root instead of amongst repeated attribute Excels).
-            print(f"{Fore.CYAN} > [Step 2] Aggregating results into Overview Report...")
+            print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:{Fore.CYAN} > [Step 2] Aggregating results into Overview Report...")
             overview_path = Path(vdb.query_storage) / f"{query}_query_Overview_report.xlsx"
             overview_path = sanitize_path_length(overview_path)
             aggregate_query_excel_data(vdb.query_attr_storage, "Title", overview_path)
-            print(f"{Fore.GREEN}   - Overview saved: {overview_path}")
+            print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:{Fore.GREEN}   - Overview saved: {overview_path}")
             tick("Aggregated the overview report")
 
             # 3. Enrich the overview with the analyzed attribute data. This ALWAYS
@@ -246,10 +246,10 @@ def generate_query_report(query_list, storage_path, search_root='/remotedata/U/D
                 "rescon": mf.AD_ResCon,
             }
             if harvest_files:
-                print(f"{Fore.CYAN} > [Step 3] Harvesting associated resources (PDFs/JSONs) and enriching...")
+                print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:{Fore.CYAN} > [Step 3] Harvesting associated resources (PDFs/JSONs) and enriching...")
                 enriched = harvest_query_resources(overview_path, search_root, vdb, mf, enrich_keys=enrich_keys)
             else:
-                print(f"{Fore.CYAN} > [Step 3] No file harvest (user choice) — enriching the "
+                print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:{Fore.CYAN} > [Step 3] No file harvest (user choice) — enriching the "
                       "overview from the space's analysis JSONs (with a search-root fallback)...")
                 enriched = enrich_overview_with_abstracts(
                     overview_path, space_folders, enrich_keys=enrich_keys, search_root=search_root)
@@ -259,7 +259,7 @@ def generate_query_report(query_list, storage_path, search_root='/remotedata/U/D
             # search root and retry once. The UI pops a folder picker and remembers
             # the choice for the next queries.
             if not enriched and resolve_search_root is not None:
-                print(f"{Fore.YELLOW}   - No attribute data found under the current search root; "
+                print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:{Fore.YELLOW}   - No attribute data found under the current search root; "
                       "asking for a search location...")
                 new_root = resolve_search_root()
                 if new_root:
@@ -285,20 +285,20 @@ def generate_query_report(query_list, storage_path, search_root='/remotedata/U/D
                 "Overview Path": str(overview_path),
             })
 
-            print(f"{Fore.GREEN}{Style.BRIGHT}Workflow complete for: '{query}'")
-            print(f"{Fore.LIGHTBLACK_EX}Path: {vdb.query_storage}")
+            print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:{Fore.GREEN}{Style.BRIGHT}Workflow complete for: '{query}'")
+            print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:{Fore.LIGHTBLACK_EX}Path: {vdb.query_storage}")
         except Exception as e:
-            print(f"{Fore.RED}   [!] Query '{query}' failed after the attribute search "
+            print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:{Fore.RED}   [!] Query '{query}' failed after the attribute search "
                   f"({type(e).__name__}: {e}) — skipped, continuing with the next query.")
             not_added.append(_skip_row("report", e, title=query))
             continue
 
     if not_added:
         log_path = _append_skiplog(Path(vdb.results) / QUERY_SKIPPED_LOG, not_added)
-        print(f"{Fore.YELLOW}{Style.BRIGHT}⚠️ {len(not_added)} attribute(s)/query(ies) were skipped"
+        print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:{Fore.YELLOW}{Style.BRIGHT}⚠️ {len(not_added)} attribute(s)/query(ies) were skipped"
               + (f" — see {log_path}" if log_path else ""))
 
-    print(f"\n{Fore.MAGENTA}{Style.BRIGHT}--- ALL TASKS FINISHED ---")
+    print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:\n{Fore.MAGENTA}{Style.BRIGHT}--- ALL TASKS FINISHED ---")
     return not_added
 
 
@@ -310,15 +310,15 @@ def process_attribute_query(query, attr, excel_ref, bin_path, vdb, top_k: int = 
     import faiss
 
     if not bin_path.exists() or bin_path.stat().st_size == 0:
-        print(f"{Fore.RED}   [!] Warning: No Vector DB for '{attr}'. Skipping.")
+        print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:{Fore.RED}   [!] Warning: No Vector DB for '{attr}'. Skipping.")
         return "no vector index built for this attribute"
 
-    print(f"{Fore.LIGHTBLUE_EX}   - Processing attribute: {attr}")
+    print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:{Fore.LIGHTBLUE_EX}   - Processing attribute: {attr}")
     index = faiss.read_index(str(bin_path))
     strings = extract_column(excel_ref, "Content")
 
     if len(strings) != index.ntotal:
-        print(f"{Fore.RED}{Style.BRIGHT}   [!] Data matching error for {attr}")
+        print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:{Fore.RED}{Style.BRIGHT}   [!] Data matching error for {attr}")
         return (f"index/Excel mismatch: {index.ntotal} vectors vs {len(strings)} rows "
                 f"(rebuild this attribute's index)")
 
@@ -431,9 +431,9 @@ def _log_query_run(log_path, row: dict) -> None:
         else:
             df = pd.DataFrame([row])
         df.to_excel(log_path, index=False, engine="openpyxl")
-        print(f"{Fore.LIGHTBLACK_EX}   - Query logged to: {log_path}")
+        print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:{Fore.LIGHTBLACK_EX}   - Query logged to: {log_path}")
     except Exception as e:  # noqa: BLE001
-        print(f"{Fore.RED}   [!] Could not write the query log: {e}")
+        print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:{Fore.RED}   [!] Could not write the query log: {e}")
 
 
 # The search-root fallback lives in file_handlers so the storage->SQL sync
@@ -455,14 +455,14 @@ def enrich_overview_with_abstracts(overview_path, json_folders, enrich_keys=None
     The section key **is** the JSON field name, so the registry is the single
     source of truth for both the column header and the lookup.
     """
-    print(f"{Fore.YELLOW}Updating Overview with analyzed attributes...")
+    print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:{Fore.YELLOW}Updating Overview with analyzed attributes...")
 
     if not isinstance(json_folders, dict):  # legacy call: just the abstract folder
         json_folders = {"abstract": json_folders}
 
     grouped = _enrich_keys_by_source(enrich_keys)
     if not grouped:
-        print(f"{Fore.YELLOW}   - No attributes selected; overview left unchanged.")
+        print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:{Fore.YELLOW}   - No attributes selected; overview left unchanged.")
         return
 
     df = pd.read_excel(overview_path)
@@ -509,7 +509,7 @@ def enrich_overview_with_abstracts(overview_path, json_folders, enrich_keys=None
                 with open(json_file, 'r', encoding='utf-8') as f:
                     data = json.load(f)
             except Exception as e:
-                print(f"{Fore.RED}   [!] Error reading {source} JSON for UUID {uuid}: {e}")
+                print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:{Fore.RED}   [!] Error reading {source} JSON for UUID {uuid}: {e}")
                 continue
 
             for field in keys:
@@ -525,7 +525,7 @@ def enrich_overview_with_abstracts(overview_path, json_folders, enrich_keys=None
 
     # Save the enriched dataframe back to the same path
     df.to_excel(overview_path, index=False, engine="openpyxl")
-    print(f"{Fore.GREEN}   - Enrichment complete. {updated_count} rows updated "
+    print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:{Fore.GREEN}   - Enrichment complete. {updated_count} rows updated "
           f"across {len(grouped)} analysis source(s).")
     return updated_count
 
@@ -540,7 +540,7 @@ def harvest_query_resources(overview_path, search_root, vdb, mf, enrich_keys=Non
     org_uuids = df_overview['Original_UUID'].unique().tolist()
     grouped = _enrich_keys_by_source(enrich_keys)
 
-    # print(f"{Fore.LIGHTBLACK_EX}     * Copying {len(unique_filenames)} PDFs...")
+    # print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:{Fore.LIGHTBLACK_EX}     * Copying {len(unique_filenames)} PDFs...")
     # copy_matching_pdfs(unique_filenames, search_root, Path(vdb.querry_storage_pdfs))
 
     json_folders = {}
@@ -548,7 +548,7 @@ def harvest_query_resources(overview_path, search_root, vdb, mf, enrich_keys=Non
         suffix, folder_attr = _ENRICH_SOURCES[source]
         dest = Path(getattr(vdb, folder_attr))
         wanted = [f"{uuid}{suffix}" for uuid in org_uuids]
-        print(f"{Fore.LIGHTBLACK_EX}     * Copying {len(wanted)} {source} JSONs...")
+        print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:{Fore.LIGHTBLACK_EX}     * Copying {len(wanted)} {source} JSONs...")
         # copy_matching_jsons creates the destination itself; drop it again when
         # the search turned up nothing, so a query never leaves an empty folder.
         copy_matching_jsons(wanted, search_root, dest)
@@ -557,7 +557,7 @@ def harvest_query_resources(overview_path, search_root, vdb, mf, enrich_keys=Non
 
     # 3. New Step: Enrich Excel with data from those JSONs (search_root stays
     #    available as a fallback for any UUID the harvest copy missed).
-    print(f"{Fore.CYAN} > [Step 4] Merging JSON metadata into Excel...")
+    print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:{Fore.CYAN} > [Step 4] Merging JSON metadata into Excel...")
     return enrich_overview_with_abstracts(overview_path, json_folders,
                                           enrich_keys=enrich_keys, search_root=search_root)
 

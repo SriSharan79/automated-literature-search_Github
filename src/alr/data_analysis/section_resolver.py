@@ -249,7 +249,7 @@ def _write_json(path, data: dict, spec: TargetSpec) -> bool:
             json.dump(data, f, indent=2)
         return True
     except OSError as exc:
-        print(f"⚠️ Could not write {spec.label} JSON: {exc}")
+        print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:⚠️ Could not write {spec.label} JSON: {exc}")
         return False
 
 
@@ -331,7 +331,7 @@ def load_body_chunks(MF) -> list[str]:
         return load_chunks(MF)
 
     if dropped:
-        print(f"ℹ Back matter excluded from positional windows: {', '.join(dropped)}")
+        print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:ℹ Back matter excluded from positional windows: {', '.join(dropped)}")
     return body
 
 
@@ -383,7 +383,7 @@ def identify_via_window(MF, spec: TargetSpec, llm_service) -> tuple[str, list[st
     try:
         found = llm_call(user_prompt, spec.identify_sp, llm_service)
     except Exception as exc:
-        print(f"⚠️ Window identification call failed for {spec.label}: {exc}")
+        print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:⚠️ Window identification call failed for {spec.label}: {exc}")
         return "", []
 
     if not found or spec.error_token in str(found):
@@ -431,7 +431,7 @@ def _load_analyzer(spec: TargetSpec):
         module = importlib.import_module(spec.analyzer_module)
         return getattr(module, spec.analyzer_func)
     except (ImportError, AttributeError) as exc:
-        print(f"⚠️ Analyzer for {spec.label} unavailable ({spec.analyzer_module}): {exc}")
+        print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:⚠️ Analyzer for {spec.label} unavailable ({spec.analyzer_module}): {exc}")
         return None
 
 
@@ -479,7 +479,7 @@ def _merge_reanalysis(before: dict, after, spec: TargetSpec) -> tuple[dict, list
         return dict(before), []
 
     if any(spec.error_token in str(value) for value in after.values()):
-        print(f"⚠️ {spec.label}: re-analysis returned {spec.error_token}; keeping the stored analysis.")
+        print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:⚠️ {spec.label}: re-analysis returned {spec.error_token}; keeping the stored analysis.")
         return dict(before), []
 
     merged = dict(after)
@@ -531,12 +531,12 @@ def reanalyze_missing_attributes(MF, target: str, doc_id=None,
         return []
 
     if not force and reanalysis_attempts(before) >= 1:
-        print(f"⏩ {spec.label}: re-analysis already attempted; leaving it to the top-up pass.")
+        print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:⏩ {spec.label}: re-analysis already attempted; leaving it to the top-up pass.")
         return []
 
     resolved_id = _resolve_document_id(MF, spec, doc_id)
     if not resolved_id:
-        print(f"⚠️ {spec.label}: no document ID available; skipping re-analysis.")
+        print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:⚠️ {spec.label}: no document ID available; skipping re-analysis.")
         return []
 
     analyzer = _load_analyzer(spec)
@@ -553,14 +553,14 @@ def reanalyze_missing_attributes(MF, target: str, doc_id=None,
     try:
         status = analyzer(resolved_id, MF)
     except Exception as exc:
-        print(f"⚠️ {spec.label} re-analysis failed: {exc}")
+        print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:⚠️ {spec.label} re-analysis failed: {exc}")
         status = "F"
 
     # The analyzer calls `update_id_files`, so re-read the path rather than
     # trusting the one captured above.
     new_path = _json_path(MF, spec)
     if str(new_path) != str(path):
-        print(f"⚠️ {spec.label}: re-analysis retargeted the JSON path; restoring the original file.")
+        print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:⚠️ {spec.label}: re-analysis retargeted the JSON path; restoring the original file.")
         _write_json(path, before, spec)
         return []
 
@@ -576,7 +576,7 @@ def reanalyze_missing_attributes(MF, target: str, doc_id=None,
     if filled:
         print(Fore.GREEN + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:✓ {spec.label} re-analysis filled: {', '.join(filled)}" + Style.RESET_ALL)
     else:
-        print(f"ℹ {spec.label}: re-analysis added nothing; falling back to the top-up pass.")
+        print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:ℹ {spec.label}: re-analysis added nothing; falling back to the top-up pass.")
 
     return filled
 
@@ -661,7 +661,7 @@ def top_up_missing_attributes(MF, target: str, force: bool = False) -> list[str]
         return []
 
     if not force and top_up_attempts(data) >= 1:
-        print(f"⏩ {spec.label}: top-up already attempted; leaving {len(gaps)} attribute(s) empty.")
+        print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:⏩ {spec.label}: top-up already attempted; leaving {len(gaps)} attribute(s) empty.")
         return []
 
     section_text = data.get(spec.text_key) or ""
@@ -674,7 +674,7 @@ def top_up_missing_attributes(MF, target: str, force: bool = False) -> list[str]
         # burn the document's one top-up on a pass that never ran, and no later
         # run (after the sections are rebuilt) could ever try again. Re-checking
         # costs a file read and no LLM call.
-        print(f"⚠️ {spec.label}: no further chunks available for a top-up pass "
+        print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:⚠️ {spec.label}: no further chunks available for a top-up pass "
               f"(nothing spent; it will be retried once the document's sections are readable).")
         return []
 
@@ -697,7 +697,7 @@ def top_up_missing_attributes(MF, target: str, force: bool = False) -> list[str]
         raw = llm_call(user_prompt, spec.extract_sp, llm_service)
         retry = json.loads(clean_response_json_text(raw))
     except Exception as exc:
-        print(f"⚠️ {spec.label} top-up pass failed: {exc}")
+        print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:⚠️ {spec.label} top-up pass failed: {exc}")
         retry = None
 
     if isinstance(retry, dict):
@@ -710,7 +710,7 @@ def top_up_missing_attributes(MF, target: str, force: bool = False) -> list[str]
         with open(path, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2)
     except OSError as exc:
-        print(f"⚠️ Could not write {spec.label} JSON after top-up: {exc}")
+        print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:⚠️ Could not write {spec.label} JSON after top-up: {exc}")
         return []
 
     if filled:
@@ -718,7 +718,7 @@ def top_up_missing_attributes(MF, target: str, force: bool = False) -> list[str]
     else:
         still = missing_keys(data, spec)
         if still:
-            print(f"ℹ {spec.label}: {', '.join(still)} stay 'No information available'.")
+            print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:ℹ {spec.label}: {', '.join(still)} stay 'No information available'.")
 
     return filled
 
@@ -759,7 +759,7 @@ def _space_documents(MF):
     try:
         df = read_excel_cached(registry)
     except Exception as exc:
-        print(f"⚠️ Could not read the registry {registry}: {exc}")
+        print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:⚠️ Could not read the registry {registry}: {exc}")
         return []
     if "UUID" not in df.columns:
         return []
@@ -859,7 +859,7 @@ def complete_space(MF, targets=None, force: bool = False, should_cancel=None,
                     filled_here[target] = filled
                     _refresh_target_log(MF, target, uuid)
             except Exception as exc:  # noqa: BLE001 - one document must not end the pass
-                print(f"⚠️ {TARGETS[target].label} completion failed for {name or uuid}: {exc}")
+                print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:⚠️ {TARGETS[target].label} completion failed for {name or uuid}: {exc}")
                 result["failed"].append((uuid, f"{target}: {exc}"))
 
         if not filled_here:
@@ -879,9 +879,9 @@ def complete_space(MF, targets=None, force: bool = False, should_cancel=None,
                 if sync_one_document(MF, name, db_path=db_path or DB_PATH):
                     result["synced"] += 1
                 else:
-                    print(f"ℹ No registry row matched '{name}'; it will be picked up by a full sync.")
+                    print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:ℹ No registry row matched '{name}'; it will be picked up by a full sync.")
             except Exception as exc:  # noqa: BLE001
-                print(f"⚠️ Could not sync {name or uuid} into the review database: {exc}")
+                print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:⚠️ Could not sync {name or uuid} into the review database: {exc}")
 
     return result
 
@@ -893,7 +893,7 @@ def _refresh_target_log(MF, target, uuid):
         from alr.data_analysis.Pdf_File_processor import _refresh_attribute_log
         _refresh_attribute_log(MF, target, uuid)
     except Exception as exc:  # noqa: BLE001 - the JSON is the source of truth
-        print(f"⚠️ Could not refresh the {target} attribute log: {exc}")
+        print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:⚠️ Could not refresh the {target} attribute log: {exc}")
 
 
 def complete_missing_attributes(MF, target: str, doc_id=None,

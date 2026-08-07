@@ -1,6 +1,7 @@
 import nltk
 from nltk.translate.bleu_score import sentence_bleu, SmoothingFunction
 from rouge_score import rouge_scorer
+from datetime import datetime as dt
 
 # Ensure you have the NLTK tokenizer downloaded (required for BLEU tokenization)
 nltk.download('punkt', quiet=True)
@@ -59,21 +60,21 @@ if __name__ == "__main__":
     text_b = "SAE ARP4754A"
 
     print("--- Text Comparison ---")
-    print(f"Text 1: '{text_a}'")
-    print(f"Text 2: '{text_b}'\n")
+    print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:Text 1: '{text_a}'")
+    print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:Text 2: '{text_b}'\n")
 
     # 1. Jaccard Similarity
     jaccard = calculate_jaccard_similarity(text_a, text_b)
-    print(f"1. Jaccard Similarity: {jaccard:.4f}")
+    print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:1. Jaccard Similarity: {jaccard:.4f}")
 
     # 2. ROUGE Scores
     # Note: ROUGE typically treats text_a as the 'ground truth/reference'
     rouge = calculate_rouge_scores(reference=text_a, candidate=text_b)
     print("2. ROUGE F1-Scores:")
     for metric, score in rouge.items():
-        print(f"   - {metric}: {score:.4f}")
+        print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:   - {metric}: {score:.4f}")
 
     # 3. BLEU Score
     # Note: BLEU treats text_a as the 'reference' and text_b as the 'candidate translation'
     bleu = calculate_bleu_score(reference=text_a, candidate=text_b)
-    print(f"3. BLEU Score: {bleu:.4f}")
+    print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:3. BLEU Score: {bleu:.4f}")

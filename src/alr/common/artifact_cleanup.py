@@ -18,6 +18,7 @@ managed structure is safe to prune: any folder a later step needs is recreated b
 """
 
 from __future__ import annotations
+from datetime import datetime as dt 
 
 from pathlib import Path
 
@@ -95,7 +96,7 @@ def prune_empty_artifacts(root, should_cancel=None):
         _sweep_files(root)
 
     if removed_files or removed_dirs:
-        print(f"🧹 Cleanup: removed {len(removed_files)} empty file(s) and "
+        print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:🧹 Cleanup: removed {len(removed_files)} empty file(s) and "
               f"{len(removed_dirs)} empty folder(s) from {root}")
     return removed_files, removed_dirs
 

@@ -53,7 +53,7 @@ def process_llm_refined_structure(llm_output_string):
         # ast.literal_eval is great because it's safer than eval()
         return ast.literal_eval(cleaned_input)
     except (ValueError, SyntaxError) as e:
-        print(f"Error parsing: {e}")
+        print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:Error parsing: {e}")
 
         traceback.print_exc()
         return []

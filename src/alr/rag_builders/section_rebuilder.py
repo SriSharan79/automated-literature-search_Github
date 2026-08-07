@@ -382,7 +382,7 @@ def read_common_members(common_path, match_filename):
             continue
         members = _members_from_frame(read_section_excel(paths[0]), match_filename)
         if members:
-            print(f"[Rebuild] Membership taken from '{spec.key}': "
+            print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:[Rebuild] Membership taken from '{spec.key}': "
                   f"{len(members)} document(s).")
             return members
     return []
@@ -421,7 +421,7 @@ def _index_sources(sources, match_filename, should_cancel=None):
                 continue
             located[key] = (src, str(uuid))
             added += 1
-        print(f"[Rebuild] Indexed {added} document(s) from {src}")
+        print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:[Rebuild] Indexed {added} document(s) from {src}")
     return located
 
 
@@ -638,8 +638,8 @@ def rebuild_section_databases(storage_path, keys=None, sources=None,
         print(Fore.YELLOW + "[Rebuild] No documents to rebuild from.")
         return list(keys) + unknown
     for src_name, plan in sorted(plans.items()):
-        print(f"[Rebuild] {src_name}: {len(plan)} document(s) recorded.")
-    print(f"[Rebuild] {len(keys)} attribute(s) in: {storage_path}")
+        print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:[Rebuild] {src_name}: {len(plan)} document(s) recorded.")
+    print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:[Rebuild] {len(keys)} attribute(s) in: {storage_path}")
 
     failures = list(unknown)
     for i, key in enumerate(keys):

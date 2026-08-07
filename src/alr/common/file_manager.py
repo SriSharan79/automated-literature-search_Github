@@ -7,6 +7,7 @@ import os
 import pandas as pd
 from pathlib import Path
 from datetime import datetime
+from datetime import datetime as dt 
 
 
 home_folder = Path.home()
@@ -117,7 +118,7 @@ class CollectionManager:
         self.llm_service = 'b'
         print_with_separator("DebugLog",'/')
 
-        print(f"Data Storage Initialized at: {Collection_Folder}")
+        print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:Data Storage Initialized at: {Collection_Folder}")
 
     def ensure_folders(self):
         """
@@ -163,33 +164,33 @@ class CollectionManager:
         
         print_with_separator("DebugLog",'/')
 
-        print(f"File paths updated for ID: {doc_id}")
+        print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:File paths updated for ID: {doc_id}")
         
     def update_llm_service(self, Value):
         self.llm_service =Value
         print_with_separator("DebugLog",'/')        
-        print(f"updated llm_service: {Value}")
+        print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:updated llm_service: {Value}")
 
     def update_Research_Area(self, Value):
         self.Research_Area =Value
         print_with_separator("DebugLog",'/')        
-        print(f"updated Research_Area: {Value}")
+        print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:updated Research_Area: {Value}")
 
     def update_Research_Question(self, Value):
         self.Research_Question =Value
         print_with_separator("DebugLog",'/')        
-        print(f"updated Research_Question: {Value}")
+        print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:updated Research_Question: {Value}")
 
     def update_Research_Scope(self, Value):
         self.Research_Scope =Value
         print_with_separator("DebugLog",'/')        
-        print(f"updated Research_Scope: {Value}")
+        print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:updated Research_Scope: {Value}")
 
     def update_Keyword_list(self, Value):
         self.Keyword_list =Value
         self.Keyword_count =len(Value)
         print_with_separator("DebugLog",'/')
-        print(f"updated list of {len(Value)} Keywords: {Value}")
+        print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:updated list of {len(Value)} Keywords: {Value}")
 
     def update_Keyword_provenance(self, suggested, user_added):
         """
@@ -204,7 +205,7 @@ class CollectionManager:
         self.Search_phrase_list =Value      
         self.Search_phrase_count =len(Value)
         print_with_separator("DebugLog",'/')
-        print(f"updated list of {len(Value)} Search_phrases")
+        print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:updated list of {len(Value)} Search_phrases")
 
 
 class DataAnalyzeManager:
@@ -311,7 +312,7 @@ class DataAnalyzeManager:
         
         self.llm_service = 'b'
 
-        # print(f"Data Storage Initialized at: {folder_path}")
+        # print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:Data Storage Initialized at: {folder_path}")
 
     def update_id_files(self, doc_id):
         """
@@ -338,12 +339,12 @@ class DataAnalyzeManager:
         self.image_storage_path = safe_path(self.images_subfolder / f"{doc_id}_Images_files")
         self.image_storage_path.mkdir(exist_ok=True)
 
-        # print(f"File paths updated for ID: {doc_id}")
+        # print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:File paths updated for ID: {doc_id}")
 
     def update_llm_service(self, Value):
         self.llm_service =Value
         print_with_separator("DebugLog",'/')
-        print(f"updated llm_service: {Value}")
+        print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:updated llm_service: {Value}")
 
     @staticmethod
     def describe_folder(path):
