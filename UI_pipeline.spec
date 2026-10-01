@@ -19,14 +19,17 @@ datas = []
 binaries = []
 hiddenimports = []
 
+REQUIRED = {"pandas", "numpy", "torch", "transformers", "docling"}
 
 def _safe_collect_all(mod):
     try:
-        b, d, h = collect_all(mod)
+        d, b, h = collect_all(mod)      # order is datas, binaries, hiddenimports
         binaries.extend(b)
         datas.extend(d)
         hiddenimports.extend(h)
-    except Exception as e:  # package not installed / optional
+    except Exception as e:
+        if mod in REQUIRED:
+            raise SystemExit(f"[spec] REQUIRED package '{mod}' failed to collect: {e}")
         print(f"[spec] collect_all skipped for {mod}: {e}")
 
 
@@ -102,7 +105,7 @@ a = Analysis(
     binaries=binaries,
     datas=datas,
     hiddenimports=hiddenimports,
-    hookspath=['.'],          # picks up hook-tiktoken.py
+    hookspath=['.'],
     hooksconfig={},
     runtime_hooks=['runtime_hook_stdio.py'],
     excludes=[],

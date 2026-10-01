@@ -9,7 +9,7 @@ setlocal
 
 REM 1. Create + activate a build virtual environment
 if not exist build_venv (
-    python -m venv build_venv
+    py -3.12 -m venv build_venv
 )
 call build_venv\Scripts\activate.bat
 
