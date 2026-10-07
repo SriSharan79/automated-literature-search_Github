@@ -1248,8 +1248,10 @@ class AutomatedLiteratureUI(tk.Tk):
                 existing.add(phrase.lower())
         self.sp_add_entry.delete(0, tk.END)
         self._sync_select_all(self.phrase_tree)
-        if self.CM is not None:
-            self.btn_scholarly.configure(state="normal")
+        
+        # Enable the execution buttons
+        self.btn_scholarly.configure(state="normal")
+        self.btn_save_excel.configure(state="normal")
 
     # ---- Import previously generated keywords / phrases ------------------
 
@@ -1292,14 +1294,70 @@ class AutomatedLiteratureUI(tk.Tk):
 
     def _import_phrases_action(self):
         """Load search phrases (with ranks, when present) from a previously
-        generated workbook into the phrase table for re-display and search."""
+        generated workbook into the phrase table for re-display and search.
+        Automatically detects the storage space based on file location."""
         from alr.collection.collection_imports import read_phrases_file
+        from pathlib import Path
+        
         path = filedialog.askopenfilename(
             title="Import search phrases from a previous file",
             filetypes=[("Phrase files", "*.xlsx *.xls *.csv"),
                        ("All files", "*.*")])
         if not path:
             return
+
+        # --- NEW LOGIC: Deduce Collection Space and Check for Publications ---
+        p = Path(path)
+        identified_space = None
+        topic_id = None
+        pub_file_exists = False
+        pub_file_path = None
+        
+        # Verify the file is inside <space>/collection/search_phrase_lists/
+        if p.parent.name == "search_phrase_lists" and p.parent.parent.name == "collection":
+            collection_root = p.parent.parent
+            identified_space = collection_root.parent  # The base <space> folder
+            
+            # Extract topic_id from filename (e.g., 12345_search_phrase_list.xlsx)
+            if "_search_phrase" in p.name:
+                topic_id = p.name.split("_search_phrase")[0]
+                pub_file_path = collection_root / "publications_lists" / f"{topic_id}_publications_list.xlsx"
+                
+                if pub_file_path.exists():
+                    pub_file_exists = True
+
+        if identified_space:
+            if pub_file_exists:
+                msg = f"Collection space and existing publications list identified at:\n{identified_space}\n\nThe collection path will be updated automatically."
+            else:
+                msg = f"Collection space identified at:\n{identified_space}\n(No publications list exists yet).\n\nThe collection path will be updated automatically."
+                
+            messagebox.showinfo("Space Identified", msg)
+            
+            # Switch the UI to point to this custom space instead of the active one
+            self.collect_use_active_var.set(False)
+            self._set_entry_text(self.collect_path_entry, str(identified_space))
+            self._apply_active_space()
+            
+            # Reconstruct the CM to ensure everything points to the imported files
+            self.CM = CollectionManager(str(collection_root))
+            self.CM.update_topic_files(topic_id)
+            self.CM.update_Research_Area(self.ra_entry.get().strip())
+            self.CM.update_Research_Question(self.rq_entry.get().strip())
+            try:
+                self.CM.update_llm_service(_provider_code(self.llm_choice_col.get()))
+            except Exception:
+                pass
+                
+        else:
+            proceed = messagebox.askyesno(
+                "Space Not Identified",
+                "Could not automatically identify a complete collection space from this file's location.\n\nProceed with the import using the current active storage space?"
+            )
+            if not proceed:
+                return
+
+        # --- EXISTING IMPORT LOGIC ---
         strategy_map = {"1": "RA_Rank", "2": "RQ_Rank", "3": "RA+RQ_Rank", "4": "TOTAL_Rank"}
         rank_col = strategy_map.get(self.ranking_var.get(), "TOTAL_Rank")
         try:
@@ -1307,9 +1365,11 @@ class AutomatedLiteratureUI(tk.Tk):
         except Exception as e:  # noqa: BLE001
             messagebox.showerror("Import phrases", f"Could not import phrases:\n{e}")
             return
+            
         if not rows:
             messagebox.showinfo("Import phrases", "No phrases found in that file.")
             return
+            
         existing = {self.phrase_tree.set(i, "phrase").lower() for i in self.phrase_tree.get_children()}
         added = 0
         for rank, phrase in rows:
@@ -1318,11 +1378,22 @@ class AutomatedLiteratureUI(tk.Tk):
                 existing.add(phrase.lower())
                 added += 1
         self._sync_select_all(self.phrase_tree)
-        # Imported phrases are searchable as soon as a manager exists (created
-        # by any collection action); the search itself will bootstrap one from
-        # the RA/RQ entries if needed.
-        if self.CM is not None:
-            self.btn_scholarly.configure(state="normal")
+
+        # Enable execution buttons now that phrases are loaded (unconditional)
+        self.btn_scholarly.configure(state="normal")
+        self.btn_save_excel.configure(state="normal")
+        
+        # If we successfully hooked into existing publications, update the UI count and unlock classification
+        if identified_space and pub_file_exists:
+            self.btn_classify_pubs.configure(state="normal")
+            try:
+                from alr.common.excel_utils import extract_column
+                pubs = extract_column(str(pub_file_path), "Publication Name")
+                pub_count = len(pubs or [])
+                self.pub_count_var.set(f"{pub_count} publication(s) collected.")
+            except Exception:
+                pass
+
         print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:[Phrases] Imported {added} phrase(s) from {Path(path).name} "
               f"(rank column: {rank_col} when present).")
 
