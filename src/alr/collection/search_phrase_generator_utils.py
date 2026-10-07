@@ -335,7 +335,7 @@ def run_scholarly(Input_Phrases,CM, Num_Search_Results, progress_callback=None, 
 
         if not publication_results:
             print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:\nNo results found for phrase: '{Phrase}'. Continuing with the next phrase.")
-            continue
+            break
 
         # If publications are found, update the Excel file
         aggregate_and_update_excel(publication_results, PUB_EXCEL_FILE_PATH)

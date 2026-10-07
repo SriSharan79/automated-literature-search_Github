@@ -1133,22 +1133,34 @@ class AutomatedLiteratureUI(tk.Tk):
         items = tree.get_children()
         for item in items:
             tree.set(item, "use", mark)
+            
+        # Guarantee live counter updates during Select All
+        checked_count = len(items) if mark == self._CHECKED else 0
         
-        # Update counter
-        if hasattr(tree, 'count_var'):
-            checked_count = len(items) if mark == self._CHECKED else 0
-            tree.count_var.set(f"{checked_count} selected")
+        if hasattr(self, 'kw_tree') and tree == self.kw_tree:
+            if hasattr(self, 'kw_count_var'):
+                self.kw_count_var.set(f"{checked_count} selected")
+                
+        elif hasattr(self, 'phrase_tree') and tree == self.phrase_tree:
+            if hasattr(self, 'sp_count_var'):
+                self.sp_count_var.set(f"{checked_count} selected")
 
     def _sync_select_all(self, tree):
         """Mirror the per-row state onto the Select-all checkbutton and update counters."""
         items = tree.get_children()
         checked_count = sum(1 for i in items if tree.set(i, "use") == self._CHECKED)
-        tree.select_all_var.set(
-            bool(items) and checked_count == len(items))
+        
+        # 1. Sync the 'Select all' checkbox state
+        tree.select_all_var.set(bool(items) and checked_count == len(items))
             
-        # Update counter
-        if hasattr(tree, 'count_var'):
-            tree.count_var.set(f"{checked_count} selected")
+        # 2. Guarantee live counter updates whenever ANY row is added, removed, or clicked
+        if hasattr(self, 'kw_tree') and tree == self.kw_tree:
+            if hasattr(self, 'kw_count_var'):
+                self.kw_count_var.set(f"{checked_count} selected")
+                
+        elif hasattr(self, 'phrase_tree') and tree == self.phrase_tree:
+            if hasattr(self, 'sp_count_var'):
+                self.sp_count_var.set(f"{checked_count} selected")
 
     def _sort_numeric_column(self, tree, column):
         """

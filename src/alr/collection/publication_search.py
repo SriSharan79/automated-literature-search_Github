@@ -22,6 +22,7 @@ import os
 import time
 import traceback
 from typing import List
+import concurrent.futures
 
 import pandas as pd
 import requests
@@ -328,49 +329,50 @@ def scrape_scholar_data(search_query, Num_Results, Total_keywords):
 
     return publications_data  # Return the collected list
 
-
 # ---------------------------------------------------------------------------
 # Backend orchestrator
 # ---------------------------------------------------------------------------
+def _run_with_timeout(func, timeout_sec, *args, **kwargs):
+    """Runs a function with a strict timeout using a non-blocking thread."""
+    executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+    future = executor.submit(func, *args, **kwargs)
+    try:
+        # Wait for the result up to timeout_sec
+        return future.result(timeout=timeout_sec)
+    except concurrent.futures.TimeoutError:
+        print(Fore.RED + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:⏳ Timeout: The search backend took longer than {timeout_sec} seconds and was aborted." + Style.RESET_ALL)
+        return []
+    except Exception as e:
+        print(Fore.RED + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:❌ Backend error: {e}" + Style.RESET_ALL)
+        return []
+    finally:
+        # shutdown(wait=False) ensures we don't wait for the hanging thread to finish
+        executor.shutdown(wait=False)
+
+
 def collect_publications(search_query, Num_Results, Total_keywords, backend: str = "auto") -> list:
     """
-    Collect publications for one search phrase.
-
-      backend='auto'     -> OpenAlex first; Google Scholar only when OpenAlex
-                            returned nothing (and Scholar isn't on cooldown).
-      backend='openalex' -> OpenAlex only.
-      backend='scholar'  -> Google Scholar preferred; automatically fails over
-                            to OpenAlex when Scholar is blocked/empty.
-
-    Always returns a list (possibly empty); each row's 'Source' records the
-    backend that produced it.
+    Collect publications for one search phrase with a 60-second timeout per backend.
     """
     backend = (backend or "auto").strip().lower()
+    timeout_seconds = 60
 
     if backend == "scholar":
         if scholar_available():
-            rows = scrape_scholar_data(search_query, Num_Results, Total_keywords)
+            rows = _run_with_timeout(scrape_scholar_data, timeout_seconds, search_query, Num_Results, Total_keywords)
             if rows:
                 return rows
-            print(Fore.YELLOW + "⚠️ Scholar returned nothing; failing over to OpenAlex." + Style.RESET_ALL)
+            print(Fore.YELLOW + "⚠️ Scholar returned nothing or timed out; failing over to OpenAlex." + Style.RESET_ALL)
         else:
             wait_min = max(0.0, (_scholar_blocked_until - time.time()) / 60)
             print(Fore.YELLOW
                   + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:⚠️ Scholar is on block-cooldown for another {wait_min:.0f} min; using OpenAlex."
                   + Style.RESET_ALL)
-        try:
-            return search_openalex(search_query, Num_Results, Total_keywords)
-        except Exception as e:
-            print(Fore.RED + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:❌ OpenAlex failover also failed: {e}" + Style.RESET_ALL)
-            return []
+        return _run_with_timeout(search_openalex, timeout_seconds, search_query, Num_Results, Total_keywords)
 
     # 'auto' and 'openalex': OpenAlex is the primary backend.
-    rows = []
-    try:
-        rows = search_openalex(search_query, Num_Results, Total_keywords)
-    except Exception as e:
-        print(Fore.RED + f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:❌ OpenAlex search failed: {e}" + Style.RESET_ALL)
-
+    rows = _run_with_timeout(search_openalex, timeout_seconds, search_query, Num_Results, Total_keywords)
+    
     if rows or backend == "openalex":
         return rows
 
@@ -382,5 +384,5 @@ def collect_publications(search_query, Num_Results, Total_keywords, backend: str
               + Style.RESET_ALL)
         return rows
 
-    print("No OpenAlex results; trying Google Scholar as fallback.")
-    return scrape_scholar_data(search_query, Num_Results, Total_keywords)
+    print("No OpenAlex results or timed out; trying Google Scholar as fallback.")
+    return _run_with_timeout(scrape_scholar_data, timeout_seconds, search_query, Num_Results, Total_keywords)
