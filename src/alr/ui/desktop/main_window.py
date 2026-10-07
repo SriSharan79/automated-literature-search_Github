@@ -724,7 +724,7 @@ class AutomatedLiteratureUI(tk.Tk):
     # cached (status strip, last-result line, live counts, "Add" text boxes).
     _CACHE_DENYLIST = frozenset({
         "last_result_var", "pub_count_var", "status_key_var", "status_provider_var",
-        "kw_add_entry", "sp_add_entry",
+        "kw_add_entry", "sp_add_entry", "kw_count_var", "sp_count_var",
     })
 
     def _cacheable_items(self):
@@ -918,6 +918,9 @@ class AutomatedLiteratureUI(tk.Tk):
                    command=lambda: self._remove_selected_rows(self.kw_tree)).pack(side="left", padx=5, pady=5)
         ttk.Button(kw_action_frame, text="Import from File...",
                    command=self._import_keywords_action).pack(side="left", padx=5, pady=5)
+        # NEW: Live counter for Keywords
+        self.kw_count_var = tk.StringVar(value="0 selected")
+        ttk.Label(kw_action_frame, textvariable=self.kw_count_var, foreground="#555").pack(side="right", padx=10, pady=5)
 
         self.kw_tree = self._make_check_table(
             keyword_frame, [("keyword", "Keyword", 520)], height=6)
@@ -961,6 +964,10 @@ class AutomatedLiteratureUI(tk.Tk):
                    command=lambda: self._remove_selected_rows(self.phrase_tree)).pack(side="left", padx=5, pady=5)
         ttk.Button(sp_action_frame, text="Import from File...",
                    command=self._import_phrases_action).pack(side="left", padx=5, pady=5)
+        
+        # NEW: Live counter for Search Phrases
+        self.sp_count_var = tk.StringVar(value="0 selected")
+        ttk.Label(sp_action_frame, textvariable=self.sp_count_var, foreground="#555").pack(side="right", padx=10, pady=5)
 
         self.phrase_tree = self._make_check_table(
             keyword_frame, [("rank", "Rank", 60), ("phrase", "Search Phrase", 460)],
@@ -1123,14 +1130,25 @@ class AutomatedLiteratureUI(tk.Tk):
 
     def _toggle_all_rows(self, tree):
         mark = self._CHECKED if tree.select_all_var.get() else self._UNCHECKED
-        for item in tree.get_children():
+        items = tree.get_children()
+        for item in items:
             tree.set(item, "use", mark)
+        
+        # Update counter
+        if hasattr(tree, 'count_var'):
+            checked_count = len(items) if mark == self._CHECKED else 0
+            tree.count_var.set(f"{checked_count} selected")
 
     def _sync_select_all(self, tree):
-        """Mirror the per-row state onto the Select-all checkbutton."""
+        """Mirror the per-row state onto the Select-all checkbutton and update counters."""
         items = tree.get_children()
+        checked_count = sum(1 for i in items if tree.set(i, "use") == self._CHECKED)
         tree.select_all_var.set(
-            bool(items) and all(tree.set(i, "use") == self._CHECKED for i in items))
+            bool(items) and checked_count == len(items))
+            
+        # Update counter
+        if hasattr(tree, 'count_var'):
+            tree.count_var.set(f"{checked_count} selected")
 
     def _sort_numeric_column(self, tree, column):
         """

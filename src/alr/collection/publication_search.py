@@ -226,6 +226,7 @@ def search_openalex(search_query: str, Num_Results: int, Total_keywords: List[st
             abstract = _reconstruct_openalex_abstract(work.get("abstract_inverted_index"))
 
             publications_data.append({
+                'Timestamp': dt.now().strftime('%Y-%m-%d %H:%M:%S'),
                 'Occurrence': 1,
                 'Search Phrase': search_query,
                 'Publication Name': title,
@@ -299,6 +300,7 @@ def scrape_scholar_data(search_query, Num_Results, Total_keywords):
 
                 # Append data directly with all required keys (including the fixes)
                 publications_data.append({
+                    'Timestamp': dt.now().strftime('%Y-%m-%d %H:%M:%S'),
                     'Occurrence': 1,  # Default for new entry
                     'Search Phrase': search_query,  # Pass the search phrase
                     'Publication Name': title,

@@ -523,6 +523,41 @@ def sum_columns_ending_with_to_target(
 
     return f"Updated Excel file saved at {excel_path}"
 
+def append_to_search_history_sheet(excel_path, input_phrases):
+    """
+    Appends a run timestamp and the used search phrases to the 'Search_Run_History' sheet.
+    Ensures each search phrase gets its own row (one phrase per cell).
+    """
+    run_timestamp = dt.now().strftime('%Y-%m-%d %H:%M:%S')
+    new_data = pd.DataFrame({
+        'Timestamp': [run_timestamp] * len(input_phrases),
+        'Search Phrase': input_phrases
+    })
+    
+    excel_path = Path(excel_path)
+    sheet_name = 'Search_Run_History'
+    
+    if not excel_path.exists():
+        with pd.ExcelWriter(excel_path, engine='openpyxl') as writer:
+            new_data.to_excel(writer, sheet_name=sheet_name, index=False)
+        return
+
+    try:
+        # Check if the history sheet already exists
+        excel_data = pd.ExcelFile(excel_path, engine="openpyxl")
+        if sheet_name in excel_data.sheet_names:
+            existing_df = excel_data.parse(sheet_name)
+            updated_df = pd.concat([existing_df, new_data], ignore_index=True)
+        else:
+            updated_df = new_data
+            
+        # Append the new sheet or replace the old history sheet with the concatenated one
+        with pd.ExcelWriter(excel_path, engine="openpyxl", mode="a", if_sheet_exists="replace") as writer:
+            updated_df.to_excel(writer, sheet_name=sheet_name, index=False)
+            
+    except Exception as e:
+        print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:Error updating {sheet_name} sheet: {e}")
+
 def aggregate_query_excel_data(folder_path, column_name, output_file):
     all_data = []
     metadata_cols = ['Original_UUID', 'Filename']

@@ -5,7 +5,7 @@ from typing import List
 from alr.collection.keyword_sorting_Utils import get_subsets_of_size, get_subsets_with_min_size
 from alr.common.llm_utils import blabla_ask_llm, llm_call
 from alr.collection.collection_system_prompts import Serach_phrase_System_Prompt
-from alr.common.excel_utils import add_column_sum, extract_column, sum_columns_ending_with_to_target
+from alr.common.excel_utils import add_column_sum, extract_column, sum_columns_ending_with_to_target, append_to_search_history_sheet
 from alr.common.general_utils import merge_lists, print_with_separator
 from alr.collection.search_phrase_generator_logger import Log_keyPhrases, aggregate_and_update_excel, log_generated_list_file
 
@@ -342,10 +342,16 @@ def run_scholarly(Input_Phrases,CM, Num_Search_Results, progress_callback=None, 
         all_results.extend(publication_results)
 
     if all_results:
-        PUB_log_excel=Path(CM.publications_log_path)
+        if all_results:
+            PUB_log_excel=Path(CM.publications_log_path)
 
-        pubs=extract_column(PUB_EXCEL_FILE_PATH,'Publication Name') or []
+            pubs=extract_column(PUB_EXCEL_FILE_PATH,'Publication Name') or []
 
-        log_generated_list_file(PUB_EXCEL_FILE_PATH,len(pubs),PUB_log_excel,CM)
+            log_generated_list_file(PUB_EXCEL_FILE_PATH,len(pubs),PUB_log_excel,CM)
+            
+            # --- NEW: Append search phrase history to the publications Excel ---
+            append_to_search_history_sheet(PUB_EXCEL_FILE_PATH, Input_Phrases)
 
     return all_results
+
+   
