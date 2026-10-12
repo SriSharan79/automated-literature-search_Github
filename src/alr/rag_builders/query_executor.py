@@ -228,7 +228,7 @@ def generate_query_report(query_list, storage_path, search_root='/remotedata/U/D
             #    live in their own sub-folder, so the overview sits alone in the
             #    query folder root instead of amongst repeated attribute Excels).
             print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:{Fore.CYAN} > [Step 2] Aggregating results into Overview Report...")
-            overview_path = Path(vdb.query_storage) / f"{query}_query_Overview_report.xlsx"
+            overview_path = Path(vdb.query_storage) / f"Overview_report.xlsx"
             overview_path = sanitize_path_length(overview_path)
             aggregate_query_excel_data(vdb.query_attr_storage, "Title", overview_path)
             print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:{Fore.GREEN}   - Overview saved: {overview_path}")
@@ -293,8 +293,8 @@ def generate_query_report(query_list, storage_path, search_root='/remotedata/U/D
                         sql_export_df = pd.DataFrame(rows, columns=cols)
                         
                         # Save it next to the overview report
-                        query_safe = query.replace(" ", "_")
-                        sql_export_path = sanitize_path_length(Path(vdb.query_storage) / f"{query_safe}_SQL_Database_Export.xlsx")
+                        # query_safe = query.replace(" ", "_")
+                        sql_export_path = sanitize_path_length(Path(vdb.query_storage) / f"SQL_Database_Export.xlsx")
                         
                         sql_export_df.to_excel(sql_export_path, index=False, engine="openpyxl")
                         print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:{Fore.GREEN}   - SQL Database Export saved: {sql_export_path}")
