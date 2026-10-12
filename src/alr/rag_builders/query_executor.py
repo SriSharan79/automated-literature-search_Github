@@ -11,6 +11,7 @@ from alr.common.excel_utils import extract_column, get_column_value
 import json
 from datetime import datetime
 from alr.common.file_manager import DataAnalyzeManager, Vec_DB_Manager
+from alr.common.sql_store import AnalyzedDataStore, COLUMNS
 from alr.common.file_handlers import move_matching_pdfs,copy_file,copy_matching_pdfs,copy_matching_jsons,sanitize_path_length,index_jsons_under_root
 from alr.common.excel_utils import aggregate_query_excel_data
 from alr.rag_builders.vector_db_updater import search_similar
@@ -267,6 +268,41 @@ def generate_query_report(query_list, storage_path, search_root='/remotedata/U/D
                     enriched = enrich_overview_with_abstracts(
                         overview_path, space_folders, enrich_keys=enrich_keys, search_root=new_root)
             tick("Enriched the report")
+            
+            # --- NEW STEP: Generate SQL DB Export from Overview UUIDs ---
+            try:
+                print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:{Fore.CYAN} > [Step 3.5] Generating SQL Export Report from UUIDs...")
+                overview_df = pd.read_excel(overview_path)
+                
+                if 'Original_UUID' in overview_df.columns:
+                    # Extract unique UUIDs from the overview report
+                    uuids_to_fetch = set(overview_df['Original_UUID'].dropna().astype(str).tolist())
+                    
+                    # Instantiate the SQL store and fetch all documents
+                    store = AnalyzedDataStore()
+                    all_docs = store.list_documents()
+                    
+                    # Filter for documents that match the UUIDs in our report
+                    matched_docs = [d for d in all_docs if str(d.get("uuid", "")) in uuids_to_fetch]
+                    
+                    if matched_docs:
+                        # Extract the data using the standard columns defined in sql_store
+                        cols = list(COLUMNS)
+                        rows = [{c: d.get(c) for c in cols} for d in matched_docs]
+                        
+                        sql_export_df = pd.DataFrame(rows, columns=cols)
+                        
+                        # Save it next to the overview report
+                        query_safe = query.replace(" ", "_")
+                        sql_export_path = sanitize_path_length(Path(vdb.query_storage) / f"{query_safe}_SQL_Database_Export.xlsx")
+                        
+                        sql_export_df.to_excel(sql_export_path, index=False, engine="openpyxl")
+                        print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:{Fore.GREEN}   - SQL Database Export saved: {sql_export_path}")
+                    else:
+                        print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:{Fore.YELLOW}   - No matching documents found in SQL store for the extracted UUIDs.")
+            except Exception as e:
+                print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:{Fore.RED}   [!] Could not generate SQL Database Export: {e}")
+            # ------------------------------------------------------------
 
             # 4. Append this query's details to the space's rolling query log.
             elapsed = (datetime.now() - started_at).total_seconds()
