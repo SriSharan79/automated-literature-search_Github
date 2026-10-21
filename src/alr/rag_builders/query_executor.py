@@ -269,39 +269,128 @@ def generate_query_report(query_list, storage_path, search_root='/remotedata/U/D
                         overview_path, space_folders, enrich_keys=enrich_keys, search_root=new_root)
             tick("Enriched the report")
             
-            # --- NEW STEP: Generate SQL DB Export from Overview UUIDs ---
+           # --- NEW STEP: Generate SQL DB Export from Overview UUIDs ---
             try:
-                print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:{Fore.CYAN} > [Step 3.5] Generating SQL Export Report from UUIDs...")
+                print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:{Fore.CYAN} > [Step 3.5] Generating SQL Export Report...")
                 overview_df = pd.read_excel(overview_path)
                 
-                if 'Original_UUID' in overview_df.columns:
-                    # Extract unique UUIDs from the overview report
-                    uuids_to_fetch = set(overview_df['Original_UUID'].dropna().astype(str).tolist())
+                # 1. Force-sync the queried storage path to the SQL DB to guarantee data is fresh
+                from alr.common.sql_store import sync_storage_to_sql, COLUMNS
+                print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:{Fore.LIGHTBLACK_EX}   - Force-syncing storage space to SQL to ensure no missing data...")
+                try:
+                    sync_storage_to_sql(storage_path)
+                except Exception as sync_e:
+                    print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:{Fore.YELLOW}   - Auto-sync skipped/warning: {sync_e}")
+
+                if 'Original_UUID' in overview_df.columns and 'Filename' in overview_df.columns:
+                    # Clean identifiers
+                    def clean_val(v):
+                        s = str(v).strip()
+                        return s[:-2] if s.endswith('.0') else s
+
+                    uuids_to_fetch = set(overview_df['Original_UUID'].dropna().apply(clean_val).tolist())
+                    filenames_to_fetch = set(overview_df['Filename'].dropna().apply(clean_val).tolist())
                     
                     # Instantiate the SQL store and fetch all documents
+                    from alr.common.sql_store import AnalyzedDataStore
                     store = AnalyzedDataStore()
                     all_docs = store.list_documents()
                     
-                    # Filter for documents that match the UUIDs in our report
-                    matched_docs = [d for d in all_docs if str(d.get("uuid", "")) in uuids_to_fetch]
+                    # Filter for documents that match EITHER the UUID or the Filename
+                    matched_docs = [d for d in all_docs if clean_val(d.get("uuid", "")) in uuids_to_fetch or clean_val(d.get("filename", "")) in filenames_to_fetch]
                     
                     if matched_docs:
-                        # Extract the data using the standard columns defined in sql_store
-                        cols = list(COLUMNS)
-                        rows = [{c: d.get(c) for c in cols} for d in matched_docs]
+                        def _ask_export_columns():
+                            import tkinter as tk
+                            from tkinter import ttk
+                            
+                            # Attach to existing Tk root or make a temporary one
+                            root = tk._default_root
+                            destroy_root = False
+                            if not root:
+                                root = tk.Tk()
+                                root.withdraw()
+                                destroy_root = True
+                                
+                            dlg = tk.Toplevel(root)
+                            dlg.title("Export Columns to Excel")
+                            dlg.geometry("620x460")
+                            dlg.attributes('-topmost', True)
+                            dlg.grab_set()
+
+                            ttk.Label(dlg, text="Tick the columns to include in the SQL Database Export:",
+                                      font=("Arial", 10, "bold")).pack(anchor="w", padx=10, pady=(10, 4))
+
+                            # Scrollable checkbox grid
+                            picker = ttk.Frame(dlg)
+                            picker.pack(fill="both", expand=True, padx=10)
+                            canvas = tk.Canvas(picker, highlightthickness=0)
+                            vsb = ttk.Scrollbar(picker, orient="vertical", command=canvas.yview)
+                            inner = ttk.Frame(canvas)
+                            canvas.configure(yscrollcommand=vsb.set)
+                            vsb.pack(side="right", fill="y")
+                            canvas.pack(side="left", fill="both", expand=True)
+                            canvas.create_window((0, 0), window=inner, anchor="nw")
+                            inner.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
+
+                            default_overview_fields = {"title", "filename", "publication_year", "publication_type", "classification", "abstract_classification", "first_author", "doi_link", "research_areas", "source_folder"}
+                            
+                            col_vars = {}
+                            for i, col in enumerate(COLUMNS):
+                                var = tk.BooleanVar(value=col in default_overview_fields)
+                                col_vars[col] = var
+                                ttk.Checkbutton(inner, text=col, variable=var).grid(row=i // 4, column=i % 4, sticky="w", padx=4, pady=1)
+
+                            selbar = ttk.Frame(dlg)
+                            selbar.pack(fill="x", padx=10, pady=(4, 0))
+                            ttk.Button(selbar, text="Select all", command=lambda: [v.set(True) for v in col_vars.values()]).pack(side="left")
+                            ttk.Button(selbar, text="Clear all", command=lambda: [v.set(False) for v in col_vars.values()]).pack(side="left", padx=6)
+
+                            result = []
+                            def _do_export():
+                                nonlocal result
+                                result = [c for c in COLUMNS if col_vars[c].get()]
+                                dlg.destroy()
+                                
+                            def _cancel():
+                                nonlocal result
+                                result = None
+                                dlg.destroy()
+
+                            btns = ttk.Frame(dlg)
+                            btns.pack(fill="x", padx=10, pady=(4, 10))
+                            ttk.Button(btns, text="Export...", command=_do_export).pack(side="left")
+                            ttk.Button(btns, text="Cancel", command=_cancel).pack(side="left", padx=8)
+
+                            dlg.protocol("WM_DELETE_WINDOW", _cancel)
+                            root.wait_window(dlg)
+                            if destroy_root:
+                                root.destroy()
+                            return result
+
+                        cols_to_export = _ask_export_columns()
                         
-                        sql_export_df = pd.DataFrame(rows, columns=cols)
-                        
-                        # Save it next to the overview report
-                        # query_safe = query.replace(" ", "_")
-                        sql_export_path = sanitize_path_length(Path(vdb.query_storage) / f"SQL_Database_Export.xlsx")
-                        
-                        sql_export_df.to_excel(sql_export_path, index=False, engine="openpyxl")
-                        print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:{Fore.GREEN}   - SQL Database Export saved: {sql_export_path}")
+                        if cols_to_export is None:
+                            print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:{Fore.YELLOW}   - Prompt cancelled. Skipping SQL Export.")
+                        elif not cols_to_export:
+                            print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:{Fore.YELLOW}   - No columns ticked. Skipping SQL Export.")
+                        else:
+                            # Extract the data using the selected columns
+                            rows = [{c: d.get(c) for c in cols_to_export} for d in matched_docs]
+                            sql_export_df = pd.DataFrame(rows, columns=cols_to_export)
+                            
+                            # Save it next to the overview report
+                            query_safe = query.replace(" ", "_")
+                            sql_export_path = sanitize_path_length(Path(vdb.query_storage) / f"SQL_Database_Export.xlsx")
+                            
+                            sql_export_df.to_excel(sql_export_path, index=False, engine="openpyxl")
+                            print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:{Fore.GREEN}   - SQL Database Export saved: {sql_export_path}")
+                            print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:{Fore.LIGHTBLACK_EX}   - Exported {len(matched_docs)} documents with {len(cols_to_export)} columns.")
                     else:
-                        print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:{Fore.YELLOW}   - No matching documents found in SQL store for the extracted UUIDs.")
+                        print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:{Fore.YELLOW}   - No matching documents found in SQL store. Check if documents exist in the DB.")
             except Exception as e:
                 print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:{Fore.RED}   [!] Could not generate SQL Database Export: {e}")
+            # ------------------------------------------------------------
             # ------------------------------------------------------------
 
             # 4. Append this query's details to the space's rolling query log.
