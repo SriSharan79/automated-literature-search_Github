@@ -78,7 +78,7 @@ ABSTRACT_TEXT_KEY = "Abstract Text identified:"
 # they use COALESCE-preserve on re-sync (see upsert_document) to avoid being wiped.
 ENRICHMENT_COLUMNS = [
     "doi_link", "publisher", "container", "publication_year",
-    "authors", "first_author", "publication_type", "classification",
+    "authors", "first_author", "classification",
     "abstract_classification", "evaluation_json", "evaluation_score",
     "intro_evaluation_json", "intro_evaluation_score",
     "rescon_evaluation_json", "rescon_evaluation_score", "metrics_json",
@@ -375,6 +375,25 @@ class AnalyzedDataStore:
     def delete_document(self, uuid: str):
         with self._connect() as conn:
             conn.execute("DELETE FROM documents WHERE uuid=?", (uuid,))
+            
+    def drop_column(self, col_name: str):
+        """
+        Drop a column from the SQLite database.
+        Also removes it from the in-memory column lists.
+        """
+        with self._connect() as conn:
+            try:
+                conn.execute(f"ALTER TABLE documents DROP COLUMN {col_name}")
+            except sqlite3.OperationalError as e:
+                if "syntax error" in str(e).lower() or "drop column" in str(e).lower():
+                    raise RuntimeError("Your SQLite version is too old to drop columns (requires 3.35.0+).") from e
+                raise
+
+        # Remove from Python tracking lists so it disappears immediately
+        if col_name in COLUMNS:
+            COLUMNS.remove(col_name)
+        if col_name in ENRICHMENT_COLUMNS:
+            ENRICHMENT_COLUMNS.remove(col_name)
 
     # -- reads --------------------------------------------------------------
     def list_documents(self, search: str = None) -> list:
@@ -435,7 +454,7 @@ class AnalyzedDataStore:
     def _filter_clause(filters: dict):
         """Build a WHERE clause (without the WHERE keyword) + params from filters."""
         where, params = [], []
-        for col in ("source_folder", "publication_year", "publication_type"):
+        for col in ("source_folder",  "publication_type"):
             val = (filters or {}).get(col)
             if val:
                 where.append(f"{col} = ?")
@@ -605,7 +624,6 @@ class AnalyzedDataStore:
         "DOI_First_Author": "first_author",
         "First_Author": "first_author",
         "First Author": "first_author",
-        "Publication Type": "publication_type",
         "Link": "link",
     }
 

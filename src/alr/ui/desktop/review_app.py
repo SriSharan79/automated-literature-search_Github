@@ -50,7 +50,7 @@ from alr.ui.desktop.review_view import ReviewDataView, open_path
 
 # Sensible default columns to show pre-checked in the overview builder.
 DEFAULT_OVERVIEW_FIELDS = [
-    "title", "filename", "publication_year", "publication_type",
+    "title", "filename", "publication_year",
     "classification", "abstract_classification", "first_author", "doi_link",
     "research_areas", "source_folder",
 ]
@@ -70,7 +70,7 @@ def nl_to_overview_spec(description, fields):
         "You convert a user's request into a JSON spec for an overview over a table of "
         "analyzed research publications. Respond with ONLY a JSON object of the form "
         '{"fields": ["col", ...], "group_by": "col or null", '
-        '"filters": {"publication_year": "", "publication_type": "", "research_area": "", "source_folder": "", "topic": ""}}. '
+        '"filters": {"publication_year": "",  "research_area": "", "source_folder": "", "topic": ""}}. '
         f"Valid columns are: {', '.join(fields)}. "
         "Use group_by (a single column) when the user asks for a count/summary/distribution; "
         "otherwise set it to null and choose relevant fields. The 'topic' filter matches a "
@@ -86,7 +86,7 @@ def nl_to_overview_spec(description, fields):
     gb = spec.get("group_by")
     spec["group_by"] = gb if gb in valid else None
     spec["filters"] = {k: v for k, v in (spec.get("filters") or {}).items()
-                       if k in ("publication_year", "publication_type", "research_area", "source_folder", "topic") and v}
+                       if k in ("publication_year",  "research_area", "source_folder", "topic") and v}
     return spec
 
 
@@ -911,7 +911,6 @@ class ReviewApp:
         return chosen.get("path")
 
     # ============================================================== Database
-    # ============================================================== Database
     def _build_database_tab(self, nb):
         tab = make_scrollable_tab(nb, "Database")
         
@@ -943,6 +942,7 @@ class ReviewApp:
         
         ttk.Button(top, text="Advanced Filters...", command=self._open_db_filters).pack(side="left", padx=8)
         ttk.Button(top, text="Select Columns...", command=self._open_db_column_selector).pack(side="left", padx=2)
+        ttk.Button(top, text="Delete Column(s)...", command=self._open_db_delete_columns).pack(side="left", padx=8)
         ttk.Button(top, text="Export visible columns...",
                    command=self._export_db_columns_quick).pack(side="left", padx=8)
         
@@ -967,7 +967,7 @@ class ReviewApp:
         query_frame.pack(fill="both", expand=True, padx=8, pady=4)
         self.sql_text = tk.Text(query_frame, height=3, wrap="word")
         self.sql_text.pack(fill="x", padx=4, pady=4)
-        self.sql_text.insert("1.0", "SELECT title, publication_year, publication_type, classification FROM documents")
+        self.sql_text.insert("1.0", "SELECT title, publication_year,  classification FROM documents")
         qbar = ttk.Frame(query_frame)
         qbar.pack(fill="x", padx=4)
         ttk.Button(qbar, text="Run query", command=self._run_sql_query).pack(side="left")
@@ -1110,10 +1110,7 @@ class ReviewApp:
         year_var = tk.StringVar(value=self.db_filters.get("publication_year", ""))
         ttk.Entry(f_frame, textvariable=year_var, width=32).grid(row=1, column=1, pady=5)
         
-        ttk.Label(f_frame, text="Publication Type:").grid(row=2, column=0, sticky="w", pady=5)
-        type_var = tk.StringVar(value=self.db_filters.get("publication_type", ""))
-        ttk.Entry(f_frame, textvariable=type_var, width=32).grid(row=2, column=1, pady=5)
-        
+                
         ttk.Label(f_frame, text="Research Area:").grid(row=3, column=0, sticky="w", pady=5)
         ra_var = tk.StringVar(value=self.db_filters.get("research_area", ""))
         ttk.Entry(f_frame, textvariable=ra_var, width=32).grid(row=3, column=1, pady=5)
@@ -1126,7 +1123,6 @@ class ReviewApp:
             self.db_filters = {}
             if source_var.get().strip(): self.db_filters["source_folder"] = source_var.get().strip()
             if year_var.get().strip(): self.db_filters["publication_year"] = year_var.get().strip()
-            if type_var.get().strip(): self.db_filters["publication_type"] = type_var.get().strip()
             if ra_var.get().strip(): self.db_filters["research_area"] = ra_var.get().strip()
             if topic_var.get().strip(): self.db_filters["topic"] = topic_var.get().strip()
             dlg.destroy()
@@ -1142,6 +1138,78 @@ class ReviewApp:
         ttk.Button(btns, text="Apply Filters", command=_apply).pack(side="left")
         ttk.Button(btns, text="Clear Filters", command=_clear).pack(side="left", padx=8)
         ttk.Button(btns, text="Cancel", command=dlg.destroy).pack(side="right")
+        
+    def _open_db_delete_columns(self):
+        """Dialog to select and drop custom columns from the database."""
+        from alr.common.sql_store import _BASE_COLUMNS, COLUMNS
+
+        # Custom columns are any columns currently in the DB that are not part of the frozen base schema
+        custom_cols = [c for c in COLUMNS if c not in _BASE_COLUMNS]
+
+        if not custom_cols:
+            messagebox.showinfo("Delete Columns", "There are no custom columns in the database to delete.")
+            return
+
+        dlg = tk.Toplevel(self.container)
+        dlg.title("Delete Custom Columns")
+        dlg.geometry("400x400")
+        dlg.transient(self.container.winfo_toplevel())
+        dlg.grab_set()
+
+        ttk.Label(dlg, text="Select custom columns to permanently delete:",
+                  font=("Arial", 10, "bold")).pack(anchor="w", padx=10, pady=(10, 4))
+        ttk.Label(dlg, text="Warning: This drops the column and all its data.\nThis cannot be undone.",
+                  foreground="red").pack(anchor="w", padx=10, pady=(0, 10))
+
+        picker = ttk.Frame(dlg)
+        picker.pack(fill="both", expand=True, padx=10)
+        canvas = tk.Canvas(picker, highlightthickness=0)
+        vsb = ttk.Scrollbar(picker, orient="vertical", command=canvas.yview)
+        inner = ttk.Frame(canvas)
+        canvas.configure(yscrollcommand=vsb.set)
+        vsb.pack(side="right", fill="y")
+        canvas.pack(side="left", fill="both", expand=True)
+        canvas.create_window((0, 0), window=inner, anchor="nw")
+        inner.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
+
+        col_vars = {}
+        for i, col in enumerate(custom_cols):
+            var = tk.BooleanVar(value=False)
+            col_vars[col] = var
+            ttk.Checkbutton(inner, text=col, variable=var).grid(
+                row=i, column=0, sticky="w", padx=4, pady=2)
+
+        def _do_delete():
+            to_delete = [c for c, v in col_vars.items() if v.get()]
+            if not to_delete:
+                messagebox.showinfo("No Selection", "Select at least one column to delete.", parent=dlg)
+                return
+
+            msg = f"Are you sure you want to permanently delete these {len(to_delete)} column(s)?\n\n" + "\n".join(to_delete)
+            if not messagebox.askyesno("Confirm Delete", msg, parent=dlg, icon='warning'):
+                return
+
+            deleted = 0
+            for col in to_delete:
+                try:
+                    self.store.drop_column(col)
+                    deleted += 1
+                    if col in self.db_visible_columns:
+                        self.db_visible_columns.remove(col)
+                    if col in self._field_vars:
+                        del self._field_vars[col]
+                except Exception as e:
+                    messagebox.showerror("Error", f"Failed to drop '{col}': {e}", parent=dlg)
+
+            dlg.destroy()
+            if deleted > 0:
+                messagebox.showinfo("Success", f"Successfully deleted {deleted} column(s).")
+                self._refresh_all()
+
+        btns = ttk.Frame(dlg)
+        btns.pack(fill="x", padx=10, pady=(4, 10))
+        ttk.Button(btns, text="Delete Selected", command=_do_delete).pack(side="left")
+        ttk.Button(btns, text="Cancel", command=dlg.destroy).pack(side="left", padx=8)
 
     def _delete_db_selected(self):
         """Delete selected rows from SQL and completely wipe local files."""
@@ -1347,13 +1415,11 @@ class ReviewApp:
         self.filter_source.grid(row=0, column=1, padx=4, pady=3)
         ttk.Label(filt, text="Year:").grid(row=0, column=2, sticky="w", padx=4)
         self.filter_year = ttk.Entry(filt, width=8); self.filter_year.grid(row=0, column=3, padx=4)
-        ttk.Label(filt, text="Pub type:").grid(row=1, column=0, sticky="w", padx=4, pady=3)
-        self.filter_type = ttk.Entry(filt, width=24); self.filter_type.grid(row=1, column=1, sticky="w", padx=4)
-        ttk.Label(filt, text="Research area:").grid(row=1, column=2, sticky="w", padx=4)
-        self.filter_ra = ttk.Entry(filt, width=20); self.filter_ra.grid(row=1, column=3, padx=4)
-        ttk.Label(filt, text="Classification topic:").grid(row=2, column=0, sticky="w", padx=4, pady=3)
-        self.filter_topic = ttk.Entry(filt, width=24); self.filter_topic.grid(row=2, column=1, sticky="w", padx=4)
-        ttk.Label(filt, text="(matches title or abstract tags)").grid(row=2, column=2, columnspan=2, sticky="w", padx=4)
+        ttk.Label(filt, text="Research area:").grid(row=1, column=0, sticky="w", padx=4, pady=3)
+        self.filter_ra = ttk.Entry(filt, width=20); self.filter_ra.grid(row=1, column=1, sticky="w", padx=4)
+        ttk.Label(filt, text="Classification topic:").grid(row=1, column=2, sticky="w", padx=4)
+        self.filter_topic = ttk.Entry(filt, width=24); self.filter_topic.grid(row=1, column=3, sticky="w", padx=4)
+        ttk.Label(filt, text="(matches title or abstract tags)").grid(row=2, column=0, columnspan=4, sticky="w", padx=4, pady=(0,3))
 
         # Grouping + chart + templates + natural language
         adv = ttk.LabelFrame(tab, text="Grouping, templates & natural language")
@@ -1426,8 +1492,6 @@ class ReviewApp:
             f["source_folder"] = self.filter_source.get().strip()
         if self.filter_year.get().strip():
             f["publication_year"] = self.filter_year.get().strip()
-        if self.filter_type.get().strip():
-            f["publication_type"] = self.filter_type.get().strip()
         if self.filter_ra.get().strip():
             f["research_area"] = self.filter_ra.get().strip()
         if self.filter_topic.get().strip():
@@ -1583,7 +1647,6 @@ class ReviewApp:
         f = spec.get("filters") or {}
         self.filter_source.set(f.get("source_folder", "") or "")
         for entry, key in ((self.filter_year, "publication_year"),
-                           (self.filter_type, "publication_type"),
                            (self.filter_ra, "research_area"),
                            (self.filter_topic, "topic")):
             entry.delete(0, tk.END)
