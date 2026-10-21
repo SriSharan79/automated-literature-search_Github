@@ -1019,7 +1019,7 @@ class ReviewApp:
             f"with DOI: {st['with_doi']}    title-classified: {st['with_classification']}    "
             f"abstract-classified: {st.get('with_abstract_classification', 0)}    "
             f"evaluated: {st.get('with_evaluation', 0)}\n"
-            f"distinct years: {st['distinct_years']}    distinct publication types: {st['distinct_types']}\n"
+            f"distinct years: {st['distinct_years']}  \n"
             f"storage spaces: {spaces}"))
         self._load_db_table()
 

@@ -454,7 +454,7 @@ class AnalyzedDataStore:
     def _filter_clause(filters: dict):
         """Build a WHERE clause (without the WHERE keyword) + params from filters."""
         where, params = [], []
-        for col in ("source_folder",  "publication_type"):
+        for col in ("source_folder", "publication_year"):
             val = (filters or {}).get(col)
             if val:
                 where.append(f"{col} = ?")
@@ -504,7 +504,7 @@ class AnalyzedDataStore:
         Return a custom overview: the chosen ``fields`` (defaults to all),
         filtered by an optional ``filters`` dict with any of:
           source_folder (exact), publication_year (exact),
-          publication_type (exact), research_area (substring, case-insensitive).
+           research_area (substring, case-insensitive).
         """
         fields = [f for f in (fields or COLUMNS) if f in COLUMNS] or ["uuid"]
         where, params = self._filter_clause(filters or {})
@@ -551,7 +551,6 @@ class AnalyzedDataStore:
                 "with_abstract_classification": one(_nonempty("abstract_classification")),
                 "with_evaluation": one(_nonempty("evaluation_score")),
                 "distinct_years": one(_nonempty("publication_year").replace("COUNT(*)", "COUNT(DISTINCT publication_year)")),
-                "distinct_types": one(_nonempty("publication_type").replace("COUNT(*)", "COUNT(DISTINCT publication_type)")),
                 "per_space": per_space,
             }
 
