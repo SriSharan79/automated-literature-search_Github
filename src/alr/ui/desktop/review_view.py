@@ -15,6 +15,7 @@ import subprocess
 import sys
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
+import shutil
 
 from alr.common.sql_store import (
     AnalyzedDataStore,
@@ -82,7 +83,7 @@ class ReviewDataView:
         ttk.Button(actions, text="Save Changes", command=self._save).pack(side="left", padx=3)
         ttk.Button(actions, text="Open PDF", command=self._open_pdf).pack(side="left", padx=3)
         ttk.Button(actions, text="Open Abstract JSON", command=self._open_json).pack(side="left", padx=3)
-        ttk.Button(actions, text="Delete", command=self._delete).pack(side="right", padx=3)
+        ttk.Button(actions, text="Delete Document & Files", command=self._delete).pack(side="right", padx=3)
 
         # Main split: left table / right editable detail
         paned = ttk.PanedWindow(self.parent, orient="horizontal")
@@ -97,9 +98,12 @@ class ReviewDataView:
         widths = {"uuid": 90, "title": 220, "filename": 130, "timestamp": 130,
                   "abstract": 45, "intro": 45}
         self.tree = ttk.Treeview(left, columns=cols, show="headings", selectmode="browse")
+        
+        # Add sorting capability to headers
         for c in cols:
-            self.tree.heading(c, text=headers[c])
+            self.tree.heading(c, text=headers[c], command=lambda _c=c: self._treeview_sort_column(self.tree, _c, False))
             self.tree.column(c, width=widths[c], anchor="w")
+            
         vsb = ttk.Scrollbar(left, orient="vertical", command=self.tree.yview)
         self.tree.configure(yscrollcommand=vsb.set)
         vsb.pack(side="right", fill="y")
@@ -139,6 +143,20 @@ class ReviewDataView:
         abs_lf.pack(fill="x", expand=True, padx=4, pady=3)
         self.abstract_view = tk.Text(abs_lf, height=4, wrap="word", background="#f0f0f0")
         self.abstract_view.pack(fill="x", expand=True)
+
+    def _treeview_sort_column(self, tv, col, reverse):
+        """Sort treeview content when a column header is clicked."""
+        l = [(tv.set(k, col), k) for k in tv.get_children('')]
+        # Attempt to sort numerically if possible, otherwise alphabetically
+        try:
+            l.sort(key=lambda t: float(t[0]), reverse=reverse)
+        except ValueError:
+            l.sort(reverse=reverse)
+
+        for index, (val, k) in enumerate(l):
+            tv.move(k, '', index)
+
+        tv.heading(col, command=lambda: self._treeview_sort_column(tv, col, not reverse))
 
     # --------------------------------------------------------------- data
     def refresh(self):
@@ -293,15 +311,60 @@ class ReviewDataView:
         open_path(os.path.join(mf.AD_Abstract, f"{uuid}_Abstract.json"))
 
     def _delete(self):
+        """Delete from SQL and permanently remove all associated local files."""
         if not self.current_doc:
             return
-        if not messagebox.askyesno("Confirm delete",
-                                   f"Remove '{self.current_doc.get('title')}' from the database?\n"
-                                   "(This does not delete any files on disk.)"):
+        title = self.current_doc.get('title')
+        uuid = self.current_doc.get('uuid')
+        source = self.current_doc.get('source_folder')
+        
+        msg = f"Permanently delete '{title}'?\n\nThis will remove the document from the SQL database AND attempt to permanently delete all associated PDF and JSON files from the local storage space:\n{source}\n\nThis cannot be undone."
+        
+        if not messagebox.askyesno("Confirm Deep Delete", msg, icon='warning'):
             return
-        self.store.delete_document(self.current_doc["uuid"])
+            
+        # 1. Delete Local Files
+        deleted_files = 0
+        if source and os.path.exists(source):
+            mf = DataAnalyzeManager(source)
+            mf.update_id_files(uuid)
+            
+            # List of specific files to remove based on DataAnalyzeManager paths
+            files_to_remove = [
+                mf.raw_sec_json_path,
+                mf.raw_chunks_json_path,
+                mf.file_usage_log_path,
+                mf.ref_json_path,
+                mf.abstract_json_path,
+                mf.intro_json_path,
+                mf.rescon_json_path,
+                self.current_doc.get("relative_path") # The actual PDF
+            ]
+            
+            for f_path in files_to_remove:
+                if f_path and os.path.exists(f_path):
+                    try:
+                        os.remove(f_path)
+                        deleted_files += 1
+                    except Exception as e:
+                        print(f"Failed to delete {f_path}: {e}")
+                        
+            # Remove Image/Table folders if they exist
+            folders_to_remove = [mf.tables_storage_path, mf.image_storage_path]
+            for fld in folders_to_remove:
+                if fld and os.path.exists(fld):
+                    try:
+                        shutil.rmtree(fld)
+                        deleted_files += 1
+                    except Exception as e:
+                        print(f"Failed to remove directory {fld}: {e}")
+
+        # 2. Delete from SQL DB
+        self.store.delete_document(uuid)
+        
         self.current_doc = None
         self.refresh()
+        messagebox.showinfo("Deleted", f"Document removed from database and {deleted_files} associated local file(s)/folder(s) deleted.")
 
 
 def open_review_window(master=None):

@@ -911,8 +911,15 @@ class ReviewApp:
         return chosen.get("path")
 
     # ============================================================== Database
+    # ============================================================== Database
     def _build_database_tab(self, nb):
         tab = make_scrollable_tab(nb, "Database")
+        
+        # State for Database Tab
+        self.db_visible_columns = list(DEFAULT_OVERVIEW_FIELDS)
+        if "uuid" not in self.db_visible_columns:
+            self.db_visible_columns.insert(0, "uuid")
+        self.db_filters = {}
 
         # -- cross-space stats panel
         stats_frame = ttk.LabelFrame(tab, text="Database statistics")
@@ -926,24 +933,34 @@ class ReviewApp:
         browse_frame.pack(fill="both", expand=True, padx=8, pady=4)
         top = ttk.Frame(browse_frame)
         top.pack(fill="x", padx=4, pady=4)
-        ttk.Label(top, text="Filter:").pack(side="left")
+        
+        ttk.Label(top, text="Search (Title/File/UUID):").pack(side="left")
         self.db_search = tk.StringVar()
-        e = ttk.Entry(top, textvariable=self.db_search, width=30)
+        e = ttk.Entry(top, textvariable=self.db_search, width=20)
         e.pack(side="left", padx=4)
         e.bind("<Return>", lambda ev: self._load_db_table())
-        ttk.Button(top, text="Apply", command=self._load_db_table).pack(side="left", padx=2)
-        ttk.Button(top, text="Export columns to Excel…",
-                   command=self._export_db_columns).pack(side="left", padx=12)
+        ttk.Button(top, text="Search", command=self._load_db_table).pack(side="left", padx=2)
+        
+        ttk.Button(top, text="Advanced Filters...", command=self._open_db_filters).pack(side="left", padx=8)
+        ttk.Button(top, text="Select Columns...", command=self._open_db_column_selector).pack(side="left", padx=2)
+        ttk.Button(top, text="Export visible columns...",
+                   command=self._export_db_columns_quick).pack(side="left", padx=8)
+        
         self.db_browse_status = ttk.Label(top, text="")
         self.db_browse_status.pack(side="right")
 
-        self.db_tree = ttk.Treeview(browse_frame, show="headings", height=8)
+        self.db_tree = ttk.Treeview(browse_frame, show="headings", height=8, selectmode="extended")
         dv = ttk.Scrollbar(browse_frame, orient="vertical", command=self.db_tree.yview)
         dh = ttk.Scrollbar(browse_frame, orient="horizontal", command=self.db_tree.xview)
         self.db_tree.configure(yscrollcommand=dv.set, xscrollcommand=dh.set)
         dv.pack(side="right", fill="y")
         dh.pack(side="bottom", fill="x")
         self.db_tree.pack(side="left", fill="both", expand=True)
+        
+        # Add Delete Button below tree
+        btm = ttk.Frame(browse_frame)
+        btm.pack(fill="x", padx=4, pady=4)
+        ttk.Button(btm, text="Delete Selected Document(s) & Local Files", command=self._delete_db_selected).pack(side="right")
 
         # -- ad-hoc SELECT query box
         query_frame = ttk.LabelFrame(tab, text="SQL query (read-only SELECT)")
@@ -968,15 +985,30 @@ class ReviewApp:
 
         self._refresh_database_tab()
 
+    def _treeview_sort_column(self, tv, col, reverse):
+        """Sort treeview content when a column header is clicked."""
+        l = [(tv.set(k, col), k) for k in tv.get_children('')]
+        try:
+            l.sort(key=lambda t: float(t[0]), reverse=reverse)
+        except ValueError:
+            l.sort(reverse=reverse)
+
+        for index, (val, k) in enumerate(l):
+            tv.move(k, '', index)
+
+        tv.heading(col, command=lambda: self._treeview_sort_column(tv, col, not reverse))
+
     @staticmethod
-    def _fill_tree(tree, columns, rows, limit=2000):
+    def _fill_tree_sortable(tree, columns, rows, sort_callback, limit=2000):
         tree.delete(*tree.get_children())
         tree["columns"] = columns
         for c in columns:
-            tree.heading(c, text=c)
+            tree.heading(c, text=c, command=lambda _c=c: sort_callback(tree, _c, False))
             tree.column(c, width=max(70, min(240, len(str(c)) * 11)), anchor="w")
         for r in rows[:limit]:
-            tree.insert("", "end", values=[r.get(c) for c in columns])
+            # Store the UUID as the IID so we can easily delete it later
+            iid = r.get("uuid") if "uuid" in r else None
+            tree.insert("", "end", iid=iid, values=[r.get(c) for c in columns])
 
     def _refresh_database_tab(self):
         st = self.store.stats()
@@ -992,15 +1024,202 @@ class ReviewApp:
         self._load_db_table()
 
     def _load_db_table(self):
-        rows = self.store.list_documents(self.db_search.get().strip() or None)
-        self._fill_tree(self.db_tree, list(COLUMNS), rows)
+        search = self.db_search.get().strip() or None
+        
+        # We use the builder method so we can apply dictionary filters
+        # If there are no advanced filters, we just do a regular list_documents
+        if self.db_filters:
+            rows = self.store.build_overview(fields=COLUMNS, filters=self.db_filters)
+            # Apply text search manually if advanced filters are used
+            if search:
+                s_lower = search.lower()
+                rows = [r for r in rows if s_lower in str(r.get('title','')).lower() or 
+                                            s_lower in str(r.get('filename','')).lower() or 
+                                            s_lower in str(r.get('uuid','')).lower()]
+        else:
+            rows = self.store.list_documents(search)
+            
+        self._current_db_rows = rows # Save state for quick export
+        self._fill_tree_sortable(self.db_tree, self.db_visible_columns, rows, self._treeview_sort_column)
         self.db_browse_status.config(text=f"{len(rows)} row(s)")
+
+    def _open_db_column_selector(self):
+        """Dialog to pick which columns are visible in the db_tree."""
+        dlg = tk.Toplevel(self.container)
+        dlg.title("Select Visible Columns")
+        dlg.geometry("620x460")
+        dlg.transient(self.container.winfo_toplevel())
+        dlg.grab_set()
+
+        ttk.Label(dlg, text="Tick the columns to display in the Database table:",
+                  font=("Arial", 10, "bold")).pack(anchor="w", padx=10, pady=(10, 4))
+
+        picker = ttk.Frame(dlg)
+        picker.pack(fill="both", expand=True, padx=10)
+        canvas = tk.Canvas(picker, highlightthickness=0)
+        vsb = ttk.Scrollbar(picker, orient="vertical", command=canvas.yview)
+        inner = ttk.Frame(canvas)
+        canvas.configure(yscrollcommand=vsb.set)
+        vsb.pack(side="right", fill="y")
+        canvas.pack(side="left", fill="both", expand=True)
+        canvas.create_window((0, 0), window=inner, anchor="nw")
+        inner.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
+
+        col_vars = {}
+        for i, col in enumerate(COLUMNS):
+            var = tk.BooleanVar(value=col in self.db_visible_columns)
+            col_vars[col] = var
+            # Disable unchecking UUID as we need it for operations
+            state = "disabled" if col == "uuid" else "normal"
+            ttk.Checkbutton(inner, text=col, variable=var, state=state).grid(
+                row=i // 4, column=i % 4, sticky="w", padx=4, pady=1)
+
+        selbar = ttk.Frame(dlg)
+        selbar.pack(fill="x", padx=10, pady=(4, 0))
+        ttk.Button(selbar, text="Select all",
+                   command=lambda: [v.set(True) for v in col_vars.values()]).pack(side="left")
+        ttk.Button(selbar, text="Clear all",
+                   command=lambda: [v.set(False) for k,v in col_vars.items() if k != 'uuid']).pack(side="left", padx=6)
+
+        def _apply():
+            self.db_visible_columns = [c for c in COLUMNS if col_vars[c].get()]
+            dlg.destroy()
+            self._load_db_table()
+
+        btns = ttk.Frame(dlg)
+        btns.pack(fill="x", padx=10, pady=(4, 10))
+        ttk.Button(btns, text="Apply", command=_apply).pack(side="left")
+        ttk.Button(btns, text="Cancel", command=dlg.destroy).pack(side="left", padx=8)
+
+    def _open_db_filters(self):
+        """Dialog to apply specific column filters to the database query."""
+        dlg = tk.Toplevel(self.container)
+        dlg.title("Advanced Filters")
+        dlg.geometry("400x300")
+        dlg.transient(self.container.winfo_toplevel())
+        dlg.grab_set()
+
+        f_frame = ttk.Frame(dlg)
+        f_frame.pack(fill="both", expand=True, padx=10, pady=10)
+        
+        ttk.Label(f_frame, text="Storage folder:").grid(row=0, column=0, sticky="w", pady=5)
+        source_var = tk.StringVar(value=self.db_filters.get("source_folder", ""))
+        ttk.Combobox(f_frame, textvariable=source_var, width=30, values=[""] + self.store.list_source_folders()).grid(row=0, column=1, pady=5)
+        
+        ttk.Label(f_frame, text="Publication Year:").grid(row=1, column=0, sticky="w", pady=5)
+        year_var = tk.StringVar(value=self.db_filters.get("publication_year", ""))
+        ttk.Entry(f_frame, textvariable=year_var, width=32).grid(row=1, column=1, pady=5)
+        
+        ttk.Label(f_frame, text="Publication Type:").grid(row=2, column=0, sticky="w", pady=5)
+        type_var = tk.StringVar(value=self.db_filters.get("publication_type", ""))
+        ttk.Entry(f_frame, textvariable=type_var, width=32).grid(row=2, column=1, pady=5)
+        
+        ttk.Label(f_frame, text="Research Area:").grid(row=3, column=0, sticky="w", pady=5)
+        ra_var = tk.StringVar(value=self.db_filters.get("research_area", ""))
+        ttk.Entry(f_frame, textvariable=ra_var, width=32).grid(row=3, column=1, pady=5)
+
+        ttk.Label(f_frame, text="Classification Topic:").grid(row=4, column=0, sticky="w", pady=5)
+        topic_var = tk.StringVar(value=self.db_filters.get("topic", ""))
+        ttk.Entry(f_frame, textvariable=topic_var, width=32).grid(row=4, column=1, pady=5)
+
+        def _apply():
+            self.db_filters = {}
+            if source_var.get().strip(): self.db_filters["source_folder"] = source_var.get().strip()
+            if year_var.get().strip(): self.db_filters["publication_year"] = year_var.get().strip()
+            if type_var.get().strip(): self.db_filters["publication_type"] = type_var.get().strip()
+            if ra_var.get().strip(): self.db_filters["research_area"] = ra_var.get().strip()
+            if topic_var.get().strip(): self.db_filters["topic"] = topic_var.get().strip()
+            dlg.destroy()
+            self._load_db_table()
+            
+        def _clear():
+            self.db_filters = {}
+            dlg.destroy()
+            self._load_db_table()
+
+        btns = ttk.Frame(dlg)
+        btns.pack(fill="x", padx=10, pady=(4, 10))
+        ttk.Button(btns, text="Apply Filters", command=_apply).pack(side="left")
+        ttk.Button(btns, text="Clear Filters", command=_clear).pack(side="left", padx=8)
+        ttk.Button(btns, text="Cancel", command=dlg.destroy).pack(side="right")
+
+    def _delete_db_selected(self):
+        """Delete selected rows from SQL and completely wipe local files."""
+        selections = self.db_tree.selection()
+        if not selections:
+            messagebox.showinfo("No Selection", "Select one or more documents to delete.")
+            return
+            
+        if not messagebox.askyesno("Confirm Deep Delete", 
+                                   f"Permanently delete {len(selections)} document(s)?\n\nThis will remove them from the SQL database AND attempt to permanently delete all associated PDF and JSON files from their local storage spaces.\n\nThis cannot be undone.", icon='warning'):
+            return
+
+        deleted_files = 0
+        deleted_sql = 0
+        
+        for uuid in selections:
+            # 1. Fetch document to get source folder and relative path
+            doc = self.store.get_document(uuid)
+            if not doc: continue
+            
+            source = doc.get("source_folder")
+            
+            # 2. Delete Local Files
+            if source and os.path.exists(source):
+                import shutil
+                from alr.common.file_manager import DataAnalyzeManager
+                mf = DataAnalyzeManager(source)
+                mf.update_id_files(uuid)
+                
+                files_to_remove = [
+                    mf.raw_sec_json_path,
+                    mf.raw_chunks_json_path,
+                    mf.file_usage_log_path,
+                    mf.ref_json_path,
+                    mf.abstract_json_path,
+                    mf.intro_json_path,
+                    mf.rescon_json_path,
+                    doc.get("relative_path") # The actual PDF
+                ]
+                
+                for f_path in files_to_remove:
+                    if f_path and os.path.exists(f_path):
+                        try:
+                            os.remove(f_path)
+                            deleted_files += 1
+                        except Exception:
+                            pass
+                            
+                folders_to_remove = [mf.tables_storage_path, mf.image_storage_path]
+                for fld in folders_to_remove:
+                    if fld and os.path.exists(fld):
+                        try:
+                            shutil.rmtree(fld)
+                            deleted_files += 1
+                        except Exception:
+                            pass
+
+            # 3. Delete from SQL DB
+            self.store.delete_document(uuid)
+            deleted_sql += 1
+
+        self._refresh_database_tab()
+        messagebox.showinfo("Deleted", f"Successfully removed {deleted_sql} document(s) from SQL and deleted {deleted_files} associated local file(s)/folder(s).")
+
+    def _export_db_columns_quick(self):
+        """Export currently filtered rows using currently visible columns."""
+        if not hasattr(self, '_current_db_rows') or not self._current_db_rows:
+            messagebox.showinfo("Nothing to export", "No documents match the current filters.")
+            return
+            
+        rows = [{c: r.get(c) for c in self.db_visible_columns} for r in self._current_db_rows]
+        self._export_rows(self.db_visible_columns, rows, "filtered_database_export")
 
     def _run_sql_query(self):
         sql = self.sql_text.get("1.0", tk.END)
         try:
             cols, rows = self.store.run_select(sql)
-            self._fill_tree(self.sql_tree, cols, rows)
+            self._fill_tree_sortable(self.sql_tree, cols, rows, self._treeview_sort_column)
             self._last_sql_result = (cols, rows)
             self.sql_status.config(text=f"{len(rows)} row(s).")
         except Exception as e:
@@ -1013,6 +1232,9 @@ class ReviewApp:
             messagebox.showinfo("Nothing to export", "Run a query that returns rows first.")
             return
         self._export_rows(cols, rows, "query_result")
+
+    # The old _export_db_columns method can be deleted or kept, but we wired the 
+    # button to _export_db_columns_quick since we now have visual column selectors.
 
     def _export_db_columns(self):
         """Export database documents to Excel by ticking columns — no SQL needed.
