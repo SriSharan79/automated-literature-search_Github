@@ -46,6 +46,131 @@ def open_path(path):
     except Exception as e:
         messagebox.showerror("Open failed", str(e))
 
+def resolve_doc_target_path(doc: dict, target_kind: str, store=None, parent=None) -> str | None:
+    """
+    Resolve a document's file/folder path (`pdf`, `abstract`, `intro`, `rescon`,
+    `references`, `tables`, `images`).
+
+    If the path is missing on disk:
+      1. Informs the user of the `source_folder` recorded in the SQL DB.
+      2. Asks the user to manually choose the relocated storage space folder.
+      3. Checks whether the expected subpath exists inside the chosen folder.
+      4. If found, updates `source_folder` in SQL and returns the resolved path.
+      5. If still missing, raises an error dialog detailing exactly what is missing.
+    """
+    if not doc:
+        return None
+
+    uuid = str(doc.get("uuid") or "").strip()
+    filename = str(doc.get("filename") or "").strip()
+    recorded_source = str(doc.get("source_folder") or "").strip()
+    recorded_pdf = str(doc.get("relative_path") or "").strip()
+
+    def _compute_expected(base_folder: str) -> tuple[str | None, str]:
+        """Return (expected_full_path, human_readable_missing_description)."""
+        if not base_folder:
+            return None, "No storage space folder path is configured."
+
+        mf = DataAnalyzeManager(base_folder)
+        if uuid:
+            mf.update_id_files(uuid)
+
+        if target_kind == "pdf":
+            # 1. Standard pdf_files/<filename> inside the storage space
+            if filename:
+                cand = os.path.join(str(mf.pdf_subfolder), filename)
+                if os.path.isfile(cand):
+                    return cand, f"pdf_files/{filename}"
+            # 2. If recorded_pdf was inside recorded_source, rebase its relative tail
+            if recorded_pdf and recorded_source:
+                try:
+                    rel = os.path.relpath(recorded_pdf, recorded_source)
+                    if not rel.startswith(".."):
+                        rebased = os.path.join(base_folder, rel)
+                        if os.path.isfile(rebased):
+                            return rebased, rel
+                except ValueError:
+                    pass
+            # 3. Direct recorded_pdf fallback
+            if recorded_pdf and os.path.isfile(recorded_pdf):
+                return recorded_pdf, recorded_pdf
+            expected_rel = f"pdf_files/{filename}" if filename else (recorded_pdf or "PDF file")
+            return os.path.join(str(mf.pdf_subfolder), filename) if filename else recorded_pdf, expected_rel
+
+        kind_map = {
+            "abstract": (mf.abstract_json_path, f"Analyzed_Data_Files/Abstract_Data_Files/{uuid}_Abstract.json"),
+            "intro": (mf.intro_json_path, f"Analyzed_Data_Files/Introduction_Data_Files/{uuid}_Intro.json"),
+            "rescon": (mf.rescon_json_path, f"Analyzed_Data_Files/Results_Conclusion_Data_Files/{uuid}_Results_Conclusion.json"),
+            "references": (mf.ref_json_path, f"References_JSON_Files/{uuid}_References.json"),
+            "raw_sections": (mf.raw_sec_json_path, f"Raw_Section_JSON_Files/{uuid}_raw_sections.json"),
+            "tables": (str(mf.tables_storage_path), f"Raw_Tables_files/{uuid}_Tables_files"),
+            "images": (str(mf.image_storage_path), f"Raw_Images_files/{uuid}_Images_files"),
+        }
+        return kind_map.get(target_kind, (None, f"Unknown target '{target_kind}'"))
+
+    # 1. Try existing paths first without prompting
+    if target_kind == "pdf" and recorded_pdf and os.path.isfile(recorded_pdf):
+        return recorded_pdf
+
+    if recorded_source and os.path.isdir(recorded_source):
+        cand_path, _ = _compute_expected(recorded_source)
+        if cand_path and os.path.exists(cand_path):
+            return cand_path
+
+    # 2. Not found -> Inform user of recorded SQL source_folder and ask to choose manually
+    rec_display = recorded_source if recorded_source else "(None recorded in SQL database)"
+    _, expected_rel_desc = _compute_expected(recorded_source or "<Storage_Space>")
+
+    prompt_msg = (
+        f"Could not locate the requested '{target_kind}' path on disk.\n\n"
+        f"Source folder recorded in SQL DB:\n{rec_display}\n\n"
+        f"Expected relative path:\n{expected_rel_desc}\n\n"
+        "Would you like to manually choose the storage space folder?"
+    )
+    if not messagebox.askyesno("File Path Not Identified", prompt_msg, parent=parent):
+        return None
+
+    chosen_folder = filedialog.askdirectory(
+        title="Select the Storage Space Folder for this Document",
+        initialdir=recorded_source if (recorded_source and os.path.isdir(os.path.dirname(recorded_source))) else None,
+        parent=parent,
+    )
+    if not chosen_folder:
+        return None
+
+    chosen_folder = os.path.abspath(chosen_folder)
+
+    # 3. Verify if the chosen folder resolves the target path (and check space markers)
+    resolved_path, missing_rel = _compute_expected(chosen_folder)
+    if resolved_path and os.path.exists(resolved_path):
+        # Update the in-memory dict and SQLite database so future clicks work automatically
+        doc["source_folder"] = chosen_folder
+        updates = {"source_folder": chosen_folder}
+        if target_kind == "pdf":
+            doc["relative_path"] = resolved_path
+            updates["relative_path"] = resolved_path
+        if store is not None and uuid:
+            try:
+                store.update_document(uuid, updates)
+            except Exception:
+                pass
+        return resolved_path
+
+    # 4. Still missing -> Raise detailed error showing what is missing inside the chosen folder
+    missing_items = [f"• Expected target missing: {missing_rel}"]
+    reg_path = os.path.join(chosen_folder, "Processed_file_registry.xlsx")
+    if not os.path.isfile(reg_path):
+        missing_items.append("• Storage space marker missing: Processed_file_registry.xlsx")
+
+    messagebox.showerror(
+        "Resolution Failed — Missing Files",
+        f"The selected folder:\n{chosen_folder}\n\n"
+        f"does not contain the required files for UUID '{uuid}':\n\n"
+        + "\n".join(missing_items)
+        + f"\n\nFull path checked:\n{resolved_path}",
+        parent=parent,
+    )
+    return None
 
 class ReviewDataView:
     """Treeview list + editable detail panel over the analyzed-document store."""
@@ -297,18 +422,27 @@ class ReviewDataView:
     def _open_pdf(self):
         if not self.current_doc:
             return
-        open_path(self.current_doc.get("relative_path"))
+        path = resolve_doc_target_path(self.current_doc, "pdf", store=self.store, parent=self.parent)
+        if path:
+            open_path(path)
 
     def _open_json(self):
         if not self.current_doc:
             return
-        source = self.current_doc.get("source_folder")
-        uuid = self.current_doc.get("uuid")
-        if not source:
-            messagebox.showwarning("Unavailable", "No source folder recorded for this document.")
-            return
-        mf = DataAnalyzeManager(source)
-        open_path(os.path.join(mf.AD_Abstract, f"{uuid}_Abstract.json"))
+        path = resolve_doc_target_path(self.current_doc, "abstract", store=self.store, parent=self.parent)
+        if path:
+            open_path(path)
+
+    # def _open_json(self):
+    #     if not self.current_doc:
+    #         return
+    #     source = self.current_doc.get("source_folder")
+    #     uuid = self.current_doc.get("uuid")
+    #     if not source:
+    #         messagebox.showwarning("Unavailable", "No source folder recorded for this document.")
+    #         return
+    #     mf = DataAnalyzeManager(source)
+    #     open_path(os.path.join(mf.AD_Abstract, f"{uuid}_Abstract.json"))
 
     def _delete(self):
         """Delete from SQL and permanently remove all associated local files."""

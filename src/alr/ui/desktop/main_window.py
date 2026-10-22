@@ -2458,11 +2458,10 @@ class AutomatedLiteratureUI(tk.Tk):
         run_row.pack(pady=20)
         ttk.Button(run_row, text="Generate Query Report",
                    command=self._run_visualization_query_action).pack(side="left", ipadx=10, ipady=5)
-        # Repair path for an attribute whose section DB and index have drifted
-        # apart (the "index has more vectors than Excel rows" case): rebuild the
-        # section Excel/JSON from the analysis JSONs, then re-embed it.
         ttk.Button(run_row, text="Rebuild section databases…",
                    command=self._rebuild_section_dbs_action).pack(side="left", padx=12, ipadx=6, ipady=5)
+        ttk.Button(run_row, text="Open Saved Query Report…",
+                   command=self._open_saved_query_report_action).pack(side="left", padx=4, ipadx=6, ipady=5)
 
         self._build_common_db_frame(tab)
 
@@ -2495,6 +2494,39 @@ class AutomatedLiteratureUI(tk.Tk):
     # it, holding the busy flag, so an unanswered dialog used to strand the whole
     # app (the RAG build after it would never start).
     GAP_DIALOG_TIMEOUT = 15 * 60
+    
+    
+    def _open_saved_query_report_action(self):
+        """Browse for a previously generated SQL Export or Query Overview Excel and open it in the 3-column viewer."""
+        from alr.ui.desktop.query_result_viewer import open_query_result_viewer
+
+        query_common = getattr(self, "query_target_var", None) and self.query_target_var.get() == "common"
+        storage_choice = (
+            self.common_db_entry.get().strip() if query_common
+            else self.visualize_storage_entry.get().strip()
+        )
+
+        initial_dir = None
+        if storage_choice and os.path.isdir(storage_choice):
+            q_dir = Path(storage_choice) / "Querry_results" / "Queries"
+            initial_dir = str(q_dir if q_dir.is_dir() else Path(storage_choice))
+
+        file_path = filedialog.askopenfilename(
+            title="Select a Saved Query Report or SQL Database Export",
+            initialdir=initial_dir,
+            filetypes=[
+                ("Query Report Excel", "*_SQL_Database_Export.xlsx *_query_Overview_report.xlsx *.xlsx"),
+                ("All Files", "*.*"),
+            ],
+        )
+        if not file_path:
+            return
+
+        open_query_result_viewer(
+            self,
+            file_path,
+            title=f"Query Results — {Path(file_path).stem}",
+        )
 
     def _finalization_gap_dialog(self, gaps, timeout=None):
         """
@@ -3026,13 +3058,34 @@ class AutomatedLiteratureUI(tk.Tk):
             print("Query Generation Suite Logging Executed successfully.")
             return len(query_sections)
 
+        # Inside _run_visualization_query_action in main_window.py:
         def on_success(n):
-            messagebox.showinfo("Query finished",
-                                f"Query report built across {n or 0} section(s). "
-                                "The enriched overview sits in the query folder, the "
-                                "per-attribute Excels in its Attribute_Query_Results sub-folder, "
-                                "and the run is recorded in Querry_results/Query_Log.xlsx. "
-                                "See the console log for the exact paths.")
+            from alr.ui.desktop.query_result_viewer import open_query_result_viewer
+            from alr.common.file_manager import Vec_DB_Manager
+
+            vdb = Vec_DB_Manager(storage_choice)
+            q_root = Path(vdb.results) / "Queries"
+
+            # Locate the newest SQL Database Export (or fallback to the Overview report)
+            latest_report = None
+            if q_root.exists():
+                exports = sorted(q_root.rglob("*_SQL_Database_Export.xlsx"), key=os.path.getmtime, reverse=True)
+                if not exports:
+                    exports = sorted(q_root.rglob("*_query_Overview_report.xlsx"), key=os.path.getmtime, reverse=True)
+                if exports:
+                    latest_report = exports[0]
+
+            if latest_report:
+                open_query_result_viewer(
+                    self,
+                    latest_report,
+                    title=f"Query Results — { query_text[:50] }",
+                )
+            else:
+                messagebox.showinfo(
+                    "Query finished",
+                    f"Query report built across {n or 0} section(s). See the console log for paths.",
+                )
 
         self._run_threaded(work, "RAG Query", on_success=on_success)
 

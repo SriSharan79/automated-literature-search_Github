@@ -20,7 +20,7 @@ import tkinter as tk
 from pathlib import Path
 from tkinter import ttk, filedialog, messagebox
 from datetime import datetime as dt 
-
+from alr.ui.desktop.review_view import ReviewDataView, open_path, resolve_doc_target_path
 from alr.common import crash_logger
 # Shared UI plumbing (progress dialog, threaded runner, scrollable tabs) lives in
 # _async so the main window and this tool stay in lock-step. ProgressDialog is
@@ -775,8 +775,6 @@ class ReviewApp:
         registry_row = row if where == "registry" else None
         uuid = str(row.get("uuid") or row.get("UUID") or "").strip()
 
-        # SQL first; the space the document was synced from fills the gaps
-        # (fallback: the user-chosen space).
         space_used = None
         if sql_row:
             source = str(sql_row.get("source_folder") or "").strip()
@@ -784,36 +782,70 @@ class ReviewApp:
                 space_used = source
             elif is_storage_space(space):
                 space_used = space
+            else:
+                # Recorded source_folder is unreachable -> notify user & ask to choose manually
+                rec_display = source if source else "(None recorded in SQL database)"
+                if messagebox.askyesno(
+                    "Storage Space Not Identified",
+                    f"The storage space recorded in the SQL database could not be found:\n{rec_display}\n\n"
+                    "Would you like to manually choose the storage space folder to resolve this document's files?",
+                    parent=self.container,
+                ):
+                    chosen = filedialog.askdirectory(title="Select Storage Space Folder", parent=self.container)
+                    if chosen:
+                        # Check if the chosen folder resolves the document's files
+                        test_payloads = load_space_payloads(chosen, uuid)
+                        if is_storage_space(chosen) or any(test_payloads.values()):
+                            space_used = chosen
+                            self.insp_space_entry.delete(0, tk.END)
+                            self.insp_space_entry.insert(0, chosen)
+                            sql_row["source_folder"] = chosen
+                            self.store.update_document(uuid, {"source_folder": chosen})
+                        else:
+                            missing_list = [
+                                f"• Analyzed_Data_Files/Abstract_Data_Files/{uuid}_Abstract.json",
+                                f"• Analyzed_Data_Files/Introduction_Data_Files/{uuid}_Intro.json",
+                                f"• Analyzed_Data_Files/Results_Conclusion_Data_Files/{uuid}_Results_Conclusion.json",
+                            ]
+                            if not os.path.isfile(os.path.join(chosen, "Processed_file_registry.xlsx")):
+                                missing_list.insert(0, "• Processed_file_registry.xlsx")
+                            messagebox.showerror(
+                                "Resolution Failed — Missing Files",
+                                f"The chosen folder:\n{chosen}\n\ndoes not contain the expected files for UUID '{uuid}':\n\n"
+                                + "\n".join(missing_list),
+                                parent=self.container,
+                            )
         elif is_storage_space(space):
             space_used = space
-        payloads = load_space_payloads(space_used, uuid) if space_used else {}
 
-        view = assemble_document_view(sql_row=sql_row, registry_row=registry_row,
-                                      payloads=payloads)
+        payloads = load_space_payloads(space_used, uuid) if space_used else {}
+        view = assemble_document_view(sql_row=sql_row, registry_row=registry_row, payloads=payloads)
         self._inspector_fill_tree(view)
 
-        gaps = missing_after_merge(view)
-        if gaps and not space_used:
-            self.insp_value_text.delete("1.0", tk.END)
-            self.insp_value_text.insert(
-                "1.0", f"No data found for: {', '.join(gaps)}. The document's synced "
-                       "storage space was not reachable - choose the storage space "
-                       "above and search again to fill these from disk.")
-
-        # PDF: known locations first; recursive search stays available.
-        pdf = find_pdf(sql_row=sql_row, registry_row=registry_row,
-                       space_folder=space_used, payloads=payloads)
+        pdf = find_pdf(sql_row=sql_row, registry_row=registry_row, space_folder=space_used, payloads=payloads)
         filename = document_filename(sql_row, registry_row)
-        self._insp_state.update(pdf=pdf, filename=filename)
+        self._insp_state.update(pdf=pdf, filename=filename, current_row=sql_row or registry_row)
         if pdf:
             self.insp_pdf_var.set(pdf)
         elif filename:
-            self.insp_pdf_var.set(f"'{filename}' not found at its known locations - "
-                                  "use 'Locate PDF in folder…' to search a folder tree.")
+            self.insp_pdf_var.set(f"'{filename}' not found at recorded path — click 'Open PDF' or 'Locate PDF' to resolve.")
         else:
             self.insp_pdf_var.set("No filename recorded for this document.")
-        self.insp_open_pdf_btn.configure(state="normal" if pdf else "disabled")
+        self.insp_open_pdf_btn.configure(state="normal" if (pdf or sql_row) else "disabled")
         self.insp_locate_pdf_btn.configure(state="normal" if filename else "disabled")
+
+    def _inspector_open_pdf(self):
+        pdf = self._insp_state.get("pdf")
+        if pdf and os.path.isfile(pdf):
+            open_path(pdf)
+            return
+        row = self._insp_state.get("current_row")
+        if row:
+            resolved = resolve_doc_target_path(row, "pdf", store=self.store, parent=self.container)
+            if resolved:
+                self._insp_state["pdf"] = resolved
+                self.insp_pdf_var.set(resolved)
+                open_path(resolved)
 
     def _inspector_fill_tree(self, view_rows):
         self.insp_tree.delete(*self.insp_tree.get_children())

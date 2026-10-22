@@ -422,6 +422,9 @@ def generate_query_report(query_list, storage_path, search_root='/remotedata/U/D
         log_path = _append_skiplog(Path(vdb.results) / QUERY_SKIPPED_LOG, not_added)
         print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:{Fore.YELLOW}{Style.BRIGHT}⚠️ {len(not_added)} attribute(s)/query(ies) were skipped"
               + (f" — see {log_path}" if log_path else ""))
+        
+    sql_export_df.to_excel(sql_export_path, index=False, engine="openpyxl")
+    vdb.last_sql_export_path = str(sql_export_path)
 
     print(f"\n[{dt.now().strftime('%Y-%m-%d %H:%M:%S')}]:\n{Fore.MAGENTA}{Style.BRIGHT}--- ALL TASKS FINISHED ---")
     return not_added
