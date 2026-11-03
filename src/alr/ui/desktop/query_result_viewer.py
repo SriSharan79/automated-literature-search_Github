@@ -460,16 +460,7 @@ class QueryResultViewer:
         self.section_text.configure(state="disabled")
 
     # ------------------------------------------------------------------ Column 3 Logic
-    def _resolve_media_folder(self, doc, mode):
-        """Locate the document's per-ID Tables or Images folder via DataAnalyzeManager."""
-        source = doc.get("source_folder")
-        uuid = doc.get("uuid")
-        if not source or not uuid or not os.path.isdir(source):
-            return None
-        mf = DataAnalyzeManager(source)
-        mf.update_id_files(uuid)
-        target = mf.tables_storage_path if mode == "tables" else mf.image_storage_path
-        return Path(target) if target and Path(target).is_dir() else None
+   
 
     def _refresh_media_list(self):
         self.media_listbox.delete(0, tk.END)
