@@ -34,7 +34,7 @@ import time
 # Sliding window: at most RATE_MAX_REQUESTS requests per RATE_WINDOW_SECONDS,
 # shared across blabla_ask_llm / Ollama_ask_llm / get_embedding so the limits
 # don't stack per-call-site the way the old flat sleeps did.
-RATE_MAX_REQUESTS = 10
+RATE_MAX_REQUESTS = 30
 RATE_WINDOW_SECONDS = 60
 REQUEST_TIMES = deque()
 _RATE_LOCK = threading.Lock()

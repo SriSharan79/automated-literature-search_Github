@@ -71,24 +71,42 @@ CLASS_RE = re.compile(
 #     re.VERBOSE,
 # )
 
-# Updated METHOD_RE to require explicit method modifiers and catch constructors.
+# # Updated METHOD_RE to require explicit method modifiers and catch constructors.
+# METHOD_RE = re.compile(
+#     r"""(?P<indent>\s*)                    # 1. indentation
+#         # REQUIRE one or more method/constructor modifiers (public, private, static, etc.)
+#         (?:\b(?:public|private|protected|static|final|abstract|synchronized|native|strictfp)\b\s+)+
+#         # Optional space and other modifiers that might be mixed in
+#         (?:\s*\b(?:static|final|abstract|synchronized|native|strictfp)\b)*\s*
+#         (?:                                    # 2. Non-capturing group for return type (optional)
+#             (?P<ret_type>[\w<>\[\].]+)\s+      # 3. Return type
+#         )?                                     # 4. Make return type group optional
+#         (?P<name>\w+)\s* # 5. Method/Constructor name
+#         \((?P<params>[^)]*)\)\s* # 6. parameters
+#         (?:throws\s+[^{]+)?\s*
+#         # 7. Match either an opening brace or a semicolon (covers concrete, abstract, and interface methods)
+#         [;\{]? 
+#     """,
+#     re.VERBOSE,
+# )
+
 METHOD_RE = re.compile(
-    r"""(?P<indent>\s*)                    # 1. indentation
-        # REQUIRE one or more method/constructor modifiers (public, private, static, etc.)
-        (?:\b(?:public|private|protected|static|final|abstract|synchronized|native|strictfp)\b\s+)+
-        # Optional space and other modifiers that might be mixed in
-        (?:\s*\b(?:static|final|abstract|synchronized|native|strictfp)\b)*\s*
-        (?:                                    # 2. Non-capturing group for return type (optional)
-            (?P<ret_type>[\w<>\[\].]+)\s+      # 3. Return type
-        )?                                     # 4. Make return type group optional
-        (?P<name>\w+)\s* # 5. Method/Constructor name
-        \((?P<params>[^)]*)\)\s* # 6. parameters
-        (?:throws\s+[^{]+)?\s*
-        # 7. Match either an opening brace or a semicolon (covers concrete, abstract, and interface methods)
-        [;\{]? 
+    r"""(?P<indent>\s*)                    # 1. Indentation
+        (?:@[\w\.]+(?:\([^)]*\))?\s+)*     # 2. Optional inline annotations (e.g., @Override)
+        # 3. OPTIONAL modifiers (changed + to * to catch package-private and default methods)
+        (?:\b(?:public|private|protected|static|final|abstract|synchronized|native|strictfp|default)\b\s+)*
+        (?:<[^>]+>\s+)?                    # 4. Optional generic type params for method (e.g., <T>)
+        (?:                                # 5. Optional return type group
+            (?P<ret_type>[\w<>\[\],\.\s]+?)\s+ # Allows spaces/commas in generics
+        )?
+        (?P<name>[A-Za-z_]\w*)\s*          # 6. Method/Constructor name
+        \((?P<params>[^)]*)\)\s*           # 7. Parameters
+        (?:throws\s+[^{;]+)?\s*            # 8. Throws clause
+        [;\{]                              # 9. MUST end with { or ; to prevent matching method calls
     """,
     re.VERBOSE,
 )
+
 
 # Javadoc block pattern (non-greedy)
 JAVADOC_RE = re.compile(
@@ -130,122 +148,246 @@ class MethodInfo:
 #                            Parsing utilities
 # --------------------------------------------------------------------------- #
 
+# def parse_file(lines: List[str]) -> List[ClassInfo]:
+#     """
+#     Parse a list of lines from a Java file and return a list of ClassInfo
+#     objects with nested MethodInfo objects.
+#     """
+#     classes: List[ClassInfo] = []
+#     stack = []  # (indent, 'class'/'method', start_line, name)
+
+#     # Pre‑compute Javadoc positions
+#     javadoc_positions = {}
+#     for m in JAVADOC_RE.finditer("".join(lines)):
+#         start = m.start()
+#         end = m.end()
+#         # Find line number (simplistic conversion)
+#         line_start = sum(len(l) + 1 for l in lines[:m.start()]) 
+#         javadoc_positions[start] = (start, end)
+
+#     # We'll scan line by line, looking for class/method declarations.
+#     for idx, line in enumerate(lines):
+#         # Check for class
+#         cls_match = CLASS_RE.search(line)
+#         if cls_match:
+#             name = cls_match.group("name")
+#             indent = cls_match.group("indent")
+            
+#             # Javadoc search logic (using character offsets)
+#             javadoc_start = None
+#             javadoc_end = None
+#             line_offset = sum(len(l) + 1 for l in lines[:idx])
+            
+#             for j_start, (s, e) in javadoc_positions.items():
+#                 if e == line_offset + cls_match.start():  # contiguous check
+#                     javadoc_start = s
+#                     javadoc_end = e
+#                     break
+            
+#             # Create a placeholder for end line – we will compute it later
+#             cls_info = ClassInfo(
+#                 name=name,
+#                 start=idx,
+#                 end=None,
+#                 javadoc_start=javadoc_start,
+#                 javadoc_end=javadoc_end,
+#                 methods=[],
+#             )
+#             stack.append(("class", cls_info))
+#             continue
+
+#         # Check for method
+#         meth_match = METHOD_RE.search(line)
+#         if meth_match:
+#             name = meth_match.group("name")
+            
+#             # --- MODIFIED LOGIC FOR CONSTRUCTORS/RETURN TYPE ---
+#             ret_type_match = meth_match.group("ret_type")
+            
+#             if ret_type_match:
+#                 ret_type = ret_type_match
+#             else:
+#                 # No explicit return type matched: check if it's a constructor
+#                 current_class_name = None
+#                 for c in reversed(stack):
+#                     if c[0] == "class":
+#                         current_class_name = c[1].name
+#                         break
+                        
+#                 if current_class_name and name == current_class_name:
+#                     # Constructor: its return "type" is the class name
+#                     ret_type = current_class_name
+#                 else:
+#                     # Assume 'void' if no return type is explicitly found
+#                     ret_type = "void" 
+#             # ----------------------------------------------------
+
+#             params_str = meth_match.group("params").strip()
+#             params = []
+#             if params_str:
+#                 for p in params_str.split(","):
+#                     p = p.strip()
+#                     if not p:
+#                         continue
+#                     # Split by last space to handle types with spaces
+#                     *type_parts, param_name = p.split()
+#                     p_type = " ".join(type_parts)
+#                     params.append((p_type, param_name))
+            
+#             # Javadoc search logic (using character offsets)
+#             javadoc_start = None
+#             javadoc_end = None
+#             line_offset = sum(len(l) + 1 for l in lines[:idx])
+            
+#             for j_start, (s, e) in javadoc_positions.items():
+#                 if e == line_offset + meth_match.start():
+#                     javadoc_start = s
+#                     javadoc_end = e
+#                     break
+            
+#             meth_info = MethodInfo(
+#                 name=name,
+#                 params=params,
+#                 return_type=ret_type,
+#                 start=idx,
+#                 end=None,
+#                 javadoc_start=javadoc_start,
+#                 javadoc_end=javadoc_end,
+#             )
+#             stack.append(("method", meth_info))
+#             continue
+
+#         # Detect closing braces to determine end lines
+#         if "}" in line:
+#             if stack:
+#                 typ, obj = stack.pop()
+#                 obj.end = idx
+#                 if typ == "method":
+#                     # Add to current class
+#                     for c in reversed(stack):
+#                         if c[0] == "class":
+#                             c[1].methods.append(obj)
+#                             break
+#                 elif typ == "class":
+#                     classes.append(obj)
+
+#     return classes
 def parse_file(lines: List[str]) -> List[ClassInfo]:
-    """
-    Parse a list of lines from a Java file and return a list of ClassInfo
-    objects with nested MethodInfo objects.
-    """
     classes: List[ClassInfo] = []
-    stack = []  # (indent, 'class'/'method', start_line, name)
-
-    # Pre‑compute Javadoc positions
-    javadoc_positions = {}
-    for m in JAVADOC_RE.finditer("".join(lines)):
-        start = m.start()
-        end = m.end()
-        # Find line number (simplistic conversion)
-        line_start = sum(len(l) + 1 for l in lines[:m.start()]) 
-        javadoc_positions[start] = (start, end)
-
-    # We'll scan line by line, looking for class/method declarations.
-    for idx, line in enumerate(lines):
-        # Check for class
-        cls_match = CLASS_RE.search(line)
-        if cls_match:
-            name = cls_match.group("name")
-            indent = cls_match.group("indent")
-            
-            # Javadoc search logic (using character offsets)
-            javadoc_start = None
-            javadoc_end = None
-            line_offset = sum(len(l) + 1 for l in lines[:idx])
-            
-            for j_start, (s, e) in javadoc_positions.items():
-                if e == line_offset + cls_match.start():  # contiguous check
-                    javadoc_start = s
-                    javadoc_end = e
+    stack = []
+    brace_depth = 0
+    
+    # 1. Pre-parse all Javadoc blocks so we can chain them together later
+    javadocs = []
+    in_jd = False
+    jd_start = None
+    for i, line in enumerate(lines):
+        stripped = line.strip()
+        if in_jd:
+            if "*/" in stripped:
+                in_jd = False
+                javadocs.append((jd_start, i))
+        elif stripped.startswith("/**"):
+            jd_start = i
+            if "*/" in stripped:
+                javadocs.append((jd_start, i))
+            else:
+                in_jd = True
+                
+    # Helper: Finds all contiguous Javadoc blocks stacked above a target line
+    def consume_attached_javadocs(target_idx):
+        attached_jds = []
+        curr_target = target_idx
+        
+        # Traverse a copy so we can safely remove from the original list
+        for jd_s, jd_e in reversed(javadocs):
+            if jd_e >= curr_target:
+                continue
+                
+            # Check if this Javadoc is attached to our current target
+            is_attached = True
+            for i in range(jd_e + 1, curr_target):
+                s = lines[i].strip()
+                # Attached if only whitespace, annotations, or single-line comments separate them
+                if s and not s.startswith("@") and not s.startswith("//"):
+                    is_attached = False
                     break
             
-            # Create a placeholder for end line – we will compute it later
-            cls_info = ClassInfo(
-                name=name,
-                start=idx,
-                end=None,
-                javadoc_start=javadoc_start,
-                javadoc_end=javadoc_end,
-                methods=[],
-            )
-            stack.append(("class", cls_info))
+            if is_attached:
+                attached_jds.append((jd_s, jd_e))
+                curr_target = jd_s # Chain upwards! Look for Javadocs attached to THIS Javadoc.
+                javadocs.remove((jd_s, jd_e)) # Consume it
+            else:
+                break # Chain broken, stop looking higher
+                
+        if attached_jds:
+            # attached_jds is built bottom-up. 
+            # Top-most block's start line, Bottom-most block's end line.
+            return attached_jds[-1][0], attached_jds[0][1]
+        return None, None
+
+    # 2. Main parsing loop
+    for idx, line in enumerate(lines):
+        
+        # Skip evaluating regex if this line is literally inside a Javadoc comment
+        # (Prevents accidentally parsing code examples written inside comments)
+        if any(s <= idx <= e for s, e in javadocs):
             continue
 
-        # Check for method
-        meth_match = METHOD_RE.search(line)
-        if meth_match:
-            name = meth_match.group("name")
+        open_braces = line.count('{')
+        close_braces = line.count('}')
+
+        cls_match = CLASS_RE.search(line)
+        is_class_level = len(stack) > 0 and stack[-1][0] == "class"
+        meth_match = METHOD_RE.search(line) if is_class_level else None
+        
+        if cls_match:
+            name = cls_match.group("name")
+            jd_s, jd_e = consume_attached_javadocs(idx)
             
-            # --- MODIFIED LOGIC FOR CONSTRUCTORS/RETURN TYPE ---
+            cls_info = ClassInfo(
+                name=name, start=idx, end=None,
+                javadoc_start=jd_s, javadoc_end=jd_e, methods=[]
+            )
+            stack.append(("class", cls_info, brace_depth))
+            brace_depth += open_braces - close_braces
+
+        elif meth_match:
+            name = meth_match.group("name")
             ret_type_match = meth_match.group("ret_type")
             
             if ret_type_match:
-                ret_type = ret_type_match
+                ret_type = ret_type_match.strip()
             else:
-                # No explicit return type matched: check if it's a constructor
-                current_class_name = None
-                for c in reversed(stack):
-                    if c[0] == "class":
-                        current_class_name = c[1].name
-                        break
-                        
-                if current_class_name and name == current_class_name:
-                    # Constructor: its return "type" is the class name
-                    ret_type = current_class_name
-                else:
-                    # Assume 'void' if no return type is explicitly found
-                    ret_type = "void" 
-            # ----------------------------------------------------
+                current_class_name = stack[-1][1].name if stack else None
+                ret_type = current_class_name if name == current_class_name else "void"
 
             params_str = meth_match.group("params").strip()
             params = []
             if params_str:
                 for p in params_str.split(","):
                     p = p.strip()
-                    if not p:
-                        continue
-                    # Split by last space to handle types with spaces
+                    if not p: continue
                     *type_parts, param_name = p.split()
-                    p_type = " ".join(type_parts)
-                    params.append((p_type, param_name))
+                    params.append((" ".join(type_parts), param_name))
             
-            # Javadoc search logic (using character offsets)
-            javadoc_start = None
-            javadoc_end = None
-            line_offset = sum(len(l) + 1 for l in lines[:idx])
-            
-            for j_start, (s, e) in javadoc_positions.items():
-                if e == line_offset + meth_match.start():
-                    javadoc_start = s
-                    javadoc_end = e
-                    break
+            jd_s, jd_e = consume_attached_javadocs(idx)
             
             meth_info = MethodInfo(
-                name=name,
-                params=params,
-                return_type=ret_type,
-                start=idx,
-                end=None,
-                javadoc_start=javadoc_start,
-                javadoc_end=javadoc_end,
+                name=name, params=params, return_type=ret_type,
+                start=idx, end=None, javadoc_start=jd_s, javadoc_end=jd_e
             )
-            stack.append(("method", meth_info))
-            continue
+            stack.append(("method", meth_info, brace_depth))
+            brace_depth += open_braces - close_braces
+            
+        else:
+            brace_depth += open_braces - close_braces
 
-        # Detect closing braces to determine end lines
-        if "}" in line:
-            if stack:
-                typ, obj = stack.pop()
+        if close_braces > 0:
+            while stack and brace_depth <= stack[-1][2]:
+                typ, obj, _ = stack.pop()
                 obj.end = idx
                 if typ == "method":
-                    # Add to current class
                     for c in reversed(stack):
                         if c[0] == "class":
                             c[1].methods.append(obj)
@@ -254,8 +396,6 @@ def parse_file(lines: List[str]) -> List[ClassInfo]:
                     classes.append(obj)
 
     return classes
-
-
 # --------------------------------------------------------------------------- #
 #                          Javadoc creation / update
 # --------------------------------------------------------------------------- #
@@ -373,7 +513,7 @@ def process_file(file_path: Path) -> None:
         if javadoc_exists(cls.javadoc_start, cls.javadoc_end):
             # 1. DELETE existing Javadoc block
             start_line = cls.javadoc_start + offset
-            end_line = cls.javadoc_end + offset
+            end_line = cls.javadoc_end + offset+1
             lines_deleted = end_line - start_line
             
             new_lines[start_line:end_line] = []
@@ -474,7 +614,7 @@ def process_file(file_path: Path) -> None:
             if javadoc_exists(meth.javadoc_start, meth.javadoc_end):
                 # 1. DELETE existing Javadoc block
                 start_line = meth.javadoc_start + offset
-                end_line = meth.javadoc_end + offset
+                end_line = meth.javadoc_end + offset+1
                 lines_deleted = end_line - start_line
                 
                 new_lines[start_line:end_line] = []
@@ -517,7 +657,7 @@ def walk_and_process(root: Path) -> None:
 # --------------------------------------------------------------------------- #
 
 def main() -> None:
-    root_path = r"C:\Users\kata_du\git\cameo_git_test\GitLab_syncronization\src\gitplugin"
+    root_path = r"C:\Users\kata_du\git\cameo_git_test\GitLab_syncronization\src"
 
     print(f"Starting scan at {root_path}\n")
     walk_and_process(root_path)

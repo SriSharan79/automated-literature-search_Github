@@ -26,6 +26,11 @@ from alr.common import crash_logger
 # _async so the main window and this tool stay in lock-step. ProgressDialog is
 # re-exported here for backward compatibility.
 from alr.ui.desktop._async import ProgressDialog, run_threaded, make_scrollable_tab  # noqa: F401
+from alr.common.sql_store import (
+    AnalyzedDataStore, sync_storage_to_sql, COLUMNS,
+    INTRO_SECTION_COLUMNS, RESCON_SECTION_COLUMNS, sanitize_column_name,
+    set_default_search_root as set_sql_search_root,
+)
 
 from alr.common.document_inspector import (
     SEARCH_MODES,
@@ -55,7 +60,30 @@ DEFAULT_OVERVIEW_FIELDS = [
     "research_areas", "source_folder",
 ]
 
-
+DEFAULT_TICKED_SQL_COLUMNS = [
+    "uuid",
+    "title",
+    "filename",
+    "research_problem",
+    "objective",
+    "methodology",
+    "conclusion",
+    "results",
+    "research_areas",
+    "key_concepts",
+    *INTRO_SECTION_COLUMNS.values(),
+    *RESCON_SECTION_COLUMNS.values(),
+    "doi_link",
+    "publisher",
+    "container",
+    "publication_year",
+    "authors",
+    "first_author",
+    "evaluation_score",
+    "intro_evaluation_score",
+    "rescon_evaluation_score",
+    "source_folder",
+]
 def nl_to_overview_spec(description, fields):
     """
     Turn a plain-English overview request into a spec dict via the LLM:
@@ -1099,7 +1127,7 @@ class ReviewApp:
 
         col_vars = {}
         for i, col in enumerate(COLUMNS):
-            var = tk.BooleanVar(value=col in self.db_visible_columns)
+            var = tk.BooleanVar(value=col in DEFAULT_TICKED_SQL_COLUMNS)
             col_vars[col] = var
             # Disable unchecking UUID as we need it for operations
             state = "disabled" if col == "uuid" else "normal"
@@ -1367,7 +1395,7 @@ class ReviewApp:
 
         col_vars = {}
         for i, col in enumerate(COLUMNS):
-            var = tk.BooleanVar(value=col in DEFAULT_OVERVIEW_FIELDS)
+            var = tk.BooleanVar(value=col in DEFAULT_TICKED_SQL_COLUMNS)
             col_vars[col] = var
             ttk.Checkbutton(inner, text=col, variable=var).grid(
                 row=i // 4, column=i % 4, sticky="w", padx=4, pady=1)

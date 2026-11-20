@@ -9,6 +9,7 @@ import pandas as pd
 from pathlib import Path
 from alr.common.excel_utils import extract_column, get_column_value
 import json
+from alr.common.sql_store import INTRO_SECTION_COLUMNS, RESCON_SECTION_COLUMNS
 from datetime import datetime
 from alr.common.file_manager import DataAnalyzeManager, Vec_DB_Manager
 from alr.common.sql_store import AnalyzedDataStore, COLUMNS
@@ -333,7 +334,30 @@ def generate_query_report(query_list, storage_path, search_root='/remotedata/U/D
                             canvas.create_window((0, 0), window=inner, anchor="nw")
                             inner.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
 
-                            default_overview_fields = {"title", "filename", "publication_year", "publication_type", "classification", "abstract_classification", "first_author", "doi_link", "research_areas", "source_folder"}
+                            default_overview_fields = {
+                                "uuid",
+                                "title",
+                                "filename",
+                                "research_problem",
+                                "objective",
+                                "methodology",
+                                "conclusion",
+                                "results",
+                                "research_areas",
+                                "key_concepts",
+                                *INTRO_SECTION_COLUMNS.values(),
+                                *RESCON_SECTION_COLUMNS.values(),
+                                "doi_link",
+                                "publisher",
+                                "container",
+                                "publication_year",
+                                "authors",
+                                "first_author",
+                                "evaluation_score",
+                                "intro_evaluation_score",
+                                "rescon_evaluation_score",
+                                "source_folder",
+                            }
                             
                             col_vars = {}
                             for i, col in enumerate(COLUMNS):
