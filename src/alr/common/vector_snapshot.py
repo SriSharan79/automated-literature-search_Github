@@ -52,6 +52,9 @@ def build_vector_snapshot_zip(
     vector_columns: list[str],
     zip_path: str | Path,
     db_path=DB_PATH,
+    method: str = None,
+    service: str = None,
+    model: str = None,
     progress_callback=None,
     should_cancel=None,
 ) -> dict:
@@ -153,12 +156,27 @@ def build_vector_snapshot_zip(
             raise InterruptedError("Cancelled by user.")
 
         # (b) Per-cell vectorization + FAISS index
+        clean_method = (method or "").strip().lower() or None
+        clean_service = (service or "").strip() or None if clean_method != "local" else None
+        clean_model = (model or "").strip() or None if clean_method != "local" else None
+
         _tick(f"Vectorizing {len(texts)} cell(s) across {len(vec_cols)} column(s)…")
-        vectors = vectorize_strings(texts)
+        vectors = vectorize_strings(
+            texts,
+            method=clean_method,
+            service=clean_service,
+            model=clean_model,
+        )
         index = create_faiss_index_cosine(vectors)
 
         index_path = tmp_dir / "vectors.bin"
-        save_index_file(index, index_path)
+        save_index_file(
+            index,
+            index_path,
+            method=clean_method,
+            service=clean_service,
+            model=clean_model,
+        )
         meta_path = Path(str(index_path) + ".meta.json")
 
         entries_path = tmp_dir / "vector_entries.json"
@@ -200,7 +218,8 @@ def query_vector_snapshot_zip(
     top_k: int = 10,
 ) -> list[dict]:
     """
-    Run cosine similarity search against a packed vector snapshot zip.
+    Run cosine similarity search against a packed vector snapshot zip using the
+    exact embedding method, service, and model recorded when the zip was built.
     Returns up to ``top_k`` rows: [{score, uuid, title, column, content}, ...].
     """
     query = (query or "").strip()
@@ -215,7 +234,7 @@ def query_vector_snapshot_zip(
             missing = required - names
             if missing:
                 raise ValueError(f"Zip archive is missing required file(s): {', '.join(sorted(missing))}")
-            for name in ("vectors.bin", "vectors.bin.meta.json", "vector_entries.json"):
+            for name in ("vectors.bin", "vectors.bin.meta.json", "vector_entries.json", "manifest.json"):
                 if name in names:
                     zf.extract(name, tmp_dir)
 
@@ -223,8 +242,25 @@ def query_vector_snapshot_zip(
         if not entries:
             return []
 
+        index_path = tmp_dir / "vectors.bin"
+        meta = read_index_metadata(index_path)
+        if not meta and (tmp_dir / "manifest.json").exists():
+            meta = json.loads((tmp_dir / "manifest.json").read_text(encoding="utf-8")).get("embedding") or {}
+        meta = meta or {}
+
+        method = meta.get("method")
+        service = meta.get("service") if method == "api" else None
+        model = meta.get("model") if method == "api" else None
+
         k = max(1, min(int(top_k), len(entries)))
-        scores, ids = search_similar(str(tmp_dir / "vectors.bin"), query, top_k=k)
+        scores, ids = search_similar(
+            str(index_path),
+            query,
+            top_k=k,
+            method=method,
+            service=service,
+            model=model,
+        )
 
         results = []
         for score, idx in zip(scores, ids):

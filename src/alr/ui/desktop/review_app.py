@@ -2054,6 +2054,40 @@ class ReviewApp:
                    command=lambda: [v.set(False) for k, v in self._vs_snap_vars.items() if k != "uuid"]).pack(side="left", padx=4)
         ttk.Button(c_btns, text="Vec: None",
                    command=lambda: [v.set(False) for v in self._vs_vec_vars.values()]).pack(side="left", padx=8)
+        
+        # Embedding backend selection (method, service, optional model override)
+        from alr.rag_builders.vector_db_updater import _current_backend
+        cur_method, cur_service = _current_backend()
+
+        emb_bar = ttk.Frame(build_lf)
+        emb_bar.pack(fill="x", padx=6, pady=(2, 2))
+
+        ttk.Label(emb_bar, text="Method:").pack(side="left")
+        self._vs_method_var = tk.StringVar(value=cur_method)
+        method_cb = ttk.Combobox(
+            emb_bar, textvariable=self._vs_method_var,
+            values=["api", "local"], width=8, state="readonly",
+        )
+        method_cb.pack(side="left", padx=(4, 10))
+        method_cb.bind("<<ComboboxSelected>>", lambda _e: self._vs_on_backend_change())
+
+        ttk.Label(emb_bar, text="Service:").pack(side="left")
+        self._vs_service_var = tk.StringVar(value=cur_service)
+        self._vs_service_cb = ttk.Combobox(
+            emb_bar, textvariable=self._vs_service_var,
+            values=["BlaBla", "Chat AI", "DLR Ollama"], width=12, state="readonly",
+        )
+        self._vs_service_cb.pack(side="left", padx=(4, 10))
+        self._vs_service_cb.bind("<<ComboboxSelected>>", lambda _e: self._vs_on_backend_change())
+
+        ttk.Label(emb_bar, text="Model (optional):").pack(side="left")
+        self._vs_model_var = tk.StringVar(value="")
+        self._vs_model_entry = ttk.Entry(emb_bar, textvariable=self._vs_model_var, width=28)
+        self._vs_model_entry.pack(side="left", padx=(4, 6))
+
+        self._vs_model_hint = ttk.Label(emb_bar, text="", foreground="#666")
+        self._vs_model_hint.pack(side="left")
+        self._vs_on_backend_change()
 
         # Zip name + build trigger
         zip_bar = ttk.Frame(build_lf)
@@ -2129,6 +2163,25 @@ class ReviewApp:
         self._vs_folder_list.delete(0, tk.END)
         for folder in self.store.list_source_folders():
             self._vs_folder_list.insert(tk.END, folder)
+            
+    def _vs_on_backend_change(self):
+        """Toggle service/model controls for local vs API and show the resolved default model."""
+        from alr.common.llm_utils import get_default_embedding_model, embedding_model_repo_id
+
+        method = self._vs_method_var.get().strip().lower()
+        if method == "local":
+            self._vs_service_cb.configure(state="disabled")
+            self._vs_model_entry.configure(state="disabled")
+            self._vs_model_hint.config(text=f"default: {embedding_model_repo_id}")
+        else:
+            self._vs_service_cb.configure(state="readonly")
+            self._vs_model_entry.configure(state="normal")
+            service = self._vs_service_var.get().strip()
+            try:
+                default_model = get_default_embedding_model(service)
+            except Exception:
+                default_model = "service default"
+            self._vs_model_hint.config(text=f"(blank = {default_model})")
 
     def _vs_build_zip(self):
         from alr.common.vector_snapshot import build_vector_snapshot_zip
@@ -2162,6 +2215,10 @@ class ReviewApp:
 
         holder = {}
 
+        method = self._vs_method_var.get().strip().lower()
+        service = self._vs_service_var.get().strip() if method == "api" else None
+        model = self._vs_model_var.get().strip() or None if method == "api" else None
+
         def work(progress, should_cancel):
             manifest = build_vector_snapshot_zip(
                 source_folders=folders,
@@ -2169,6 +2226,9 @@ class ReviewApp:
                 vector_columns=vec_cols,
                 zip_path=out_path,
                 db_path=self.store.db_path,
+                method=method,
+                service=service,
+                model=model,
                 progress_callback=progress,
                 should_cancel=should_cancel,
             )
@@ -2208,11 +2268,14 @@ class ReviewApp:
         try:
             m = manifest or read_snapshot_manifest(path)
             emb = m.get("embedding") or {}
+            method = emb.get("method") or "unknown"
+            service = emb.get("service")
             model = emb.get("model") or "unknown"
+            backend_str = f"{method} / {service} / {model}" if service else f"{method} / {model}"
             self._vs_zip_info_lbl.config(
                 text=(
                     f"Docs: {m.get('doc_count', '?')}  |  Vectors: {m.get('vector_count', '?')}  |  "
-                    f"Vectorized: {', '.join(m.get('vector_columns', []))}  |  Model: {model}"
+                    f"Query backend (auto): {backend_str}"
                 )
             )
         except Exception as e:
