@@ -84,6 +84,21 @@ DEFAULT_TICKED_SQL_COLUMNS = [
     "rescon_evaluation_score",
     "source_folder",
 ]
+
+DEFAULT_VECTOR_COLUMNS = [
+    "title",
+    "research_problem",
+    "objective",
+    "methodology",
+    "conclusion",
+    "results",
+    "research_areas",
+    "key_concepts",
+    *INTRO_SECTION_COLUMNS.values(),
+    *RESCON_SECTION_COLUMNS.values(),
+]
+
+
 def nl_to_overview_spec(description, fields):
     """
     Turn a plain-English overview request into a spec dict via the LLM:
@@ -2019,39 +2034,44 @@ class ReviewApp:
         c_canvas.create_window((0, 0), window=c_inner, anchor="nw")
         c_inner.bind("<Configure>", lambda e: c_canvas.configure(scrollregion=c_canvas.bbox("all")))
 
-        default_vec = {"title", "research_problem", "objective", "methodology", "results", "conclusion"}
+        default_snap = set(DEFAULT_TICKED_SQL_COLUMNS)
+        default_vec = set(DEFAULT_VECTOR_COLUMNS)
+        self._vs_vec_checks = {}
+
         for i, col in enumerate(COLUMNS):
             row_idx = i // 2
             col_offset = (i % 2) * 3
 
-            s_var = tk.BooleanVar(value=(col == "uuid" or col in DEFAULT_OVERVIEW_FIELDS or col in default_vec))
-            v_var = tk.BooleanVar(value=(col in default_vec))
+            snap_on = (col == "uuid") or (col in default_snap)
+            vec_on = snap_on and (col != "uuid") and (col in default_vec)
+
+            s_var = tk.BooleanVar(value=snap_on)
+            v_var = tk.BooleanVar(value=vec_on)
             self._vs_snap_vars[col] = s_var
             self._vs_vec_vars[col] = v_var
-
-            # Ticking Vectorize automatically ensures the column is in the snapshot
-            def _sync_snap(sv=s_var, vv=v_var):
-                if vv.get():
-                    sv.set(True)
 
             ttk.Label(c_inner, text=col, width=24, anchor="w").grid(
                 row=row_idx, column=col_offset, sticky="w", padx=(6, 2), pady=1
             )
             ttk.Checkbutton(
                 c_inner, text="Snap", variable=s_var,
-                state="disabled" if col == "uuid" else "normal"
+                command=lambda c=col: self._vs_sync_vec_state(c),
+                state="disabled" if col == "uuid" else "normal",
             ).grid(row=row_idx, column=col_offset + 1, sticky="w", padx=2)
-            ttk.Checkbutton(
-                c_inner, text="Vec", variable=v_var, command=_sync_snap,
-                state="disabled" if col == "uuid" else "normal"
-            ).grid(row=row_idx, column=col_offset + 2, sticky="w", padx=(2, 10))
+
+            vec_chk = ttk.Checkbutton(
+                c_inner, text="Vec", variable=v_var,
+                state="normal" if (snap_on and col != "uuid") else "disabled",
+            )
+            vec_chk.grid(row=row_idx, column=col_offset + 2, sticky="w", padx=(2, 10))
+            self._vs_vec_checks[col] = vec_chk
 
         c_btns = ttk.Frame(build_lf)
         c_btns.pack(fill="x", padx=6, pady=(0, 4))
         ttk.Button(c_btns, text="Snap: All",
-                   command=lambda: [v.set(True) for v in self._vs_snap_vars.values()]).pack(side="left")
+                   command=lambda: self._vs_set_all_snap(True)).pack(side="left")
         ttk.Button(c_btns, text="Snap: None",
-                   command=lambda: [v.set(False) for k, v in self._vs_snap_vars.items() if k != "uuid"]).pack(side="left", padx=4)
+                   command=lambda: self._vs_set_all_snap(False)).pack(side="left", padx=4)
         ttk.Button(c_btns, text="Vec: None",
                    command=lambda: [v.set(False) for v in self._vs_vec_vars.values()]).pack(side="left", padx=8)
         
@@ -2163,6 +2183,24 @@ class ReviewApp:
         self._vs_folder_list.delete(0, tk.END)
         for folder in self.store.list_source_folders():
             self._vs_folder_list.insert(tk.END, folder)
+            
+    def _vs_sync_vec_state(self, col: str):
+        """Enable Vec only when Snap is checked; unchecking Snap clears and disables Vec."""
+        if col == "uuid":
+            return
+        if self._vs_snap_vars[col].get():
+            self._vs_vec_checks[col].configure(state="normal")
+        else:
+            self._vs_vec_vars[col].set(False)
+            self._vs_vec_checks[col].configure(state="disabled")
+
+    def _vs_set_all_snap(self, checked: bool):
+        """Toggle all non-uuid Snap checkboxes and keep every Vec checkbox in sync."""
+        for col, var in self._vs_snap_vars.items():
+            if col == "uuid":
+                continue
+            var.set(checked)
+            self._vs_sync_vec_state(col)
             
     def _vs_on_backend_change(self):
         """Toggle service/model controls for local vs API and show the resolved default model."""
