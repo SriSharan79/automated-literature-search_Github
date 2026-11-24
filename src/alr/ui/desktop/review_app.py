@@ -343,6 +343,7 @@ class ReviewApp:
         self._build_inspector_tab(self.review_notebook)
         self._build_database_tab(self.review_notebook)
         self._build_overviews_tab(self.review_notebook)
+        self._build_vector_snapshot_tab(self.review_notebook)
         self._build_help_tab(self.review_notebook)
 
     def _open_ai_chat(self):
@@ -1967,6 +1968,317 @@ class ReviewApp:
         from alr.ui.desktop.section_rewriter_view import JSONRestructurerUI
         tab = make_scrollable_tab(nb, "Section Editor")
         self.section_editor = JSONRestructurerUI(tab)
+        
+    # ============================================= Vector Snapshot & Query
+    def _build_vector_snapshot_tab(self, nb):
+        tab = make_scrollable_tab(nb, "Vector Snapshot & Query")
+
+        self._vs_snap_vars = {}
+        self._vs_vec_vars = {}
+        self._vs_last_results = []
+
+        # --- Part 1: Build Snapshot + Vector DB Zip ---
+        build_lf = ttk.LabelFrame(tab, text="1. Create SQLite Snapshot & Vector DB (.zip)")
+        build_lf.pack(fill="x", padx=8, pady=(8, 4))
+
+        # Storage folders (multi-select)
+        top_split = ttk.Frame(build_lf)
+        top_split.pack(fill="x", padx=6, pady=4)
+
+        fld_frame = ttk.LabelFrame(top_split, text="Storage folders (multi-select)")
+        fld_frame.pack(side="left", fill="both", expand=True, padx=(0, 6))
+
+        fld_list_wrap = ttk.Frame(fld_frame)
+        fld_list_wrap.pack(fill="both", expand=True, padx=4, pady=4)
+        self._vs_folder_list = tk.Listbox(
+            fld_list_wrap, selectmode="extended", height=5, exportselection=False
+        )
+        f_vsb = ttk.Scrollbar(fld_list_wrap, orient="vertical", command=self._vs_folder_list.yview)
+        self._vs_folder_list.configure(yscrollcommand=f_vsb.set)
+        f_vsb.pack(side="right", fill="y")
+        self._vs_folder_list.pack(side="left", fill="both", expand=True)
+
+        f_btns = ttk.Frame(fld_frame)
+        f_btns.pack(fill="x", padx=4, pady=(0, 4))
+        ttk.Button(f_btns, text="Select all",
+                   command=lambda: self._vs_folder_list.select_set(0, tk.END)).pack(side="left")
+        ttk.Button(f_btns, text="Clear",
+                   command=lambda: self._vs_folder_list.selection_clear(0, tk.END)).pack(side="left", padx=4)
+        ttk.Button(f_btns, text="Refresh", command=self._vs_refresh_folders).pack(side="right")
+
+        # Column picker: Snapshot + Vectorize checkboxes per column
+        col_frame = ttk.LabelFrame(top_split, text="Columns (Snap = include in snapshot.db, Vec = vectorize)")
+        col_frame.pack(side="left", fill="both", expand=True)
+
+        c_canvas = tk.Canvas(col_frame, height=130, highlightthickness=0)
+        c_vsb = ttk.Scrollbar(col_frame, orient="vertical", command=c_canvas.yview)
+        c_inner = ttk.Frame(c_canvas)
+        c_canvas.configure(yscrollcommand=c_vsb.set)
+        c_vsb.pack(side="right", fill="y")
+        c_canvas.pack(side="left", fill="both", expand=True)
+        c_canvas.create_window((0, 0), window=c_inner, anchor="nw")
+        c_inner.bind("<Configure>", lambda e: c_canvas.configure(scrollregion=c_canvas.bbox("all")))
+
+        default_vec = {"title", "research_problem", "objective", "methodology", "results", "conclusion"}
+        for i, col in enumerate(COLUMNS):
+            row_idx = i // 2
+            col_offset = (i % 2) * 3
+
+            s_var = tk.BooleanVar(value=(col == "uuid" or col in DEFAULT_OVERVIEW_FIELDS or col in default_vec))
+            v_var = tk.BooleanVar(value=(col in default_vec))
+            self._vs_snap_vars[col] = s_var
+            self._vs_vec_vars[col] = v_var
+
+            # Ticking Vectorize automatically ensures the column is in the snapshot
+            def _sync_snap(sv=s_var, vv=v_var):
+                if vv.get():
+                    sv.set(True)
+
+            ttk.Label(c_inner, text=col, width=24, anchor="w").grid(
+                row=row_idx, column=col_offset, sticky="w", padx=(6, 2), pady=1
+            )
+            ttk.Checkbutton(
+                c_inner, text="Snap", variable=s_var,
+                state="disabled" if col == "uuid" else "normal"
+            ).grid(row=row_idx, column=col_offset + 1, sticky="w", padx=2)
+            ttk.Checkbutton(
+                c_inner, text="Vec", variable=v_var, command=_sync_snap,
+                state="disabled" if col == "uuid" else "normal"
+            ).grid(row=row_idx, column=col_offset + 2, sticky="w", padx=(2, 10))
+
+        c_btns = ttk.Frame(build_lf)
+        c_btns.pack(fill="x", padx=6, pady=(0, 4))
+        ttk.Button(c_btns, text="Snap: All",
+                   command=lambda: [v.set(True) for v in self._vs_snap_vars.values()]).pack(side="left")
+        ttk.Button(c_btns, text="Snap: None",
+                   command=lambda: [v.set(False) for k, v in self._vs_snap_vars.items() if k != "uuid"]).pack(side="left", padx=4)
+        ttk.Button(c_btns, text="Vec: None",
+                   command=lambda: [v.set(False) for v in self._vs_vec_vars.values()]).pack(side="left", padx=8)
+
+        # Zip name + build trigger
+        zip_bar = ttk.Frame(build_lf)
+        zip_bar.pack(fill="x", padx=6, pady=(2, 6))
+        ttk.Label(zip_bar, text="Zip name:").pack(side="left")
+        self._vs_zip_name_var = tk.StringVar(value="vector_snapshot")
+        ttk.Entry(zip_bar, textvariable=self._vs_zip_name_var, width=32).pack(side="left", padx=6)
+        ttk.Button(zip_bar, text="Build & Save Zip…", command=self._vs_build_zip).pack(side="left", padx=4)
+        self._vs_build_status = ttk.Label(zip_bar, text="", foreground="#555")
+        self._vs_build_status.pack(side="left", padx=10)
+
+        # --- Part 2: Query Selected Zip ---
+        q_lf = ttk.LabelFrame(tab, text="2. Query Vector Snapshot (.zip)")
+        q_lf.pack(fill="both", expand=True, padx=8, pady=(4, 8))
+
+        zrow = ttk.Frame(q_lf)
+        zrow.pack(fill="x", padx=6, pady=4)
+        ttk.Label(zrow, text="Zip file:").pack(side="left")
+        self._vs_zip_path_var = tk.StringVar()
+        ttk.Entry(zrow, textvariable=self._vs_zip_path_var, width=58).pack(side="left", fill="x", expand=True, padx=4)
+        ttk.Button(zrow, text="Browse…", command=self._vs_browse_zip).pack(side="left", padx=2)
+
+        self._vs_zip_info_lbl = ttk.Label(q_lf, text="Select or build a vector snapshot .zip file.", foreground="#555")
+        self._vs_zip_info_lbl.pack(anchor="w", padx=8, pady=(0, 4))
+
+        qrow = ttk.Frame(q_lf)
+        qrow.pack(fill="x", padx=6, pady=4)
+        ttk.Label(qrow, text="Query:").pack(side="left")
+        self._vs_query_var = tk.StringVar()
+        q_entry = ttk.Entry(qrow, textvariable=self._vs_query_var)
+        q_entry.pack(side="left", fill="x", expand=True, padx=4)
+        q_entry.bind("<Return>", lambda _e: self._vs_run_query())
+        ttk.Label(qrow, text="Top K:").pack(side="left", padx=(6, 2))
+        self._vs_topk_var = tk.IntVar(value=10)
+        ttk.Spinbox(qrow, from_=1, to=500, textvariable=self._vs_topk_var, width=6).pack(side="left", padx=2)
+        ttk.Button(qrow, text="Run Query", command=self._vs_run_query).pack(side="left", padx=6)
+
+        # Sortable Top-K results table
+        res_frame = ttk.Frame(q_lf)
+        res_frame.pack(fill="both", expand=True, padx=6, pady=4)
+        cols = ("score", "uuid", "title", "column", "content")
+        self._vs_res_tree = ttk.Treeview(res_frame, columns=cols, show="headings", height=10)
+        widths = {"score": 70, "uuid": 95, "title": 240, "column": 140, "content": 420}
+        for c in cols:
+            self._vs_res_tree.heading(
+                c, text=c.capitalize(),
+                command=lambda _c=c: self._treeview_sort_column(self._vs_res_tree, _c, False),
+            )
+            self._vs_res_tree.column(c, width=widths[c], anchor="w", stretch=(c in ("title", "content")))
+
+        rv = ttk.Scrollbar(res_frame, orient="vertical", command=self._vs_res_tree.yview)
+        rh = ttk.Scrollbar(res_frame, orient="horizontal", command=self._vs_res_tree.xview)
+        self._vs_res_tree.configure(yscrollcommand=rv.set, xscrollcommand=rh.set)
+        rv.pack(side="right", fill="y")
+        rh.pack(side="bottom", fill="x")
+        self._vs_res_tree.pack(side="left", fill="both", expand=True)
+
+        # Bottom action bar: Export / Open in QueryResultViewer
+        act_bar = ttk.Frame(q_lf)
+        act_bar.pack(fill="x", padx=6, pady=(2, 6))
+        self._vs_res_status = ttk.Label(act_bar, text="")
+        self._vs_res_status.pack(side="left")
+        ttk.Button(act_bar, text="Open in QueryResultViewer",
+                   command=self._vs_open_in_viewer).pack(side="right", padx=4)
+        ttk.Button(act_bar, text="Export Excel…",
+                   command=lambda: self._vs_export_results("xlsx")).pack(side="right", padx=4)
+        ttk.Button(act_bar, text="Export CSV…",
+                   command=lambda: self._vs_export_results("csv")).pack(side="right", padx=4)
+
+        self._vs_refresh_folders()
+
+    def _vs_refresh_folders(self):
+        self._vs_folder_list.delete(0, tk.END)
+        for folder in self.store.list_source_folders():
+            self._vs_folder_list.insert(tk.END, folder)
+
+    def _vs_build_zip(self):
+        from alr.common.vector_snapshot import build_vector_snapshot_zip
+
+        sel_idx = self._vs_folder_list.curselection()
+        folders = [self._vs_folder_list.get(i) for i in sel_idx]
+        if not folders:
+            messagebox.showinfo("No folders", "Select at least one storage folder first.")
+            return
+
+        snap_cols = [c for c in COLUMNS if self._vs_snap_vars[c].get()]
+        vec_cols = [c for c in COLUMNS if self._vs_vec_vars[c].get()]
+        if not vec_cols:
+            messagebox.showinfo("No vector columns", "Tick 'Vec' on at least one column to vectorize.")
+            return
+
+        default_name = (self._vs_zip_name_var.get().strip() or "vector_snapshot")
+        if not default_name.lower().endswith(".zip"):
+            default_name += ".zip"
+
+        os.makedirs(ALR_overviews_folder, exist_ok=True)
+        out_path = filedialog.asksaveasfilename(
+            title="Save Vector Snapshot Zip",
+            defaultextension=".zip",
+            initialdir=str(ALR_overviews_folder),
+            initialfile=default_name,
+            filetypes=[("ZIP archive", "*.zip")],
+        )
+        if not out_path:
+            return
+
+        holder = {}
+
+        def work(progress, should_cancel):
+            manifest = build_vector_snapshot_zip(
+                source_folders=folders,
+                snapshot_columns=snap_cols,
+                vector_columns=vec_cols,
+                zip_path=out_path,
+                db_path=self.store.db_path,
+                progress_callback=progress,
+                should_cancel=should_cancel,
+            )
+            holder["manifest"] = manifest
+            return manifest["vector_count"]
+
+        def on_success(_n):
+            m = holder.get("manifest") or {}
+            self._vs_zip_path_var.set(out_path)
+            self._vs_show_zip_info(out_path, m)
+            self._vs_build_status.config(
+                text=f"Saved {Path(out_path).name} ({m.get('doc_count', 0)} docs, {m.get('vector_count', 0)} vectors)"
+            )
+            messagebox.showinfo(
+                "Vector Snapshot Created",
+                f"Created:\n{out_path}\n\n"
+                f"Documents: {m.get('doc_count', 0)}\n"
+                f"Vectors: {m.get('vector_count', 0)}\n"
+                f"Vectorized columns: {', '.join(m.get('vector_columns', []))}",
+            )
+
+        self._run_threaded(work, "Build Vector Snapshot", "vectorized", on_success=on_success)
+
+    def _vs_browse_zip(self):
+        path = filedialog.askopenfilename(
+            title="Select a Vector Snapshot Zip",
+            initialdir=str(ALR_overviews_folder) if os.path.isdir(ALR_overviews_folder) else None,
+            filetypes=[("ZIP archives", "*.zip")],
+        )
+        if not path:
+            return
+        self._vs_zip_path_var.set(path)
+        self._vs_show_zip_info(path)
+
+    def _vs_show_zip_info(self, path, manifest=None):
+        from alr.common.vector_snapshot import read_snapshot_manifest
+        try:
+            m = manifest or read_snapshot_manifest(path)
+            emb = m.get("embedding") or {}
+            model = emb.get("model") or "unknown"
+            self._vs_zip_info_lbl.config(
+                text=(
+                    f"Docs: {m.get('doc_count', '?')}  |  Vectors: {m.get('vector_count', '?')}  |  "
+                    f"Vectorized: {', '.join(m.get('vector_columns', []))}  |  Model: {model}"
+                )
+            )
+        except Exception as e:
+            self._vs_zip_info_lbl.config(text=f"Invalid snapshot zip: {e}")
+
+    def _vs_run_query(self):
+        from alr.common.vector_snapshot import query_vector_snapshot_zip
+
+        zip_path = self._vs_zip_path_var.get().strip()
+        query = self._vs_query_var.get().strip()
+        if not zip_path or not os.path.isfile(zip_path):
+            messagebox.showinfo("No zip selected", "Choose a valid vector snapshot .zip file first.")
+            return
+        if not query:
+            messagebox.showinfo("Empty query", "Enter a query string to search.")
+            return
+
+        top_k = max(1, int(self._vs_topk_var.get() or 10))
+        holder = {}
+
+        def work(progress, should_cancel):
+            progress(text=f"Searching '{Path(zip_path).name}' for top {top_k} match(es)…")
+            holder["results"] = query_vector_snapshot_zip(zip_path, query, top_k=top_k)
+            return len(holder["results"])
+
+        def on_success(_n):
+            rows = holder.get("results", [])
+            self._vs_last_results = rows
+            self._vs_res_tree.delete(*self._vs_res_tree.get_children())
+            for r in rows:
+                self._vs_res_tree.insert(
+                    "", "end",
+                    values=(r["score"], r["uuid"], r["title"], r["column"], r["content"].replace("\n", " ")),
+                )
+            self._vs_res_status.config(text=f"{len(rows)} result(s)")
+
+        self._run_threaded(work, "Query Vector Snapshot", "found", on_success=on_success)
+
+    def _vs_export_results(self, kind="xlsx"):
+        if not self._vs_last_results:
+            messagebox.showinfo("Nothing to export", "Run a query first.")
+            return
+        cols = ["score", "uuid", "title", "column", "content"]
+        self._export_rows(cols, self._vs_last_results, "vector_snapshot_query_results", kind=kind)
+
+    def _vs_open_in_viewer(self):
+        if not self._vs_last_results:
+            messagebox.showinfo("Nothing to view", "Run a query first.")
+            return
+        from alr.ui.desktop.query_result_viewer import open_query_result_viewer
+
+        # Preserve ranked order while deduplicating documents
+        seen = set()
+        unique_uuids = []
+        for r in self._vs_last_results:
+            uid = r.get("uuid")
+            if uid and uid not in seen:
+                seen.add(uid)
+                unique_uuids.append(uid)
+
+        q_label = self._vs_query_var.get().strip()[:45]
+        open_query_result_viewer(
+            self.container,
+            unique_uuids,
+            title=f"Vector Snapshot Results — {q_label}",
+        )
 
     def _build_help_tab(self, nb):
         tab = make_scrollable_tab(nb, "Guide")
@@ -2363,6 +2675,8 @@ class ReviewApp:
             self.filter_source["values"] = [""] + self.store.list_source_folders()
         if hasattr(self, "stats_label"):
             self._refresh_database_tab()
+        if hasattr(self, "_vs_refresh_folders"):
+            self._vs_refresh_folders()
 
 
 def open_review_app(master=None):
